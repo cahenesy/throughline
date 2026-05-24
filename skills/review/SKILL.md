@@ -12,6 +12,12 @@ base (use `git diff` to determine them).
 Reviews run in isolated subagent context on purpose: a fresh context is not
 biased toward code that was just written, which makes the review sharper.
 
+`/implement` already runs this same review as an automatic gate (in a SEPARATE
+process from the build, via `scripts/review-prompt.md`) and will not flip a TDD to
+`implemented` unless it returns `REVIEW_RESULT: PASS`. Use `/review` for an
+on-demand review — a scope `/implement` did not cover, a re-review after you
+address findings, or any branch not produced by the runner.
+
 ## Process
 1. Determine the scope (files / diff) and which TDD and accepted ADRs govern it.
 2. Fan out to subagents, each in its own context:

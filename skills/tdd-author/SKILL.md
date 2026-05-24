@@ -21,6 +21,13 @@ based on what changed. Persist each to `docs/tdd/NNNN-<slug>.md`.
 ## 2. Inventory existing coverage
 - Read every `docs/tdd/*.md` and its `PRD refs`. Build the map of which PRD
   requirements are already covered by a TDD, and by which.
+- Read `docs/tdd/BLOCKERS.md` if present. Each unchecked entry is a design-level
+  blocker `/implement` hit while building — a requirement that proved infeasible,
+  self-contradictory, or in conflict with an accepted ADR. Treat these as
+  first-class inputs to this pass: the design (or a superseding ADR) must resolve
+  each one. After authoring the TDD/ADR that resolves a blocker, check off or
+  delete its entry and note the resolution in the TDD's "PRD conflicts surfaced"
+  section.
 
 ## 3. Decide the set of TDDs (the key judgment)
 From the delta and the coverage map, identify:

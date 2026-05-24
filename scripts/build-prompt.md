@@ -11,15 +11,19 @@ Build discipline:
 - After each step run the relevant tests and the typecheck; fix failures at the
   ROOT CAUSE — never suppress errors, never weaken assertions to go green.
 - The format-and-lint hook runs on each edit; resolve anything it reports.
-- Stay within accepted-ADR constraints. If forced to break one, STOP and record
-  the blocker in your final message instead of proceeding.
+- Stay within accepted-ADR constraints.
 
-Review: run the review workflow — fan out to the `security-reviewer` and
-`code-reviewer` subagents (isolated context keeps it unbiased) and address
-findings.
+Design blockers (the feedback edge): if a requirement is infeasible,
+self-contradictory, or cannot be implemented without breaking an accepted ADR,
+do NOT silently work around it. Stop and end with
+`BATCH_RESULT: BLOCKED <one-line reason>`. The runner logs it to
+docs/tdd/BLOCKERS.md for `/tdd-author` to revise the design. Use this only for
+design-level problems, not ordinary bugs you can fix.
 
 Close:
-- Run the full test suite and typecheck; confirm green.
+- Run the FULL test suite and typecheck; confirm green. An INDEPENDENT gate will
+  re-run these (verify.sh) and run an isolated review in a SEPARATE process after
+  you finish — self-attestation is not trusted, so actually make them pass.
 - Keep docs in sync IN THIS COMMIT — not a later sweep. Grep for every concept
   this feature changed (renamed types, dropped tools, swapped dependencies,
   revised flows). For each hit in a doc decide if it is now wrong and fix it:
@@ -29,8 +33,9 @@ Close:
   feature commit; substantial doc work is a second commit in the same branch.
   Do not finish with known-stale docs.
 - Commit with a descriptive message referencing the TDD and the PRD requirement
-  numbers. Do NOT open a PR — the runner manages branches and PRs.
-- Flip this TDD's frontmatter `Status:` from `ready` to `implemented`, and
-  commit that change too.
-- End your final message with exactly `BATCH_RESULT: OK` on success, or
-  `BATCH_RESULT: FAIL <reason>` if you could not complete it.
+  numbers. Do NOT open a PR, do NOT change the TDD's `Status:`, and do NOT run
+  the final review yourself — the runner owns branches, PRs, the verify + review
+  gates, and the flip to `implemented` (only after both gates pass).
+- End your final message with exactly `BATCH_RESULT: OK` on success,
+  `BATCH_RESULT: FAIL <reason>` if you could not complete it, or
+  `BATCH_RESULT: BLOCKED <reason>` for a design-level blocker.

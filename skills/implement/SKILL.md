@@ -18,13 +18,20 @@ command, no manual batch/single distinction.
 ## Prepare
 1. Show the queue: the TDD(s) in scope and their Status. Confirm.
 2. Confirm mode:
-   - **Sequential (default):** one `build/<change>` branch; features build on
-     each other; ONE PR. Use when features depend on each other or share files.
+   - **Sequential (default):** TDDs build in numeric order, each on its own
+     `build/<change>/<slug>` branch STACKED on the previous, with ONE PR PER TDD.
+     Dependencies are respected, and each feature stays a separately reviewable
+     human gate. A failure halts the run and marks downstream TDDs BLOCKED.
+   - **`--combined`:** one shared `build/<change>` branch and ONE PR for the whole
+     set. Use only for a small, tightly-coupled set you want to review together.
    - **`--parallel`:** a `feat/<slug>` worktree + PR per feature. INDEPENDENT
      features only. Multiplies token usage; may hit rate limits.
-3. Ensure `scripts/implement.sh` and `scripts/build-prompt.md` exist in the repo;
-   if absent, copy them from `${CLAUDE_PLUGIN_ROOT}/scripts/` and
-   `chmod +x scripts/implement.sh`.
+3. Ensure `scripts/{implement.sh,build-prompt.md,review-prompt.md,verify.sh}`
+   exist in the repo; if any are absent, copy them from
+   `${CLAUDE_PLUGIN_ROOT}/scripts/` and
+   `chmod +x scripts/implement.sh scripts/verify.sh`.
+   `verify.sh` auto-detects the test/typecheck commands; for an unusual setup,
+   export `VERIFY_TEST_CMD` / `VERIFY_TYPECHECK_CMD` before launching.
 
 ## Run (launch it yourself, detached)
 Implementation runs in separate `claude -p` processes, never in this session —
@@ -51,15 +58,29 @@ or just wait.
 
 What each process does (see `scripts/build-prompt.md`): loads the TDD + its PRD
 refs + accepted ADRs, builds with tests written alongside, lint/typecheck
-enforced, subagent review, updates any docs the change makes stale IN THE SAME
-COMMIT (supersede accepted ADRs/design docs; edit evergreen docs in place),
-commits, and flips the TDD to `Status: implemented`. The runner owns branches
-and PRs and opens a PR per the mode — but NEVER merges. Merging is your approval
-gate. Failures are logged and never stop the batch.
+enforced at edit time, updates any docs the change makes stale IN THE SAME COMMIT
+(supersede accepted ADRs/design docs; edit evergreen docs in place), and commits.
+
+The build's own `BATCH_RESULT: OK` is NOT trusted as done. Before flipping a TDD
+to `implemented`, the runner enforces two independent gates:
+- **verify.sh** — re-runs the test suite + typecheck mechanically (deterministic;
+  not the model's self-report).
+- **review** — a SEPARATE `claude -p` process (not a subagent of the author) that
+  must end `REVIEW_RESULT: PASS`.
+Only when both pass does the runner flip the TDD and open the PR(s) per the mode.
+It NEVER merges — merging is your approval gate.
+
+Failure handling: in sequential mode a failed gate HALTS the run and marks every
+downstream (stacked) TDD `BLOCKED` rather than building on a broken base; in
+parallel mode a failure affects only that feature. A build that ends
+`BATCH_RESULT: BLOCKED <reason>` is a DESIGN blocker — the runner appends it to
+`docs/tdd/BLOCKERS.md` for `/tdd-author` to resolve.
 
 When the build finishes: a report at
-`docs/tdd/.implement-logs/<timestamp>/report.md` lists OK/FAIL per feature with
-log paths, and the PR(s) await review.
+`docs/tdd/.implement-logs/<timestamp>/report.md` lists per-feature status
+(OK / FAIL verification / FAIL review / BLOCKED) with log paths, and the PR(s)
+await review. If `docs/tdd/BLOCKERS.md` gained entries, run `/tdd-author` to
+revise the design, then re-run `/implement`.
 
 ## Notes
 - PRs need a git remote and the `gh` CLI; without them, commits stay on the
