@@ -36,8 +36,9 @@ command, no manual batch/single distinction.
    from `${CLAUDE_PLUGIN_ROOT}/scripts/` — they are NOT copied into the repo, so
    every project always uses the current version (no vendored drift). The runner
    finds `build-prompt.md`, `review-prompt.md`, and `verify.sh` next to itself.
-   `verify.sh` auto-detects the test/typecheck commands; for an unusual setup,
-   export `VERIFY_TEST_CMD` / `VERIFY_TYPECHECK_CMD` before launching.
+   `verify.sh` auto-detects the test/typecheck/lint commands; for an unusual
+   setup, export `VERIFY_TEST_CMD` / `VERIFY_TYPECHECK_CMD` / `VERIFY_LINT_CMD`
+   before launching.
 
 ## Run (launch it yourself, detached)
 Implementation runs in separate `claude -p` processes, never in this session —
@@ -73,8 +74,8 @@ enforced at edit time, updates any docs the change makes stale IN THE SAME COMMI
 
 The build's own `BATCH_RESULT: OK` is NOT trusted as done. Before flipping a TDD
 to `implemented`, the runner enforces two independent gates:
-- **verify.sh** — re-runs the test suite + typecheck mechanically (deterministic;
-  not the model's self-report).
+- **verify.sh** — re-runs the test suite + typecheck + project linter
+  mechanically (deterministic; not the model's self-report).
 - **review** — a SEPARATE `claude -p` process (not a subagent of the author) that
   must end `REVIEW_RESULT: PASS`.
 Only when both pass does the runner flip the TDD and open the PR(s) per the mode.

@@ -53,10 +53,12 @@ failure for correction rather than reverting it.
   existing code before proceeding. Do not silently introduce a framework.
 
 `/implement` gates every `ready -> implemented` flip on the plugin's verify
-gate, which runs the test suite + typecheck. That gate needs a working
-test/typecheck command (auto-detected, or set via `VERIFY_TEST_CMD` /
-`VERIFY_TYPECHECK_CMD`); a project with neither cannot pass the gate without
-`VERIFY_ALLOW_EMPTY=1`.
+gate, which runs the test suite + typecheck + project linter (eslint, ruff,
+clippy `-D warnings`, golangci-lint). That gate needs a working test/typecheck
+command (auto-detected, or set via `VERIFY_TEST_CMD` / `VERIFY_TYPECHECK_CMD` /
+`VERIFY_LINT_CMD`); a project with no test or typecheck cannot pass the gate
+without `VERIFY_ALLOW_EMPTY=1` (lint alone is additive strictness, not
+behavioral verification, so it does not satisfy the gate on its own).
 
 ## Design-doc scaffold
 

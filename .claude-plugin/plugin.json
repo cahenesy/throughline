@@ -1,6 +1,6 @@
 {
   "name": "greenfield",
   "version": "0.9.0",
-  "description": "Greenfield kit: a PRD/TDD/ADR design-doc pipeline with phase-gate PRs. /tdd-author decides how many TDDs a PRD change needs (git-diff + coverage), recommends ADR actions, and reads BLOCKERS.md so implementation-time design blockers feed back into design. /implement builds all ready TDDs unattended in detached processes but does not trust self-reported success: the ready->implemented flip is gated on a mechanical verify (tests+typecheck) and an independent review process, with one stacked PR per TDD and downstream halt-on-failure (never merges). Includes a toolchain bootstrap skill and a format+lint hook for JS/TS, Python, Rust, and Go.",
+  "description": "Greenfield kit: a PRD/TDD/ADR design-doc pipeline with phase-gate PRs. /tdd-author decides how many TDDs a PRD change needs (git-diff + coverage), recommends ADR actions, and reads BLOCKERS.md so implementation-time design blockers feed back into design. /implement builds all ready TDDs unattended in detached processes but does not trust self-reported success: the ready->implemented flip is gated on a mechanical verify (tests+typecheck+lint) and an independent review process, with one stacked PR per TDD and downstream halt-on-failure (never merges). Includes a toolchain bootstrap skill and a format+lint hook for JS/TS, Python, Rust, and Go.",
   "author": { "name": "Chris Henesy" }
 }

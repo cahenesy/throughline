@@ -21,9 +21,11 @@ docs/tdd/BLOCKERS.md for `/tdd-author` to revise the design. Use this only for
 design-level problems, not ordinary bugs you can fix.
 
 Close:
-- Run the FULL test suite and typecheck; confirm green. An INDEPENDENT gate will
-  re-run these (verify.sh) and run an isolated review in a SEPARATE process after
-  you finish — self-attestation is not trusted, so actually make them pass.
+- Run the FULL test suite, typecheck, and linter; confirm green. An INDEPENDENT
+  gate will re-run these (verify.sh — tests + typecheck + lint, with clippy at
+  `-D warnings`) and run an isolated review in a SEPARATE process after you
+  finish — self-attestation is not trusted, so actually make them pass. Resolve
+  lint at the root cause, do not suppress it to get past the gate.
 - Keep docs in sync IN THIS COMMIT — not a later sweep. Grep for every concept
   this feature changed (renamed types, dropped tools, swapped dependencies,
   revised flows). For each hit in a doc decide if it is now wrong and fix it:

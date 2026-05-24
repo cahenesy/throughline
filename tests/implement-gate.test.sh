@@ -160,6 +160,15 @@ EOF
   has "$R" "(base ci/0001-alpha)" "PR 2 is based on the first TDD's branch (stacked)"
 ) || true
 
+echo "[I] lint gate: linter red -> NOT implemented (verify covers lint, not just tests/typecheck)"
+( setup "$ROOT/i" 1
+  export VERIFY_LINT_CMD=false                  # linter fails (tests still pass)
+  bash "$IMPL" --change ci >/dev/null 2>&1
+  R="$(report)"
+  [ "$(status_on docs/tdd/0001-alpha.md ci/0001-alpha)" = ready ] && ok "TDD left ready (lint blocked flip)" || bad "TDD must stay ready when lint fails (got '$(status_on docs/tdd/0001-alpha.md ci/0001-alpha)')"
+  has "$R" "FAIL verification" "report shows verification failure on lint"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"

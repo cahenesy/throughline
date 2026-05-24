@@ -107,7 +107,7 @@ gate_one() {  # <tdd> <review-base-ref> <log>
     *OK*) : ;;
     *) echo "${bs:-FAIL (no BATCH_RESULT; see log)}"; return 1 ;;
   esac
-  if ! run_verify "$log"; then echo "FAIL verification (tests/typecheck red; not flipped)"; return 1; fi
+  if ! run_verify "$log"; then echo "FAIL verification (tests/typecheck/lint red; not flipped)"; return 1; fi
   review_one "$tdd" "$rbase" "$log"; rs="$(review_status "$log")"
   case "$rs" in
     *PASS*) : ;;

@@ -27,7 +27,7 @@ cc-greenfield-kit/
 │   ├── implement.sh          # detached runner (fresh claude -p per TDD)
 │   ├── build-prompt.md       # per-feature build discipline
 │   ├── review-prompt.md      # independent review gate (separate process)
-│   └── verify.sh             # mechanical verify gate (tests + typecheck)
+│   └── verify.sh             # mechanical verify gate (tests + typecheck + lint)
 ├── tests/
 │   └── implement-gate.test.sh # eval: proves the gates actually fire
 └── hooks/{hooks.json, format-and-lint.sh}
@@ -55,7 +55,7 @@ only `accepted` ADRs bind new TDDs; superseded ADRs drop out of context;
 `docs/tdd/BLOCKERS.md` so implementation-time design blockers feed back into
 design. `/implement` does NOT trust a build's self-reported success: the
 `ready -> implemented` flip is gated on `verify.sh` (mechanically re-runs the
-tests + typecheck) AND an independent review process (a separate `claude -p`,
+tests + typecheck + project linter) AND an independent review process (a separate `claude -p`,
 not a subagent of the author) that must return `REVIEW_RESULT: PASS`. Default is
 one stacked PR per TDD; a failed gate halts the run and marks downstream TDDs
 `BLOCKED` instead of building on a broken base. Every mode builds in a dedicated
