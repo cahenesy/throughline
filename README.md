@@ -58,7 +58,13 @@ design. `/implement` does NOT trust a build's self-reported success: the
 tests + typecheck) AND an independent review process (a separate `claude -p`,
 not a subagent of the author) that must return `REVIEW_RESULT: PASS`. Default is
 one stacked PR per TDD; a failed gate halts the run and marks downstream TDDs
-`BLOCKED` instead of building on a broken base.
+`BLOCKED` instead of building on a broken base. Every mode builds in a dedicated
+git worktree, so the detached runner never touches the working tree your session
+is using. Because the `implemented` flip lives on the build branch until you
+merge, a re-run skips any TDD already built on an un-merged branch (no duplicate
+work or PRs; `--rebuild` overrides). Stacked PRs come with an ordered, bottom-up
+**merge plan** in the report (merge in order; squash-merge breaks the stack — use
+a merge commit/rebase-merge, or `--combined` for one squashable PR).
 
 ## Context hygiene
 

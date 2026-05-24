@@ -52,10 +52,11 @@ failure for correction rather than reverting it.
   no unit tests. Ask whether to add a framework and backfill tests for
   existing code before proceeding. Do not silently introduce a framework.
 
-`/implement` gates every `ready -> implemented` flip on `scripts/verify.sh`,
-which runs the test suite + typecheck. That gate needs a working test/typecheck
-command (auto-detected, or set via `VERIFY_TEST_CMD` / `VERIFY_TYPECHECK_CMD`);
-a project with neither cannot pass the gate without `VERIFY_ALLOW_EMPTY=1`.
+`/implement` gates every `ready -> implemented` flip on the plugin's verify
+gate, which runs the test suite + typecheck. That gate needs a working
+test/typecheck command (auto-detected, or set via `VERIFY_TEST_CMD` /
+`VERIFY_TYPECHECK_CMD`); a project with neither cannot pass the gate without
+`VERIFY_ALLOW_EMPTY=1`.
 
 ## Design-doc scaffold
 

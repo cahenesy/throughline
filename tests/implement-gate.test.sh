@@ -66,54 +66,98 @@ EOF
 
 report() { ls -t docs/tdd/.implement-logs/*/report.md 2>/dev/null | head -1; }
 status_of() { sed -n 's/^Status:[[:space:]]*//p' "$1" | head -1; }
+# Builds run in an isolated worktree on a build branch; read the TDD's Status
+# from that branch (the main working tree is intentionally left untouched).
+status_on() { git show "$2:$1" 2>/dev/null | sed -n 's/^Status:[[:space:]]*//p' | head -1; }
 
 ROOT="$(mktemp -d)"; trap 'rm -rf "$ROOT"' EXIT
 
 echo "[A] happy path: build OK + verify pass + review PASS -> implemented"
 ( setup "$ROOT/a" 1
-  bash "$IMPL" >/dev/null 2>&1
+  bash "$IMPL" --change ci >/dev/null 2>&1
   R="$(report)"
-  [ "$(status_of docs/tdd/0001-alpha.md)" = implemented ] && ok "TDD flipped to implemented" || bad "TDD should be implemented (got '$(status_of docs/tdd/0001-alpha.md)')"
+  [ "$(status_on docs/tdd/0001-alpha.md ci/0001-alpha)" = implemented ] && ok "TDD flipped to implemented on build branch" || bad "TDD should be implemented on ci/0001-alpha (got '$(status_on docs/tdd/0001-alpha.md ci/0001-alpha)')"
+  [ "$(status_of docs/tdd/0001-alpha.md)" = ready ] && ok "main working tree left untouched (isolated worktree)" || bad "main tree must be unchanged by the isolated build (got '$(status_of docs/tdd/0001-alpha.md)')"
   has "$R" "OK (verified + reviewed)" "report shows verified+reviewed OK"
 ) || true
 
 echo "[B] verify gate: tests red -> NOT implemented"
 ( setup "$ROOT/b" 1
   printf '1\n' > "$STUBDIR/verify_rc"          # tests fail
-  bash "$IMPL" >/dev/null 2>&1
+  bash "$IMPL" --change ci >/dev/null 2>&1
   R="$(report)"
-  [ "$(status_of docs/tdd/0001-alpha.md)" = ready ] && ok "TDD left ready (flip refused)" || bad "TDD must stay ready when verify fails (got '$(status_of docs/tdd/0001-alpha.md)')"
+  [ "$(status_on docs/tdd/0001-alpha.md ci/0001-alpha)" = ready ] && ok "TDD left ready (flip refused)" || bad "TDD must stay ready when verify fails (got '$(status_on docs/tdd/0001-alpha.md ci/0001-alpha)')"
   has "$R" "FAIL verification" "report shows verification failure"
 ) || true
 
 echo "[C] review gate: review BLOCK -> NOT implemented"
 ( setup "$ROOT/c" 1
   printf 'REVIEW_RESULT: BLOCK found a real bug\n' > "$STUBDIR/review-0001-alpha"
-  bash "$IMPL" >/dev/null 2>&1
+  bash "$IMPL" --change ci >/dev/null 2>&1
   R="$(report)"
-  [ "$(status_of docs/tdd/0001-alpha.md)" = ready ] && ok "TDD left ready (review blocked flip)" || bad "TDD must stay ready when review blocks (got '$(status_of docs/tdd/0001-alpha.md)')"
+  [ "$(status_on docs/tdd/0001-alpha.md ci/0001-alpha)" = ready ] && ok "TDD left ready (review blocked flip)" || bad "TDD must stay ready when review blocks (got '$(status_on docs/tdd/0001-alpha.md ci/0001-alpha)')"
   has "$R" "FAIL review" "report shows review block"
 ) || true
 
 echo "[D] downstream halt: first TDD fails verify -> second BLOCKED, not attempted"
 ( setup "$ROOT/d" 2
   printf '1\n' > "$STUBDIR/verify_rc"          # 0001 fails verify
-  bash "$IMPL" >/dev/null 2>&1
+  bash "$IMPL" --change ci >/dev/null 2>&1
   R="$(report)"
-  [ "$(status_of docs/tdd/0002-beta.md)" = ready ] && ok "downstream TDD left ready" || bad "downstream TDD must stay ready"
+  [ "$(status_on docs/tdd/0001-alpha.md ci/0001-alpha)" = ready ] && ok "first TDD left ready (verify failed)" || bad "first TDD must stay ready when verify fails"
   has "$R" "0002-beta — BLOCKED (upstream" "report marks downstream BLOCKED"
-  [ -f generated-0002-beta.txt ] && bad "downstream build should NOT have run" || ok "downstream build was skipped"
+  git rev-parse --verify ci/0002-beta >/dev/null 2>&1 && bad "downstream build should NOT have run (branch ci/0002-beta exists)" || ok "downstream build was skipped (no branch created)"
 ) || true
 
 echo "[E] design blocker: BATCH_RESULT BLOCKED -> BLOCKERS.md ledger + halt"
 ( setup "$ROOT/e" 2
   printf 'BATCH_RESULT: BLOCKED requirement needs a new ADR\n' > "$STUBDIR/build-0001-alpha"
-  bash "$IMPL" >/dev/null 2>&1
+  bash "$IMPL" --change ci >/dev/null 2>&1
   R="$(report)"
-  [ -f docs/tdd/BLOCKERS.md ] && ok "BLOCKERS.md ledger created" || bad "BLOCKERS.md should be created"
+  [ -f docs/tdd/BLOCKERS.md ] && ok "BLOCKERS.md ledger created in main repo" || bad "BLOCKERS.md should be created in the main repo"
   has docs/tdd/BLOCKERS.md "0001-alpha" "blocker ledger names the TDD"
   has "$R" "BLOCKED (design)" "report shows design blocker"
   has "$R" "run /tdd-author" "report points back to /tdd-author"
+) || true
+
+echo "[F] resume: re-run skips a TDD already built on an un-merged branch"
+( setup "$ROOT/f" 1
+  bash "$IMPL" --change ci  >/dev/null 2>&1     # run 1 builds 0001 on ci/0001-alpha
+  [ "$(status_on docs/tdd/0001-alpha.md ci/0001-alpha)" = implemented ] && ok "run 1 built it" || bad "run 1 should build it"
+  bash "$IMPL" --change ci2 >/dev/null 2>&1     # run 2 must SKIP (done-but-unmerged)
+  R="$(report)"
+  has "$R" "already built on" "re-run reports the TDD as already built"
+  git rev-parse --verify ci2/0001-alpha >/dev/null 2>&1 && bad "re-run must NOT create a duplicate branch (ci2/0001-alpha exists)" || ok "re-run created no duplicate branch"
+) || true
+
+echo "[G] --rebuild forces a fresh build even when already built"
+( setup "$ROOT/g" 1
+  bash "$IMPL" --change ci  >/dev/null 2>&1
+  bash "$IMPL" --change ci2 --rebuild >/dev/null 2>&1
+  R="$(report)"
+  hasnt "$R" "already built on" "rebuild run does not skip"
+  git rev-parse --verify ci2/0001-alpha >/dev/null 2>&1 && ok "rebuild created a fresh branch" || bad "rebuild should create ci2/0001-alpha"
+  [ "$(status_on docs/tdd/0001-alpha.md ci2/0001-alpha)" = implemented ] && ok "rebuild branch is implemented" || bad "rebuild branch should be implemented"
+) || true
+
+echo "[H] stacked PRs: report emits a bottom-up merge plan"
+( setup "$ROOT/h" 2
+  git init --bare -q "$ROOT/h-remote.git"
+  git remote add origin "$ROOT/h-remote.git"
+  git push -q -u origin HEAD >/dev/null 2>&1     # publish base so PRs have a base
+  cat > "$STUBDIR/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+# shadow any real gh; only `gh pr create` is exercised — echo a deterministic URL
+echo "https://example.test/pr/$RANDOM"
+EOF
+  chmod +x "$STUBDIR/bin/gh"
+  bash "$IMPL" --change ci >/dev/null 2>&1
+  R="$(report)"
+  has "$R" "Merge plan (stacked PRs" "report includes a merge plan"
+  has "$R" "SQUASH-merge rewrites" "merge plan warns about squash-merge"
+  has "$R" "^1\. https://example.test/pr/" "merge plan lists PR 1 (base BASE)"
+  has "$R" "^2\. https://example.test/pr/" "merge plan lists PR 2 (stacked)"
+  has "$R" "(base ci/0001-alpha)" "PR 2 is based on the first TDD's branch (stacked)"
 ) || true
 
 echo
