@@ -28,6 +28,17 @@ cite (`docs/adr/INDEX.md` + the referenced bodies). Then check:
   isn't.
 - **Scope & coherence.** Over- or under-scoped TDDs, arbitrary splits, unrelated
   work lumped together, and missing edge cases / failure modes.
+- **Concreteness & naming consistency.** Flag placeholder/hand-waving design
+  content ("handle errors appropriately", "add validation", "TBD", bare section
+  headers) — design must be specific enough to implement without guessing. Also
+  flag the SAME concept named differently across TDDs in the set (a type/function
+  called `X` in one and `X'` in another), which is a latent bug.
+
+**Calibration.** Only flag issues that would actually cause a flawed implementation
+or a real conflict — untraced requirements, a missing alternatives analysis, an ADR
+conflict, an interface too vague to build, an inconsistent contract. Do NOT block on
+wording preferences, stylistic nits, or "this section is shorter than that one."
+Pass unless there is a serious gap; list minor items without blocking.
 
 Rank findings (blocker / major / minor / nit), each with the doc:section it
 applies to and a concrete fix. Then end with EXACTLY one verdict line:
