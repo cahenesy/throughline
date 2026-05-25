@@ -55,11 +55,16 @@ or under-specified requirements, and any conflict with an accepted ADR, before
 designing around them.
 
 Apply the architecture & dependency dispositions (also in global CLAUDE.md):
-- **Evaluate alternatives before any dependency.** Before putting a library,
-  framework, service, or integration into a TDD, evaluate at least one
-  alternative explicitly — licensing, cost, maintenance posture, lock-in. Prefer
-  OSS/self-hostable for projects branded as such; vendor/subscription-gated deps
-  need deliberate justification, not silent inclusion.
+- **Evaluate alternatives before any dependency (REQUIRED, not optional).** For
+  every new library, framework, service, or integration, the TDD's "Dependencies
+  considered" section MUST name at least one concrete rejected alternative with a
+  one-line reason (licensing, cost, maintenance posture, lock-in). "None
+  considered", or an empty/boilerplate section, is not acceptable; if no real
+  alternative exists, state explicitly why. Prefer OSS/self-hostable for projects
+  branded as such; vendor/subscription-gated deps need deliberate justification.
+  The design-critique gate (step 7) BLOCKS a TDD that adds a dependency without
+  this analysis, and `/implement` BLOCKS a build that needs a dep the TDD never
+  sanctioned — so the analysis cannot be deferred to build time.
 - **Don't reinvent what an integrated dependency already provides.** Before
   designing a new abstraction (plugin interface, schema, protocol), check the
   API surface of the system you're integrating with — it may already exist there.
@@ -81,7 +86,7 @@ ADR constraints: <accepted ADR numbers this design respects>
 ## Sequencing / implementation plan
 ## Failure modes & edge cases
 ## Requirement traceability   (each FR/NFR in scope → design element; note gaps)
-## Dependencies considered    (chosen + alternatives weighed, per disposition)
+## Dependencies considered    (REQUIRED per new dep: chosen + ≥1 rejected alternative + reason)
 ## PRD conflicts surfaced (and resolution)
 ## Decisions to promote (ADR candidates)
 ```
@@ -98,16 +103,37 @@ For each: proposed action, one-line rationale, confidence (mark low-confidence
 "optional"). Keep the bar HIGH; recommend zero if nothing qualifies. On
 approval, invoke `/adr-new` for each.
 
-## 7. Close-out
-Report which TDDs were written (as `draft`) and which existing TDDs you
-recommend revising. Tell the user to set `Status: ready` on the ones to build,
-then run `/implement` (it builds all `ready` TDDs).
+## 7. Design critique (independent gate — do not skip)
+Before opening the design PR, get an INDEPENDENT critique of the whole authored
+set. Spawn the `design-reviewer` subagent — it runs in fresh context on a
+different model than you authored in, so it does not share your blind spots. It
+reads the PRD, the TDD(s), and the accepted ADRs and checks requirement
+traceability, interface specification, the REQUIRED alternatives analysis, ADR
+conflicts, and scope coherence, ending with `DESIGN_REVIEW: PASS` or
+`DESIGN_REVIEW: BLOCK <reason>`.
 
-## Git (phase gate)
+- On BLOCK: fix the design — tighten interfaces, add the missing alternatives
+  analysis, resolve the ADR conflict, re-scope — and re-run the critique until it
+  passes. If you consciously disagree with a finding, record an explicit waiver
+  with your rationale rather than silently ignoring it.
+- Do NOT open the design PR with an unresolved blocker and no waiver.
+- Carry the critique's verdict and findings summary (and any waivers) into the
+  design PR body (step 9) so the human reviewer gates on an informed view, not a
+  bare diff.
+
+## 8. Close-out
+Report which TDDs were written (as `draft`) and which existing TDDs you
+recommend revising. Tell the user to set `Status: ready` on the ones to build
+AFTER the design PR merges, then run `/implement` (it builds all `ready` TDDs).
+
+## 9. Git (phase gate — the human design review)
 Unless the user says "skip git":
 - Merge the PRD PR first, then branch `docs/design/<change-slug>` off `main`, so
   you design against approved requirements. Stamp each TDD's `PRD-rev` with the
   PRD commit SHA you designed against.
 - Commit the TDD set AND any ADRs promoted this round TOGETHER — ADRs ride in the
   design PR because they justify decisions made in these TDDs.
-- Open a PR with `gh pr create --fill` (base `main`). Do NOT merge.
+- Open the design PR with `gh pr create` (base `main`) and put the design-critique
+  verdict + findings summary (and any waivers) in the PR body, so the human
+  reviews an INFORMED design, not a bare diff. Do NOT merge — the human merge of
+  this PR is the design gate: TDDs are set `ready` and built only after it lands.

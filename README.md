@@ -14,8 +14,9 @@ cc-greenfield-kit/
 ├── agents/
 │   ├── explore.md            # read-only investigation (Sonnet)
 │   ├── test-writer.md        # focused test authoring (Sonnet)
-│   ├── security-reviewer.md  # security review (Opus)
-│   └── code-reviewer.md      # correctness/consistency review (Opus)
+│   ├── security-reviewer.md  # security review (inherits the review gate's model)
+│   ├── code-reviewer.md      # correctness/consistency review (inherits)
+│   └── design-reviewer.md    # independent design critique before the design PR
 ├── skills/
 │   ├── bootstrap-project/    # /bootstrap-project — toolchain + docs scaffold
 │   ├── prd-author/           # /prd-author  — the WHAT  → docs/PRD.md
@@ -25,8 +26,8 @@ cc-greenfield-kit/
 │   └── review/               # /review      — unbiased subagent review
 ├── scripts/
 │   ├── implement.sh          # detached runner (fresh claude -p per TDD)
-│   ├── build-prompt.md       # per-feature build discipline
-│   ├── review-prompt.md      # independent review gate (separate process)
+│   ├── build-prompt.md       # per-feature build discipline (failing-test-first)
+│   ├── review-prompt.md      # independent review gate (separate process, diverse model)
 │   └── verify.sh             # mechanical verify gate (tests + typecheck + lint)
 ├── tests/
 │   └── implement-gate.test.sh # eval: proves the gates actually fire
@@ -41,22 +42,33 @@ cc-greenfield-kit/
 | `/prd-author`      | `docs/PRD.md`            | the WHAT. Explore + interview. Own session.        |
 | `/tdd-author`      | `docs/tdd/NNNN-*`        | the HOW. Runs ONCE/PRD update: diffs PRD vs prev + |
 |                    |                          | existing TDDs to decide how many TDDs to write;    |
-|                    |                          | challenges PRD; recommends ADR actions.            |
+|                    |                          | challenges PRD; recommends ADR actions; runs an    |
+|                    |                          | independent design-critique gate before the PR.    |
 | `/adr-new`         | `docs/adr/NNNN-*`        | append-only, status-gated supersession.            |
 | `/implement`       | code + tests + PR(s)     | builds ALL `ready` TDDs (1 or many), always        |
-|                    |                          | detached; gates each on verify + review before     |
-|                    |                          | flipping to `implemented`; one PR per TDD; halts   |
-|                    |                          | the stack on failure. Never merges.                |
+|                    |                          | detached; gates each on test-first + verify +      |
+|                    |                          | review (review on a diverse model) before flipping |
+|                    |                          | to `implemented`; one PR per TDD; halts the stack  |
+|                    |                          | on failure. Never merges.                          |
 | `/review`          | consolidated findings    | fans out to security + code reviewer subagents.    |
 
 Wired-in properties: ADR index always loaded, full bodies on demand by Scope;
 only `accepted` ADRs bind new TDDs; superseded ADRs drop out of context;
 `/tdd-author` proposes ADR actions for approval rather than asking, and reads
 `docs/tdd/BLOCKERS.md` so implementation-time design blockers feed back into
-design. `/implement` does NOT trust a build's self-reported success: the
-`ready -> implemented` flip is gated on `verify.sh` (mechanically re-runs the
-tests + typecheck + project linter) AND an independent review process (a separate `claude -p`,
-not a subagent of the author) that must return `REVIEW_RESULT: PASS`. Default is
+design. Before opening the design PR, `/tdd-author` runs an independent
+**design-critique gate** (the `design-reviewer` agent — fresh context, a different
+model than the author) that blocks on untraced requirements, under-specified
+interfaces, ADR conflicts, or a new dependency lacking the REQUIRED alternatives
+analysis; its verdict rides in the design PR so the human merges on an informed
+view. `/implement` does NOT trust a build's self-reported success: the
+`ready -> implemented` flip is gated on THREE independent checks — failing-test-
+first discipline (a `test(failing):` commit must precede the implementation),
+`verify.sh` (mechanically re-runs the tests + typecheck + project linter), AND an
+independent review that must return `REVIEW_RESULT: PASS`. The build runs on the
+best model (opus by default) and the review runs on a DIFFERENT model (sonnet by
+default), so the reviewer does not share the author's blind spots (a separate
+`claude -p`, not a subagent of the author). Default is
 one stacked PR per TDD; a failed gate halts the run and marks downstream TDDs
 `BLOCKED` instead of building on a broken base. Every mode builds in a dedicated
 git worktree, so the detached runner never touches the working tree your session

@@ -7,11 +7,25 @@ subagent for broader investigation so reading stays out of context.
 
 Build discipline:
 - Implement in the sequence the TDD specifies, one step at a time.
-- Write tests ALONGSIDE the code via the `test-writer` subagent; run them.
+- FAILING TEST FIRST (mandatory). For each unit of behavior, BEFORE writing the
+  implementation: write the test via the `test-writer` subagent, run it, and
+  confirm it FAILS for the right reason (the behavior is genuinely absent — not a
+  typo or a missing import). Commit that test on its own with a message beginning
+  `test(failing): <behavior>`. THEN implement until it passes and commit the
+  implementation separately. The runner gates this red→green order mechanically
+  (it requires a `test(failing):` commit before the impl) and the independent
+  review judges whether the tests are meaningful. Only a genuine no-new-behavior
+  change (pure refactor/docs) may skip it — and then you MUST end with
+  `TEST_FIRST: SKIPPED <reason>`.
 - After each step run the relevant tests and the typecheck; fix failures at the
   ROOT CAUSE — never suppress errors, never weaken assertions to go green.
 - The format-and-lint hook runs on each edit; resolve anything it reports.
 - Stay within accepted-ADR constraints.
+- DO NOT introduce a dependency, library, or service the TDD did not sanction.
+  Choosing a dependency requires the alternatives analysis that belongs in the
+  design, not a snap decision at build time. If you find you need one, STOP and
+  end with `BATCH_RESULT: BLOCKED new dependency needed: <name> (<why>)` so
+  /tdd-author can weigh it and its alternatives and update the design.
 
 Design blockers (the feedback edge): if a requirement is infeasible,
 self-contradictory, or cannot be implemented without breaking an accepted ADR,

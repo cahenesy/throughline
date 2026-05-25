@@ -2,10 +2,11 @@
 # implement-gate.test.sh — eval for the build runner's quality gates.
 #
 # The kit's core quality claim is that a build cannot mark itself "done": the
-# ready->implemented flip is gated on an INDEPENDENT mechanical verify and an
-# INDEPENDENT review process, and a failure halts the dependent stack. This eval
-# proves those gates actually fire, using a stub `claude` (so no model/tokens are
-# needed) and a controllable verify command.
+# ready->implemented flip is gated on failing-test-first discipline, an INDEPENDENT
+# mechanical verify (tests+typecheck+lint), and an INDEPENDENT review process, and
+# a failure halts the dependent stack. This eval proves those gates actually fire,
+# using a stub `claude` (so no model/tokens are needed) and a controllable verify
+# command.
 #
 # Run: bash tests/implement-gate.test.sh
 set -uo pipefail
@@ -54,6 +55,11 @@ slug="$(printf '%s' "$prompt" | grep -oE 'docs/tdd/[0-9]+-[a-z]+' | head -1 | se
 if printf '%s' "$prompt" | grep -q 'INDEPENDENT review gate'; then
   cat "$STUBDIR/review-$slug" 2>/dev/null || echo "REVIEW_RESULT: PASS"
   exit 0
+fi
+# failing-test-first commit, unless this scenario suppresses it
+if [ ! -f "$STUBDIR/no-test-first-$slug" ]; then
+  echo "test for $slug" >> "test-$slug.txt"
+  git add -A >/dev/null 2>&1; git commit -q -m "test(failing): $slug" >/dev/null 2>&1 || true
 fi
 echo "generated $(date +%s%N)" >> "generated-$slug.txt"
 git add -A >/dev/null 2>&1; git commit -q -m "stub build $slug" >/dev/null 2>&1 || true
@@ -167,6 +173,16 @@ echo "[I] lint gate: linter red -> NOT implemented (verify covers lint, not just
   R="$(report)"
   [ "$(status_on docs/tdd/0001-alpha.md ci/0001-alpha)" = ready ] && ok "TDD left ready (lint blocked flip)" || bad "TDD must stay ready when lint fails (got '$(status_on docs/tdd/0001-alpha.md ci/0001-alpha)')"
   has "$R" "FAIL verification" "report shows verification failure on lint"
+) || true
+
+echo "[J] test-first gate: no failing-test-first commit -> NOT implemented"
+( setup "$ROOT/j" 1
+  touch "$STUBDIR/no-test-first-0001-alpha"    # build skips the failing-test commit
+  bash "$IMPL" --change ci >/dev/null 2>&1
+  R="$(report)"
+  [ "$(status_on docs/tdd/0001-alpha.md ci/0001-alpha)" = ready ] && ok "TDD left ready (test-first gate)" || bad "TDD must stay ready without failing-test-first (got '$(status_on docs/tdd/0001-alpha.md ci/0001-alpha)')"
+  has "$R" "FAIL test-first" "report shows test-first failure"
+  git rev-parse --verify ci/0001-alpha >/dev/null 2>&1 && ok "build branch exists but was not flipped" || bad "build branch ci/0001-alpha should exist"
 ) || true
 
 echo

@@ -68,18 +68,24 @@ location. The user can watch with `tail -f docs/tdd/.implement-logs/<ts>/report.
 or just wait.
 
 What each process does (see `${CLAUDE_PLUGIN_ROOT}/scripts/build-prompt.md`): loads the TDD + its PRD
-refs + accepted ADRs, builds with tests written alongside, lint/typecheck
-enforced at edit time, updates any docs the change makes stale IN THE SAME COMMIT
+refs + accepted ADRs, builds failing-test-first (a `test(failing):` commit before
+each implementation), lint/typecheck enforced at edit time, updates any docs the
+change makes stale IN THE SAME COMMIT
 (supersede accepted ADRs/design docs; edit evergreen docs in place), and commits.
 
 The build's own `BATCH_RESULT: OK` is NOT trusted as done. Before flipping a TDD
-to `implemented`, the runner enforces two independent gates:
+to `implemented`, the runner enforces three independent gates:
+- **test-first** — the build must show failing-test-first discipline: a dedicated
+  `test(failing): ...` commit BEFORE the implementation (unless it emits
+  `TEST_FIRST: SKIPPED` for a genuine no-new-behavior change). Mechanical, read
+  straight from git history.
 - **verify.sh** — re-runs the test suite + typecheck + project linter
   mechanically (deterministic; not the model's self-report).
-- **review** — a SEPARATE `claude -p` process (not a subagent of the author) that
-  must end `REVIEW_RESULT: PASS`.
-Only when both pass does the runner flip the TDD and open the PR(s) per the mode.
-It NEVER merges — merging is your approval gate.
+- **review** — a SEPARATE `claude -p` process on a DIFFERENT model than the build
+  (default sonnet vs an opus build) for genuine reviewer diversity (not a subagent
+  of the author), that must end `REVIEW_RESULT: PASS`.
+Only when all three pass does the runner flip the TDD and open the PR(s) per the
+mode. It NEVER merges — merging is your approval gate.
 
 Failure handling: in sequential mode a failed gate HALTS the run and marks every
 downstream (stacked) TDD `BLOCKED` rather than building on a broken base; in
@@ -108,4 +114,9 @@ for the set instead.
   branch to PR manually.
 - The runner sets `--permission-mode auto` for unattended runs; for tighter
   control add a tool allowlist or use OS sandboxing.
+- Models: the build runs on the best model (opus by default); the review gate runs
+  on a DIFFERENT model (sonnet by default) for diversity. Override with `--model` /
+  `--review-model`, or `GREENFIELD_BUILD_MODEL` / `GREENFIELD_REVIEW_MODEL`.
+- `GREENFIELD_REQUIRE_TEST_FIRST=0` disables the failing-test-first gate (e.g. a
+  batch of pure refactors); leave it on (default) for feature work.
 - "skip git" → build and commit on the current branch with no branching/PRs.

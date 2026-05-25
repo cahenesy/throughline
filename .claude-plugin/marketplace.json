@@ -1,12 +1,12 @@
 {
   "name": "cc-greenfield-kit",
-  "description": "Greenfield development kit: a PRD/TDD/ADR design-doc pipeline with phase-gate PRs, toolchain bootstrap, and gated unattended implementation (mechanical verify + independent review before any TDD is marked done; one PR per TDD).",
+  "description": "Greenfield development kit: a PRD/TDD/ADR design-doc pipeline with phase-gate PRs, an independent design-critique gate, toolchain bootstrap, and gated unattended implementation (failing-test-first + mechanical verify + independent review on a diverse model before any TDD is marked done; one PR per TDD).",
   "owner": { "name": "Chris Henesy" },
   "plugins": [
     {
       "name": "greenfield",
       "source": "./",
-      "description": "Greenfield bootstrap kit: project-setup skill, standard subagents, and a format+lint hook."
+      "description": "Greenfield bootstrap kit: project-setup skill, standard subagents (incl. an independent design-reviewer), gated test-first/verify/review implementation on diverse models, and a format+lint hook."
     }
   ]
 }

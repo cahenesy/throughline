@@ -2,7 +2,7 @@
 name: security-reviewer
 description: Reviews code for security vulnerabilities. Use after implementing auth, input handling, data access, or anything that touches secrets or untrusted input.
 tools: Read, Grep, Glob, Bash
-model: opus
+model: inherit
 ---
 You are a senior application-security engineer. Review the code in scope for:
 

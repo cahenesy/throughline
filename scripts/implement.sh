@@ -20,13 +20,18 @@
 # `implemented` on BASE and never queued; an abandoned/deleted branch rebuilds.
 # --rebuild forces a fresh build regardless.
 #
-# Each TDD is built in a FRESH `claude -p` process (clean context per feature).
-# A build's own `BATCH_RESULT: OK` is NOT trusted as done. Before a TDD is
-# flipped to `Status: implemented`, the runner enforces two independent gates:
-#   1. verify.sh — re-runs the test suite + typecheck mechanically (deterministic).
-#   2. review    — a SEPARATE `claude -p` review process (not a subagent of the
-#                  author) that must end with `REVIEW_RESULT: PASS`.
-# Only after both pass does the runner flip the TDD and (if gh+remote) open a PR.
+# Each TDD is built in a FRESH `claude -p` process (clean context per feature),
+# pinned by default to the best model (opus). A build's own `BATCH_RESULT: OK` is
+# NOT trusted as done. Before a TDD is flipped to `Status: implemented`, the
+# runner enforces three independent gates:
+#   1. test-first — the build must show failing-test-first discipline: a dedicated
+#                   `test(failing): ...` commit BEFORE the implementation, unless
+#                   it emits `TEST_FIRST: SKIPPED` for a no-new-behavior change.
+#   2. verify.sh  — re-runs tests + typecheck + lint mechanically (deterministic).
+#   3. review     — a SEPARATE `claude -p` process on a DIFFERENT model (default
+#                   sonnet vs an opus build) for genuine reviewer diversity (not a
+#                   subagent of the author) that must end `REVIEW_RESULT: PASS`.
+# Only after all pass does the runner flip the TDD and (if gh+remote) open a PR.
 # It never merges — merging is your gate.
 #
 # Failure handling (the key safety property):
@@ -37,19 +42,34 @@
 # appended to docs/tdd/BLOCKERS.md and surfaced for /tdd-author to revise.
 set -uo pipefail
 
-PARALLEL=0; COMBINED=0; REBUILD=0; MODEL=""; CHANGE=""; ONE=""
+PARALLEL=0; COMBINED=0; REBUILD=0; MODEL=""; REVIEW_MODEL=""; CHANGE=""; ONE=""
 BASE="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
 while [ $# -gt 0 ]; do case "$1" in
   --parallel) PARALLEL=1; shift ;;
   --combined) COMBINED=1; shift ;;
   --rebuild)  REBUILD=1;  shift ;;
-  --model)    MODEL="$2";  shift 2 ;;
+  --model)        MODEL="$2";        shift 2 ;;
+  --review-model) REVIEW_MODEL="$2"; shift 2 ;;
   --change)   CHANGE="$2"; shift 2 ;;
   --base)     BASE="$2";   shift 2 ;;
   -*) echo "unknown arg: $1"; exit 2 ;;
   *)  ONE="$1"; shift ;;
 esac; done
 [ -z "$CHANGE" ] && CHANGE="build/$(date +%Y%m%d-%H%M%S)"
+
+# Models: build on the best available (opus); review on a DIFFERENT model for
+# genuine diversity — a same-model reviewer shares the author's blind spots. The
+# reviewer subagents are `model: inherit`, so this choice reaches the analysis,
+# not just the orchestrator. Override via --model / --review-model or
+# GREENFIELD_BUILD_MODEL / GREENFIELD_REVIEW_MODEL.
+[ -z "$MODEL" ] && MODEL="${GREENFIELD_BUILD_MODEL:-opus}"
+if [ -z "$REVIEW_MODEL" ]; then
+  REVIEW_MODEL="${GREENFIELD_REVIEW_MODEL:-}"
+  [ -z "$REVIEW_MODEL" ] && case "$MODEL" in
+    *opus*) REVIEW_MODEL="sonnet" ;;
+    *)      REVIEW_MODEL="opus"   ;;
+  esac
+fi
 
 command -v claude >/dev/null 2>&1 || { echo "claude CLI not found on PATH"; exit 1; }
 HASGH=0; command -v gh >/dev/null 2>&1 && HASGH=1
@@ -78,12 +98,23 @@ build_one() {  # <tdd> <log>
 review_one() {  # <tdd> <base-ref> <log>
   local tdd="$1" base="$2" log="$3" prompt
   prompt="$(sed -e "s#{{TDD}}#${tdd}#g" -e "s#{{BASE}}#${base}#g" "$RTMPL")"
-  local args=(-p "$prompt" --permission-mode auto); [ -n "$MODEL" ] && args+=(--model "$MODEL")
+  local args=(-p "$prompt" --permission-mode auto); [ -n "$REVIEW_MODEL" ] && args+=(--model "$REVIEW_MODEL")
   claude "${args[@]}" >>"$log" 2>&1
 }
 build_status()  { grep -aoE 'BATCH_RESULT: (OK|FAIL.*|BLOCKED.*)' "$1" 2>/dev/null | tail -1; }
 review_status() { grep -aoE 'REVIEW_RESULT: (PASS|BLOCK.*)' "$1" 2>/dev/null | tail -1; }
 run_verify()    { bash "$VERIFY" >>"$1" 2>&1; }
+# test-first gate: mechanical, git-history only. The build must show failing-test-
+# first discipline — a dedicated `test(failing): ...` commit BEFORE the impl —
+# unless it emits `TEST_FIRST: SKIPPED` for a genuine no-new-behavior change. The
+# independent review gate judges test QUALITY; this just proves the order existed.
+test_first_ok() {  # <base-ref> <log>
+  [ "${GREENFIELD_REQUIRE_TEST_FIRST:-1}" = "1" ] || return 0
+  local base="$1" log="$2"
+  grep -aqE 'TEST_FIRST:[[:space:]]*SKIPPED' "$log" && return 0
+  git log --format='%s' "$base..HEAD" 2>/dev/null | grep -qiE '^test\(failing\)' && return 0
+  return 1
+}
 flip_status() {  # <tdd> <log>
   local tdd="$1" log="$2"
   sed -i.bak -E 's/^Status:[[:space:]]*ready/Status: implemented/' "$tdd" && rm -f "$tdd.bak"
@@ -107,6 +138,8 @@ gate_one() {  # <tdd> <review-base-ref> <log>
     *OK*) : ;;
     *) echo "${bs:-FAIL (no BATCH_RESULT; see log)}"; return 1 ;;
   esac
+  if ! test_first_ok "$rbase" "$log"; then
+    echo "FAIL test-first (no failing-test-first commit and no TEST_FIRST: SKIPPED; not flipped)"; return 1; fi
   if ! run_verify "$log"; then echo "FAIL verification (tests/typecheck/lint red; not flipped)"; return 1; fi
   review_one "$tdd" "$rbase" "$log"; rs="$(review_status "$log")"
   case "$rs" in
