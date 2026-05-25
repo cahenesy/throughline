@@ -128,6 +128,31 @@ record_blocker() {  # <tdd> <reason>  -> append to the main repo's blocker ledge
   printf -- '- [ ] **%s** (%s): %s\n' "$(basename "$tdd")" "$(date +%Y-%m-%d)" "$reason" >> "$bf"
 }
 
+# install_deps: a fresh worktree does NOT carry gitignored, uncommitted state —
+# most importantly node_modules — so a JS/TS build can't run its tests/typecheck
+# and verify.sh fails until deps are installed. Install them once per worktree,
+# before building, using the project's package manager. No-ops for non-JS repos
+# (and other ecosystems that fetch on build, e.g. cargo/go); skip with
+# GREENFIELD_SKIP_DEPS=1. cwd must be the worktree.
+install_deps() {  # <log>
+  [ "${GREENFIELD_SKIP_DEPS:-0}" = "1" ] && return 0
+  [ -f package.json ] || return 0
+  local log="$1" pm cmd
+  if   [ -f pnpm-lock.yaml ];   then pm=pnpm; cmd="pnpm install --frozen-lockfile"
+  elif [ -f yarn.lock ];        then pm=yarn; cmd="yarn install --immutable"
+  elif [ -f bun.lockb ] || [ -f bun.lock ]; then pm=bun; cmd="bun install --frozen-lockfile"
+  elif [ -f package-lock.json ]; then pm=npm; cmd="npm ci"
+  else pm=npm; cmd="npm install"; fi
+  if ! command -v "$pm" >/dev/null 2>&1; then
+    echo "install_deps: $pm not found on PATH; skipping (build will likely fail at verify)" >>"$log"; return 0
+  fi
+  echo "install_deps: $cmd" >>"$log"
+  # Fall back to a plain install if the locked/frozen form fails (e.g. a lockfile
+  # that's out of sync) so a build isn't blocked by a lock mismatch.
+  sh -c "$cmd" >>"$log" 2>&1 || sh -c "$pm install" >>"$log" 2>&1 \
+    || echo "install_deps: dependency install failed; build may fail at verify" >>"$log"
+}
+
 # gate_one: build -> classify -> verify gate -> independent review gate -> flip.
 # Echoes a one-line status; returns 0 ONLY when the TDD was flipped to implemented.
 gate_one() {  # <tdd> <review-base-ref> <log>
@@ -193,6 +218,7 @@ if [ "$PARALLEL" -eq 1 ]; then
       echo "worktree failed for $slug" >>"$log"; continue; fi
     abslog="$log"
     ( cd "$wt" || exit 1
+      install_deps "$abslog"
       pre="$(git rev-parse HEAD)"
       st="$(gate_one "$tdd" "$pre" "$abslog")"; rc=$?
       printf 'PARSTATUS::%s\n' "$st" >>"$abslog"
@@ -223,6 +249,7 @@ else
     exit 1
   fi
   cd "$WORKROOT" || { echo "FATAL: cannot enter worktree $WORKROOT" | tee -a "$REPORT" >&2; exit 1; }
+  install_deps "$LOGDIR/worktree-setup.log"
 
   if [ "$COMBINED" -eq 1 ]; then
     cb="$(combined_built_branch)"

@@ -29,13 +29,50 @@ LINT_CMD="${VERIFY_LINT_CMD-__detect__}"
 if [ "$TEST_CMD" = "__detect__" ] || [ "$TYPE_CMD" = "__detect__" ] || [ "$LINT_CMD" = "__detect__" ]; then
   det_test=""; det_type=""; det_lint=""
   if [ -f package.json ]; then
-    grep -q '"test"[[:space:]]*:' package.json 2>/dev/null && det_test="npm test --silent"
-    [ -f tsconfig.json ] && det_type="npx --no-install tsc --noEmit"
-    # eslint only if the project actually configures it (mirrors the lint hook).
-    # Respect the project's configured rule severities — no --max-warnings.
-    if ls .eslintrc* eslint.config.* >/dev/null 2>&1 \
+    # Package manager: honor the lockfile, then the packageManager field, else npm.
+    # A pnpm/yarn project run with `npm test` / bare `tsc` often fails outright, so
+    # detect the real PM and prefer the project's OWN declared scripts.
+    pm=npm
+    if   [ -f pnpm-lock.yaml ]; then pm=pnpm
+    elif [ -f yarn.lock ];      then pm=yarn
+    elif [ -f bun.lockb ] || [ -f bun.lock ]; then pm=bun
+    elif grep -q '"packageManager"[[:space:]]*:[[:space:]]*"pnpm' package.json 2>/dev/null; then pm=pnpm
+    elif grep -q '"packageManager"[[:space:]]*:[[:space:]]*"yarn' package.json 2>/dev/null; then pm=yarn
+    elif grep -q '"packageManager"[[:space:]]*:[[:space:]]*"bun'  package.json 2>/dev/null; then pm=bun
+    fi
+    case "$pm" in
+      pnpm) pmx="pnpm exec" ;;
+      yarn) pmx="yarn exec" ;;
+      bun)  pmx="bunx" ;;
+      *)    pmx="npx --no-install" ;;
+    esac
+    has_script() { grep -qE "\"$1\"[[:space:]]*:" package.json 2>/dev/null; }
+
+    # tests: prefer the declared "test" script. `bun test` is bun's own runner,
+    # not the package script, so use `bun run test` there.
+    if has_script test; then
+      if [ "$pm" = bun ]; then det_test="bun run test"; else det_test="$pm test"; fi
+    fi
+    # typecheck: prefer a declared typecheck script; else fall back to tsc, using
+    # project-references BUILD mode when the tsconfig declares it (a flat
+    # `tsc --noEmit` is wrong for a composite/references monorepo).
+    if   has_script typecheck;  then det_type="$pm run typecheck"
+    elif has_script type-check; then det_type="$pm run type-check"
+    elif [ -f tsconfig.json ]; then
+      if grep -qE '"(references|composite)"' tsconfig.json 2>/dev/null; then
+        det_type="$pmx tsc -b"
+      else
+        det_type="$pmx tsc --noEmit"
+      fi
+    fi
+    # lint: prefer a declared lint script; else eslint only if the project
+    # actually configures it (mirrors the lint hook). Respect the project's
+    # configured rule severities — no --max-warnings.
+    if has_script lint; then
+      det_lint="$pm run lint"
+    elif ls .eslintrc* eslint.config.* >/dev/null 2>&1 \
        || grep -q '"eslintConfig"' package.json 2>/dev/null; then
-      det_lint="npx --no-install eslint ."
+      det_lint="$pmx eslint ."
     fi
   elif [ -f Cargo.toml ]; then
     det_test="cargo test --quiet"; det_type="cargo check --quiet"
