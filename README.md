@@ -72,7 +72,12 @@ default), so the reviewer does not share the author's blind spots (a separate
 one stacked PR per TDD; a failed gate halts the run and marks downstream TDDs
 `BLOCKED` instead of building on a broken base. Every mode builds in a dedicated
 git worktree, so the detached runner never touches the working tree your session
-is using. Because the `implemented` flip lives on the build branch until you
+is using; each fresh worktree gets the project's dependencies installed first
+(e.g. `pnpm install` / `npm ci` / `cargo` & `go` fetch on build), since a worktree
+does not carry gitignored `node_modules` (`GREENFIELD_SKIP_DEPS=1` opts out). The
+verify gate is package-manager-aware (pnpm/yarn/bun/npm) and prefers the project's
+own `test` / `typecheck` / `lint` scripts when declared. Because the `implemented`
+flip lives on the build branch until you
 merge, a re-run skips any TDD already built on an un-merged branch (no duplicate
 work or PRs; `--rebuild` overrides). Stacked PRs come with an ordered, bottom-up
 **merge plan** in the report (merge in order; squash-merge breaks the stack — use

@@ -185,6 +185,25 @@ echo "[J] test-first gate: no failing-test-first commit -> NOT implemented"
   git rev-parse --verify ci/0001-alpha >/dev/null 2>&1 && ok "build branch exists but was not flipped" || bad "build branch ci/0001-alpha should exist"
 ) || true
 
+echo "[K] worktree deps: a JS project's package-manager install runs in the build worktree"
+( setup "$ROOT/k" 1
+  # A committed JS manifest + pnpm lockfile, so the worktree (cut from BASE) carries them.
+  printf '{ "name": "x", "private": true, "version": "0.0.0" }\n' > package.json
+  printf 'lockfileVersion: "9.0"\n' > pnpm-lock.yaml
+  git add -A; git commit -qm "add js manifest" >/dev/null 2>&1
+  # Stub pnpm: record invocations instead of really installing (no network).
+  cat > "$STUBDIR/bin/pnpm" <<EOF
+#!/usr/bin/env bash
+echo "pnpm \$*" >> "$STUBDIR/pm.log"
+exit 0
+EOF
+  chmod +x "$STUBDIR/bin/pnpm"
+  bash "$IMPL" --change ci >/dev/null 2>&1
+  has "$STUBDIR/pm.log" "install --frozen-lockfile" "worktree install ran via the project's package manager"
+  # The TDD still flips: install + stubbed build + verify + review all pass.
+  [ "$(status_on docs/tdd/0001-alpha.md ci/0001-alpha)" = implemented ] && ok "TDD implemented after worktree deps install" || bad "TDD should be implemented (got '$(status_on docs/tdd/0001-alpha.md ci/0001-alpha)')"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
