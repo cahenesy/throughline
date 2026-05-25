@@ -1,4 +1,4 @@
-# cc-throughline-kit
+# throughline
 
 A deliberately minimal Claude Code plugin for building complex throughline
 systems. It packages the project-*invariant* layer (install once, cached under
@@ -9,7 +9,7 @@ systems. It packages the project-*invariant* layer (install once, cached under
 ## What's inside
 
 ```
-cc-throughline-kit/
+throughline/
 ├── .claude-plugin/{plugin.json, marketplace.json}
 ├── agents/
 │   ├── explore.md            # read-only investigation (Sonnet)
@@ -128,8 +128,8 @@ invoke `superpowers:brainstorming` or `writing-plans` for it."*
 chmod +x hooks/format-and-lint.sh scripts/implement.sh scripts/verify.sh
 bash tests/implement-gate.test.sh          # optional: prove the gates fire
 # push this dir to a private GitHub repo, then:
-/plugin marketplace add <your-org>/cc-throughline-kit
-/plugin install throughline@cc-throughline-kit
+/plugin marketplace add <your-org>/throughline
+/plugin install throughline@throughline
 ```
 
 ## Caveat

@@ -1,5 +1,5 @@
 {
-  "name": "cc-throughline-kit",
+  "name": "throughline",
   "description": "Throughline development kit: a PRD/TDD/ADR design-doc pipeline with phase-gate PRs, an independent design-critique gate, toolchain bootstrap, and gated unattended implementation (failing-test-first + mechanical verify + independent review on a diverse model before any TDD is marked done; one PR per TDD).",
   "owner": { "name": "Chris Henesy" },
   "plugins": [
