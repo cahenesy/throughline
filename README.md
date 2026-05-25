@@ -12,7 +12,6 @@ software systems from the ground up. It packages the project-*invariant* layer (
 throughline/
 ├── .claude-plugin/{plugin.json, marketplace.json}
 ├── agents/
-│   ├── explore.md            # read-only investigation (Sonnet)
 │   ├── test-writer.md        # focused test authoring (Sonnet)
 │   ├── security-reviewer.md  # security review (inherits the review gate's model)
 │   ├── code-reviewer.md      # correctness/consistency review (inherits)
@@ -22,8 +21,7 @@ throughline/
 │   ├── prd-author/           # /prd-author  — the WHAT  → docs/PRD.md
 │   ├── tdd-author/           # /tdd-author  — the HOW   → docs/tdd/NNNN-*
 │   ├── adr-new/              # /adr-new     — durable decisions → docs/adr/
-│   ├── implement/            # /implement   — build all merged TDDs, detached
-│   └── review/               # /review      — unbiased subagent review
+│   └── implement/            # /implement   — build all merged TDDs, detached
 ├── scripts/
 │   ├── implement.sh          # detached runner (fresh claude -p per TDD)
 │   ├── build-prompt.md       # per-feature build discipline (failing-test-first)
@@ -50,7 +48,10 @@ throughline/
 |                    |                          | review (review on a diverse model) before flipping |
 |                    |                          | to `implemented`; one PR per TDD; halts the stack  |
 |                    |                          | on failure. Never merges.                          |
-| `/review`          | consolidated findings    | fans out to security + code reviewer subagents.    |
+
+On-demand code review is delegated to the official plugins — use the built-in
+`/code-review` or pr-review-toolkit's `/review-pr` (throughline no longer ships its
+own `/review`).
 
 Wired-in properties: ADR index always loaded, full bodies on demand by Scope;
 only `accepted` ADRs bind new TDDs; superseded ADRs drop out of context;
@@ -159,9 +160,9 @@ a subagent, so run each in its own fresh session and `/clear` between them.
 ## Relationship to superpowers & the official plugins
 
 Throughline is a thin **governance overlay** — it does not try to own your whole
-SDLC. It layers on top of the official `claude-plugins-official` plugins
-(superpowers, pr-review-toolkit, code-review) rather than competing with them
-([ADR 0001](docs/adr/0001-throughline-layers-on-superpowers.md)):
+SDLC. It **depends on and delegates engineering to** the official
+`claude-plugins-official` plugins (superpowers, pr-review-toolkit) rather than
+competing with them ([ADR 0002](docs/adr/0002-delegate-engineering-to-official-plugins.md)):
 
 - **Superpowers owns discovery and engineering** — `brainstorming`, TDD, worktrees,
   code review, verification, branch finishing. **Throughline owns governance** —
@@ -173,38 +174,41 @@ SDLC. It layers on top of the official `claude-plugins-official` plugins
   re-interviewing. With no throughline command invoked, superpowers' defaults stand.
 - **Canonical docs:** `docs/PRD.md` + `docs/tdd/` + `docs/adr/` are the
   design-of-record. `docs/superpowers/*` is transient input — ingested, never
-  authoritative, never relocated. Dropping throughline into a repo that already uses
-  superpowers is therefore non-destructive.
+  authoritative, and never relocated (throughline leaves any existing
+  `docs/superpowers/` content untouched).
 
 For the boundary to bind reliably, add a line to your CLAUDE.md, e.g.: *"When
 `/prd-author` or `/tdd-author` is invoked, that is the design step — do not also
 invoke `superpowers:brainstorming` or `writing-plans` for it."*
 
-## Requirements & companion plugins
+## Requirements & dependencies
 
-Throughline runs **standalone** — it ships its own subagents and review gate, so it
-needs no other plugin to function. It is designed to *layer with* the official
-plugins, not require them ([ADR 0001](docs/adr/0001-throughline-layers-on-superpowers.md)):
+Throughline is a **layer on top of** the official plugins, not a standalone tool
+([ADR 0002](docs/adr/0002-delegate-engineering-to-official-plugins.md)). It owns the
+governance layer (PRD/TDD/ADR) and **delegates overlapping engineering** to the
+better-maintained official plugins + built-ins, so it **requires**:
 
-- **superpowers** — discovery (`brainstorming`) and the generic engineering skills;
-  throughline ingests its `docs/superpowers/*` artifacts if present.
-- **pr-review-toolkit** / **code-review** — richer on-demand code review.
+- **superpowers** — discovery (`brainstorming`) and the generic engineering skills
+  (TDD, worktrees, verification). Throughline ingests its `docs/superpowers/*`
+  artifacts if present.
+- **pr-review-toolkit** — code review (used on-demand via `/review-pr`, and by the
+  `/implement` review gate as that delegation lands).
 
-These are **recommended, not required**. Install them yourself if you want them:
+Both are declared as cross-marketplace `dependencies` in `plugin.json`
+(`allowCrossMarketplaceDependenciesOn: ["claude-plugins-official"]` in
+`marketplace.json`), so installing throughline **auto-installs them** — *provided you
+already have the `claude-plugins-official` marketplace added* (you almost certainly
+do). If you don't, throughline loads with a `dependency-unsatisfied` error until you
+add it:
 
 ```
 /plugin marketplace add anthropics/claude-plugins-official
-/plugin install superpowers@claude-plugins-official
-/plugin install pr-review-toolkit@claude-plugins-official
 ```
 
-**On hard dependencies:** Claude Code supports a `dependencies` array in
-`plugin.json` that auto-installs prerequisite plugins (version constraints need
-Claude Code ≥ 2.1.110). Throughline deliberately declares **none** today, because it
-has no hard runtime dependency — forcing companions on every install would break the
-"non-destructive overlay" design. If a future change makes one mandatory (e.g.
-delegating `/review` to pr-review-toolkit, per ADR 0001's deferred work), that field
-is the mechanism to add it.
+Then `/plugin install throughline@throughline` pulls throughline + its dependencies.
+(Cross-marketplace dependency resolution needs Claude Code ≥ 2.1.110.) Built-in
+commands throughline also leans on — `/code-review`, `/security-review`, and the
+`Explore` agent — ship with Claude Code and need no install.
 
 ## Install (once per machine)
 

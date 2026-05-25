@@ -2,8 +2,8 @@ Implement the Technical Design Doc at {{TDD}} as a single unattended build.
 
 Load context: read {{TDD}} in full; read docs/PRD.md for the requirements it
 references; read the accepted ADRs it lists under "ADR constraints" (full
-bodies) plus docs/adr/INDEX.md for anything else relevant. Use the `explore`
-subagent for broader investigation so reading stays out of context.
+bodies) plus docs/adr/INDEX.md for anything else relevant. Use the built-in
+`Explore` subagent for broader investigation so reading stays out of context.
 
 Build discipline:
 - Implement in the sequence the TDD specifies, one step at a time.

@@ -1,6 +1,6 @@
 # 0001. Throughline layers on top of superpowers; it governs, superpowers builds
 
-Status: accepted
+Status: superseded by 0002
 Date: 2026-05-25
 Scope: workflow / plugin-architecture
 

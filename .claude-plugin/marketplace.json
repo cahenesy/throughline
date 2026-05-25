@@ -2,11 +2,16 @@
   "name": "throughline",
   "description": "Throughline development kit: a PRD/TDD/ADR design-doc pipeline with phase-gate PRs, an independent design-critique gate, toolchain bootstrap, and gated unattended implementation (failing-test-first + mechanical verify + independent review on a diverse model before any TDD is marked done; one PR per TDD).",
   "owner": { "name": "Chris Henesy" },
+  "allowCrossMarketplaceDependenciesOn": ["claude-plugins-official"],
   "plugins": [
     {
       "name": "throughline",
       "source": "./",
-      "description": "Throughline bootstrap kit: project-setup skill, standard subagents (incl. an independent design-reviewer), gated test-first/verify/review implementation on diverse models, and a format+lint hook."
+      "description": "Throughline bootstrap kit: project-setup skill, standard subagents (incl. an independent design-reviewer), gated test-first/verify implementation, and a format+lint hook. Layers on (and depends on) superpowers + pr-review-toolkit.",
+      "dependencies": [
+        { "name": "superpowers", "marketplace": "claude-plugins-official" },
+        { "name": "pr-review-toolkit", "marketplace": "claude-plugins-official" }
+      ]
     }
   ]
 }
