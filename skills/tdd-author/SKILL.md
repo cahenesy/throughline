@@ -9,6 +9,18 @@ disable-model-invocation: true
 Run once after a PRD update. YOU decide how many TDDs to write, and their scope,
 based on what changed. Persist each to `docs/tdd/NNNN-<slug>.md`.
 
+## Relationship to superpowers (read first)
+This skill IS the technical-design step for greenfield — the governance-producing
+equivalent of `superpowers:writing-plans`. When the user invokes `/tdd-author`, do
+NOT also invoke `superpowers:brainstorming` or `writing-plans`; this skill owns the
+phase and its output is the TDD/ADR design-of-record (see [[ADR 0001]] in
+`docs/adr/`). If a `docs/superpowers/plans/*` (or `specs/*`) file or other prior
+design notes exist, READ and fold in their substance rather than redoing the work;
+they are transient input, never authoritative, never relocated. The canonical
+record is `docs/tdd/` + `docs/adr/`. A greenfield TDD is a DESIGN, not a
+step-by-step build script — the bite-sized failing-test-first task breakdown is
+`/implement`'s job (`build-prompt.md`), so do not reproduce it here.
+
 ## 1. Determine what changed in the PRD
 - Read the current `docs/PRD.md`.
 - Establish the previous version: the `PRD-rev` recorded in the most recent
@@ -73,6 +85,12 @@ Write each TDD from the template, numbered sequentially, `Status: draft`. Each
 TDD MUST include a traceability table mapping every PRD requirement in its scope
 (FR/NFR) to the design element that satisfies it, and call out any gaps.
 
+**No placeholders.** Design content must be specific enough to implement without
+guessing. "Handle errors appropriately", "add validation", "address edge cases",
+"TBD", or a bare section header are design FAILURES — name the actual error paths,
+the actual validation, the actual edge cases. If something is genuinely undecided,
+record it as a named open question or a `BLOCKED`-style note, not a vague verb.
+
 ```
 # TDD NNNN: <feature>
 Status: draft | ready | implemented
@@ -104,9 +122,25 @@ For each: proposed action, one-line rationale, confidence (mark low-confidence
 approval, invoke the `adr-new` skill (via the Skill tool) for each — it is
 model-invocable precisely so this close-out can call it.
 
-## 7. Design critique (independent gate — do not skip)
-Before opening the design PR, get an INDEPENDENT critique of the whole authored
-set. Spawn the `design-reviewer` subagent — it runs in fresh context on a
+## 7. Review the design — self-review first, then the independent gate
+
+**7a. Author self-review (cheap pass, do it BEFORE spawning the reviewer).** Reread
+the whole authored set with fresh eyes and fix issues inline — this catches the
+obvious stuff so the independent gate spends its judgment on substance:
+- **Traceability gaps** — every in-scope PRD requirement maps to a concrete design
+  element? Any untraced or hand-wavingly-traced requirement?
+- **Placeholder/vagueness scan** — any "TBD"/"handle errors"/empty section that the
+  no-placeholder rule forbids? Make it concrete.
+- **Interface-name consistency** — the same concept named the same way across all
+  the TDDs in the set (a type/function called `X` in one TDD and `X'` in another is
+  a bug). Reconcile names.
+- **Ambiguity** — could any design element be read two ways? Pick one, state it.
+
+Fix and move on (no re-review loop).
+
+**7b. Independent design critique (gate — do not skip).** Before opening the design
+PR, get an INDEPENDENT critique of the whole authored set. Spawn the
+`design-reviewer` subagent — it runs in fresh context on a
 different model than you authored in, so it does not share your blind spots. It
 reads the PRD, the TDD(s), and the accepted ADRs and checks requirement
 traceability, interface specification, the REQUIRED alternatives analysis, ADR

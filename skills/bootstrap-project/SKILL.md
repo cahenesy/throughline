@@ -68,6 +68,12 @@ Create the structure the PRD/TDD/ADR pipeline expects, if absent:
 - `docs/adr/INDEX.md` — an empty index with its header row and the note that
   only `accepted` ADRs are binding for new TDDs.
 - `docs/tdd/` — empty directory for Technical Design Docs.
+- `docs/README.md` — a short note on which docs are canonical, so neither you nor a
+  teammate confuses greenfield's records with superpowers' scratch: `docs/PRD.md` +
+  `docs/tdd/` + `docs/adr/` are the **canonical design-of-record**; anything under
+  `docs/superpowers/` (specs/plans from `superpowers:brainstorming`/`writing-plans`)
+  is **transient input** that greenfield ingests but never treats as authoritative
+  or relocates. Leave any existing `docs/superpowers/` content untouched.
 
 ## Greenfield initialization checklist
 

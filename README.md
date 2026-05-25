@@ -98,6 +98,30 @@ separate process, so the author never reviews itself in the same context. The
 interview stages (`/prd-author`, `/tdd-author`) are interactive and can't run in
 a subagent, so run each in its own fresh session and `/clear` between them.
 
+## Relationship to superpowers & the official plugins
+
+Greenfield is a thin **governance overlay** — it does not try to own your whole
+SDLC. It layers on top of the official `claude-plugins-official` plugins
+(superpowers, pr-review-toolkit, code-review) rather than competing with them
+([ADR 0001](docs/adr/0001-greenfield-layers-on-superpowers.md)):
+
+- **Superpowers owns discovery and engineering** — `brainstorming`, TDD, worktrees,
+  code review, verification, branch finishing. **Greenfield owns governance** —
+  PRD/TDD/ADR as the design-of-record, requirement traceability, and phase-gate PRs.
+- **The explicit command is the ownership signal.** Invoking `/prd-author` or
+  `/tdd-author` means greenfield owns that phase and will NOT also fire
+  `superpowers:brainstorming`/`writing-plans`. If superpowers artifacts already
+  exist (`docs/superpowers/{specs,plans}`), greenfield **ingests** them instead of
+  re-interviewing. With no greenfield command invoked, superpowers' defaults stand.
+- **Canonical docs:** `docs/PRD.md` + `docs/tdd/` + `docs/adr/` are the
+  design-of-record. `docs/superpowers/*` is transient input — ingested, never
+  authoritative, never relocated. Dropping greenfield into a repo that already uses
+  superpowers is therefore non-destructive.
+
+For the boundary to bind reliably, add a line to your CLAUDE.md, e.g.: *"When
+`/prd-author` or `/tdd-author` is invoked, that is the design step — do not also
+invoke `superpowers:brainstorming` or `writing-plans` for it."*
+
 ## Install (once per machine)
 
 ```
