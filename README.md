@@ -32,14 +32,14 @@ One-time, per repo:
 
 Then each feature or change is **one lap** of the loop below. Rule of thumb:
 **one fresh session per command** — `/clear` (or a new session) at every phase
-boundary, after each GitHub merge and before the next command. The interactive
-phases (`/prd-author`, `/tdd-author`, `/bootstrap-project`) pair well with
-**`/fast`** (faster Opus output for snappy interviews); leave it off for
-`/implement`, which runs detached and unattended.
-
-Because `/implement` runs detached in an isolated worktree, you can keep working —
-including `/prd-author` and `/tdd-author` for the *next* change — while a build runs
-(a single-run lock means a second `/implement` won't double-build).
+boundary, after each GitHub merge and before the next command. This cuts against the
+usual Claude Code habit of keeping one long conversation going, but it's deliberate:
+throughline's state of record lives in **git + `docs/`**, not the chat, so each phase
+re-reads the merged result and a clear only drops the previous interview's noise — you
+lose no progress (the *When to `/clear`* note below has the details). The interactive
+phases (`/prd-author`, `/tdd-author`, `/bootstrap-project`) pair well with **`/fast`**
+(faster Opus output for snappy interviews); leave it off for `/implement`, which runs
+detached and unattended.
 
 **1. Requirements** — *fresh session*
 - `/prd-author` → interviews you and writes `docs/PRD.md` (the WHAT and WHY; each
@@ -77,7 +77,11 @@ including `/prd-author` and `/tdd-author` for the *next* change — while a buil
   for one squashable PR).
 - `/clear` before the next lap.
 
-Next lap: `/prd-author` *updates* the existing PRD, and the cycle repeats.
+Next lap: `/prd-author` *updates* the existing PRD, and the cycle repeats — and you
+don't have to wait for a build to finish first. Because `/implement` runs detached in
+an isolated worktree, you can start the next lap's `/prd-author` / `/tdd-author` while
+a build is still running; a single-run lock holds off only a second `/implement`, so
+you can't accidentally double-build.
 
 ### When to `/clear`
 One fresh session per command — three clears per lap (before `/tdd-author`, before
