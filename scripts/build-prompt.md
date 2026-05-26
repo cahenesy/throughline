@@ -38,9 +38,16 @@ design-level problems, not ordinary bugs you can fix.
 Close:
 - Run the FULL test suite, typecheck, and linter; confirm green. An INDEPENDENT
   gate will re-run these (verify.sh — tests + typecheck + lint, with clippy at
-  `-D warnings`) and run an isolated review in a SEPARATE process after you
-  finish — self-attestation is not trusted, so actually make them pass. Resolve
-  lint at the root cause, do not suppress it to get past the gate.
+  `-D warnings`), then a SEPARATE runtime-verification gate will DRIVE the
+  built artifact at its observable surface (per the TDD's `## Verification
+  plan`) — so make sure what you committed is RUNNABLE (entry points work,
+  deps install, fixtures present), don't only run tests against it. throughline
+  ships no verification harness: the runtime gate uses the project's own means
+  (CLI, HTTP, library, log, DOM, …), delegating the *mechanism* to
+  `superpowers:verification-before-completion` / `/verify` (FR-26 / ADR 0004).
+  An isolated review in a SEPARATE process runs after that — self-attestation
+  is not trusted, so actually make them pass. Resolve lint at the root cause,
+  do not suppress it to get past the gate.
 - Keep docs in sync IN THIS COMMIT — not a later sweep. Grep for every concept
   this feature changed (renamed types, dropped tools, swapped dependencies,
   revised flows). For each hit in a doc decide if it is now wrong and fix it:

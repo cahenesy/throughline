@@ -63,6 +63,9 @@ Emit report + bottom-up merge plan. Release lock on exit.
 - FR-13 → merge-triggered selection (integration branch, not-implemented).
 - FR-14 → detached `claude -p` + dedicated worktrees; sequential/`--combined`/`--parallel`.
 - FR-15 → three gates: test-first (superpowers TDD), `verify.sh`, independent review.
+  Verification aspects of FR-15 (the fourth gate, runtime-verify, and the
+  reframing of `verify.sh` as the mechanical CI gate rather than verification)
+  now covered by TDD 0007.
 - FR-16 → never merges; sequential halt marks downstream `BLOCKED`.
 - FR-17 → BLOCKERS.md feedback loop.
 - FR-18 → resume skip of done-but-unmerged + single-run lock (`--rebuild`).
@@ -70,7 +73,9 @@ Emit report + bottom-up merge plan. Release lock on exit.
 - FR-20 → per-worktree package-manager-aware dependency install.
 - NFR-1 → opens PRs, never merges (human gate).
 - NFR-3 → build on opus, review on a different model (sonnet) by default.
-- NFR-4 → `OK`/`FAIL`/`BLOCKED` verdicts kept distinct.
+- NFR-4 → `OK`/`FAIL`/`BLOCKED` verdicts kept distinct. Verification aspects of
+  NFR-4 (runtime gate's PASS/FAIL/BLOCKED/SKIP distinction; ambiguity → FAIL;
+  SKIP never silent) now covered by TDD 0007.
 
 ## Dependencies considered
 - **Build discipline → `superpowers:test-driven-development`** (chosen). Rejected:

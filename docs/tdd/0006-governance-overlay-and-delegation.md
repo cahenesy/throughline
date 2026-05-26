@@ -47,7 +47,10 @@ reach every project.
 
 ## Requirement traceability
 - FR-22 → declared dependencies + allowlist; delegation of discovery/engineering;
-  canonical docs + ingest-not-relocate.
+  canonical docs + ingest-not-relocate. Verification aspects of FR-22 — the
+  verification *mechanism* added to the delegation set
+  (`superpowers:verification-before-completion` / `/verify`) with no harness
+  vendored — now covered by TDD 0007.
 - NFR-2 → autonomous work in subagents/detached processes; one-fresh-session-per-command.
 - NFR-5 → scripts/skills served from the plugin cache (no vendored drift).
 

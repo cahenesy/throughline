@@ -3,8 +3,10 @@
 #
 # The kit's core quality claim is that a build cannot mark itself "done": the
 # ready->implemented flip is gated on failing-test-first discipline, an INDEPENDENT
-# mechanical verify (tests+typecheck+lint), and an INDEPENDENT review process, and
-# a failure halts the dependent stack. This eval proves those gates actually fire,
+# mechanical verify (tests+typecheck+lint), an INDEPENDENT runtime-verify gate
+# that drives the built artifact at its observable surface (per the TDD's
+# `## Verification plan`), and an INDEPENDENT review process — and a failure
+# halts the dependent stack. This eval proves those four gates actually fire,
 # using a stub `claude` (so no model/tokens are needed) and a controllable verify
 # command.
 #
@@ -47,13 +49,18 @@ EOF
   export VERIFY_TEST_CMD="bash $STUBDIR/verify_test.sh"
   export VERIFY_TYPECHECK_CMD=""               # explicitly skip typecheck
 
-  # stub `claude`: simulates a build (commits a file) or a review, emitting the
-  # control line for the TDD's slug (defaults: build OK, review PASS).
+  # stub `claude`: simulates a build (commits a file), a runtime-verification, or a
+  # review, emitting the control line for the TDD's slug (defaults: build OK,
+  # runtime PASS, review PASS).
   cat > "$STUBDIR/bin/claude" <<'EOF'
 #!/usr/bin/env bash
 prompt=""
 while [ $# -gt 0 ]; do case "$1" in -p) prompt="$2"; shift 2;; *) shift;; esac; done
 slug="$(printf '%s' "$prompt" | grep -oE 'docs/tdd/[0-9]+-[a-z]+' | head -1 | sed 's#docs/tdd/##')"
+if printf '%s' "$prompt" | grep -q 'INDEPENDENT runtime-verification gate'; then
+  cat "$STUBDIR/runtime-$slug" 2>/dev/null || echo "VERIFY_RUNTIME: PASS"
+  exit 0
+fi
 if printf '%s' "$prompt" | grep -q 'INDEPENDENT review gate'; then
   cat "$STUBDIR/review-$slug" 2>/dev/null || echo "REVIEW_RESULT: PASS"
   exit 0
@@ -223,6 +230,70 @@ echo "[M] merge-guard: a TDD absent from the integration branch is NOT built (PR
   R="$(report)"
   git rev-parse --verify ci/0001-alpha >/dev/null 2>&1 && bad "un-merged TDD must NOT be built (branch ci/0001-alpha exists)" || ok "un-merged TDD was not built (no build branch)"
   has "$R" "No buildable TDDs" "report says nothing is buildable until merged"
+) || true
+
+echo "[N] runtime-verify gate: PASS by default -> implemented; verdict lands between verify and review"
+( setup "$ROOT/n" 1
+  bash "$IMPL" --change ci >/dev/null 2>&1
+  R="$(report)"
+  L="docs/tdd/.implement-logs/$(ls -t docs/tdd/.implement-logs 2>/dev/null | head -1)/0001-alpha.log"
+  [ "$(status_on docs/tdd/0001-alpha.md ci/0001-alpha)" = implemented ] && ok "TDD flipped to implemented after runtime-verify PASS" || bad "runtime PASS should still flip the TDD (got '$(status_on docs/tdd/0001-alpha.md ci/0001-alpha)')"
+  has "$L" "VERIFY_RUNTIME: PASS" "log carries the VERIFY_RUNTIME verdict line"
+  # ordering: VERIFY_RUNTIME must appear AFTER 'verify: gate PASS' and BEFORE 'REVIEW_RESULT:'
+  vsh="$(grep -n 'verify: gate PASS'   "$L" 2>/dev/null | tail -1 | cut -d: -f1)"
+  vrt="$(grep -n 'VERIFY_RUNTIME: PASS' "$L" 2>/dev/null | tail -1 | cut -d: -f1)"
+  rvw="$(grep -n 'REVIEW_RESULT: PASS'  "$L" 2>/dev/null | tail -1 | cut -d: -f1)"
+  if [ -n "$vsh" ] && [ -n "$vrt" ] && [ -n "$rvw" ] && [ "$vsh" -lt "$vrt" ] && [ "$vrt" -lt "$rvw" ]; then
+    ok "gate ordering: verify.sh -> runtime-verify -> review"
+  else
+    bad "gate ordering wrong (verify.sh @${vsh:-?} runtime-verify @${vrt:-?} review @${rvw:-?})"
+  fi
+) || true
+
+echo "[O] runtime-verify gate: FAIL -> NOT implemented"
+( setup "$ROOT/o" 1
+  printf 'VERIFY_RUNTIME: FAIL surface produced wrong value\n' > "$STUBDIR/runtime-0001-alpha"
+  bash "$IMPL" --change ci >/dev/null 2>&1
+  R="$(report)"
+  [ "$(status_on docs/tdd/0001-alpha.md ci/0001-alpha)" = ready ] && ok "TDD left ready (runtime-verify blocked flip)" || bad "TDD must stay ready when runtime-verify FAILs (got '$(status_on docs/tdd/0001-alpha.md ci/0001-alpha)')"
+  has "$R" "FAIL runtime-verify" "report shows runtime-verify failure"
+) || true
+
+echo "[P] runtime-verify gate: BLOCKED -> NOT implemented; ledger NOT touched (distinct from design BLOCKED)"
+( setup "$ROOT/p" 1
+  printf 'VERIFY_RUNTIME: BLOCKED missing tooling to drive artifact\n' > "$STUBDIR/runtime-0001-alpha"
+  bash "$IMPL" --change ci >/dev/null 2>&1
+  R="$(report)"
+  [ "$(status_on docs/tdd/0001-alpha.md ci/0001-alpha)" = ready ] && ok "TDD left ready (runtime-verify BLOCKED)" || bad "TDD must stay ready on runtime-verify BLOCKED (got '$(status_on docs/tdd/0001-alpha.md ci/0001-alpha)')"
+  has "$R" "BLOCKED runtime-verify" "report shows runtime-verify BLOCKED (distinct from FAIL)"
+  [ -f docs/tdd/BLOCKERS.md ] && bad "runtime BLOCKED must NOT append to BLOCKERS.md (only build BATCH_RESULT: BLOCKED does)" || ok "BLOCKERS.md not touched by a runtime-verify BLOCKED"
+) || true
+
+echo "[Q] runtime-verify gate: SKIP (justified) -> implemented"
+( setup "$ROOT/q" 1
+  printf 'VERIFY_RUNTIME: SKIP pure internal refactor; no observable surface\n' > "$STUBDIR/runtime-0001-alpha"
+  bash "$IMPL" --change ci >/dev/null 2>&1
+  R="$(report)"
+  [ "$(status_on docs/tdd/0001-alpha.md ci/0001-alpha)" = implemented ] && ok "TDD flipped after justified SKIP" || bad "justified SKIP should still flip (got '$(status_on docs/tdd/0001-alpha.md ci/0001-alpha)')"
+) || true
+
+echo "[R] runtime-verify gate: ambiguous (no verdict line) -> treated as FAIL (never a false PASS)"
+( setup "$ROOT/r" 1
+  printf 'I am uncertain and emit no verdict line at all.\n' > "$STUBDIR/runtime-0001-alpha"
+  bash "$IMPL" --change ci >/dev/null 2>&1
+  R="$(report)"
+  [ "$(status_on docs/tdd/0001-alpha.md ci/0001-alpha)" = ready ] && ok "TDD left ready when verdict is missing (NFR-4: ambiguity resolves to FAIL)" || bad "missing verdict line must NOT flip (got '$(status_on docs/tdd/0001-alpha.md ci/0001-alpha)')"
+  has "$R" "FAIL runtime-verify" "report classes missing-verdict as runtime-verify FAIL"
+) || true
+
+echo "[S] env toggle: THROUGHLINE_REQUIRE_RUNTIME_VERIFY=0 -> gate is skipped wholesale"
+( setup "$ROOT/s" 1
+  printf 'VERIFY_RUNTIME: FAIL stub would fail\n' > "$STUBDIR/runtime-0001-alpha"
+  THROUGHLINE_REQUIRE_RUNTIME_VERIFY=0 bash "$IMPL" --change ci >/dev/null 2>&1
+  R="$(report)"
+  L="docs/tdd/.implement-logs/$(ls -t docs/tdd/.implement-logs 2>/dev/null | head -1)/0001-alpha.log"
+  [ "$(status_on docs/tdd/0001-alpha.md ci/0001-alpha)" = implemented ] && ok "toggle=0 lets the TDD flip without the runtime gate" || bad "with toggle=0 the TDD should flip (got '$(status_on docs/tdd/0001-alpha.md ci/0001-alpha)')"
+  grep -q 'VERIFY_RUNTIME:' "$L" 2>/dev/null && bad "toggle=0 should skip the gate (no VERIFY_RUNTIME line expected)" || ok "no runtime gate invocation under the toggle"
 ) || true
 
 echo

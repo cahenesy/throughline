@@ -38,10 +38,10 @@ The single entry point for turning TDDs into code.
 3. The runner and its prompts/verify gate live in the plugin and run straight
    from `${CLAUDE_PLUGIN_ROOT}/scripts/` — they are NOT copied into the repo, so
    every project always uses the current version (no vendored drift). The runner
-   finds `build-prompt.md`, `review-prompt.md`, and `verify.sh` next to itself.
-   `verify.sh` auto-detects the test/typecheck/lint commands; for an unusual
-   setup, export `VERIFY_TEST_CMD` / `VERIFY_TYPECHECK_CMD` / `VERIFY_LINT_CMD`
-   before launching.
+   finds `build-prompt.md`, `review-prompt.md`, `verify-runtime-prompt.md`, and
+   `verify.sh` next to itself. `verify.sh` auto-detects the test/typecheck/lint
+   commands; for an unusual setup, export `VERIFY_TEST_CMD` /
+   `VERIFY_TYPECHECK_CMD` / `VERIFY_LINT_CMD` before launching.
 
 ## Run (launch it yourself, detached)
 Implementation runs in separate `claude -p` processes, never in this session —
@@ -77,17 +77,29 @@ change makes stale IN THE SAME COMMIT
 (supersede accepted ADRs/design docs; edit evergreen docs in place), and commits.
 
 The build's own `BATCH_RESULT: OK` is NOT trusted as done. Before flipping a TDD
-to `implemented`, the runner enforces three independent gates:
+to `implemented`, the runner enforces four independent gates:
 - **test-first** — the build must show failing-test-first discipline: a dedicated
   `test(failing): ...` commit BEFORE the implementation (unless it emits
   `TEST_FIRST: SKIPPED` for a genuine no-new-behavior change). Mechanical, read
   straight from git history.
 - **verify.sh** — re-runs the test suite + typecheck + project linter
-  mechanically (deterministic; not the model's self-report).
+  mechanically. This is **CI's job** (running tests, not verification — see ADR
+  0004); the model's self-report doesn't count.
+- **runtime-verify** — a SEPARATE `claude -p` process that drives the BUILT
+  artifact to the TDD's `## Verification plan` observation points and confirms
+  the expected observations hold at the artifact's surface. Reports
+  `VERIFY_RUNTIME: PASS | FAIL | BLOCKED | SKIP` (kept distinct per NFR-4:
+  "observed and wrong" is never conflated with "couldn't observe" or "nothing to
+  observe"); ambiguity / missing verdict resolves to FAIL, never a false PASS. A
+  justified `SKIP` (e.g. a pure internal refactor with no observable surface) is
+  allowed and recorded. The verification *mechanism* is the project's, delegated
+  to `superpowers:verification-before-completion` / the `/verify` skill —
+  throughline ships NO bundled harness (FR-26 / [ADR
+  0004](../../docs/adr/0004-verification-is-observation-governed-not-bundled.md)).
 - **review** — a SEPARATE `claude -p` process on a DIFFERENT model than the build
   (default sonnet vs an opus build) for genuine reviewer diversity (not a subagent
   of the author), that must end `REVIEW_RESULT: PASS`.
-Only when all three pass does the runner flip the TDD and open the PR(s) per the
+Only when all four pass does the runner flip the TDD and open the PR(s) per the
 mode. It NEVER merges — merging is your approval gate.
 
 Failure handling: in sequential mode a failed gate HALTS the run and marks every
@@ -126,4 +138,7 @@ for the set instead.
   `--review-model`, or `THROUGHLINE_BUILD_MODEL` / `THROUGHLINE_REVIEW_MODEL`.
 - `THROUGHLINE_REQUIRE_TEST_FIRST=0` disables the failing-test-first gate (e.g. a
   batch of pure refactors); leave it on (default) for feature work.
+- `THROUGHLINE_REQUIRE_RUNTIME_VERIFY=0` disables the runtime-verification gate
+  the same way (the documented escape hatch — e.g. a batch of pure refactors
+  whose TDDs all declare `SKIP`); leave it on (default) for feature work.
 - "skip git" → build and commit on the current branch with no branching/PRs.

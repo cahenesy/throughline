@@ -91,9 +91,27 @@ TDD MUST include a traceability table mapping every PRD requirement in its scope
 
 **No placeholders.** Design content must be specific enough to implement without
 guessing. "Handle errors appropriately", "add validation", "address edge cases",
-"TBD", or a bare section header are design FAILURES — name the actual error paths,
-the actual validation, the actual edge cases. If something is genuinely undecided,
-record it as a named open question or a `BLOCKED`-style note, not a vague verb.
+"TBD", a bare section header, or a `## Verification plan` that reads "verify it
+works" / "tests will pass" / "the change works as expected" are design FAILURES —
+name the actual error paths, the actual validation, the actual edge cases, the
+actual observable surface and observation points. If something is genuinely
+undecided, record it as a named open question or a `BLOCKED`-style note, not a
+vague verb.
+
+**Verification plan (REQUIRED).** Every TDD carries a `## Verification plan` that
+names the change's *observable surface* (where the change manifests for a user,
+human or programmatic: CLI stdout / exit code, HTTP response, library return
+value or thrown error, log line, file or DB write, DOM / rendered output), the
+*observation point(s)* (the concrete scenarios that drive the changed code to
+where it executes — the exact command, request, function call + inputs, or UI
+action), and the *expected observations (PASS)* — the specific values or
+invariants that must hold at the surface. If the change has genuinely no
+observable surface (e.g. a pure internal refactor), the plan must declare
+`SKIP: <why>` rather than be omitted — never silent (NFR-4). This plan is what
+`/implement`'s runtime-verification gate drives; the *mechanism* is the project's,
+delegated (FR-26 / ADR 0004), so do NOT specify a particular harness or framework
+— state what to observe and where to observe it. A missing or non-actionable
+plan is BLOCKed by the design-critique gate (step 7b).
 
 ```
 # TDD NNNN: <feature>
@@ -107,6 +125,7 @@ ADR constraints: <accepted ADR numbers this design respects>
 ## Data & state
 ## Sequencing / implementation plan
 ## Failure modes & edge cases
+## Verification plan          (observable surface → observation point(s) → expected observations; SKIP: <why> only if no surface)
 ## Requirement traceability   (each FR/NFR in scope → design element; note gaps)
 ## Dependencies considered    (REQUIRED per new dep: chosen + ≥1 rejected alternative + reason)
 ## PRD conflicts surfaced (and resolution)
@@ -135,6 +154,9 @@ obvious stuff so the independent gate spends its judgment on substance:
   element? Any untraced or hand-wavingly-traced requirement?
 - **Placeholder/vagueness scan** — any "TBD"/"handle errors"/empty section that the
   no-placeholder rule forbids? Make it concrete.
+- **Verification plan** — every TDD has a concrete `## Verification plan` (or a
+  justified `SKIP`)? No "verify it works"/"tests will pass" placeholders; observable
+  surface, observation point(s), and expected observations all named.
 - **Interface-name consistency** — the same concept named the same way across all
   the TDDs in the set (a type/function called `X` in one TDD and `X'` in another is
   a bug). Reconcile names.

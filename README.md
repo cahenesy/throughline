@@ -133,17 +133,19 @@ flips to `implemented` only after **four independent gates**, each in its own pr
 1. **Failing-test-first** — a `test(failing):` commit must precede the implementation
    (mechanical, read straight from git history; the build follows
    `superpowers:test-driven-development`).
-2. **`verify.sh`** — mechanically re-runs the project's tests + typecheck + linter.
-   Package-manager-aware (pnpm/yarn/bun/npm) and prefers your declared `test` /
-   `typecheck` / `lint` scripts; clippy runs at `-D warnings`.
-4. **Runtime verification** — drives the *built artifact* to where the change is
+2. **`verify.sh`** — mechanically re-runs the project's tests + typecheck + linter
+   (this is CI's job — running tests, not verification). Package-manager-aware
+   (pnpm/yarn/bun/npm) and prefers your declared `test` / `typecheck` / `lint`
+   scripts; clippy runs at `-D warnings`.
+3. **Runtime verification** — drives the *built artifact* to where the change is
    observable and confirms the TDD's verification plan holds, capturing the evidence.
    Reports `PASS` / `FAIL` / `BLOCKED` / `SKIP` (a change with no observable surface
-   may `SKIP` with justification, never silently); passing tests alone are not enough.
-   The *mechanism* is the project's — throughline ships no harness, delegating to
+   may `SKIP` with justification, never silently); ambiguity resolves to FAIL, never
+   a false PASS (NFR-4); passing tests alone are not enough. The *mechanism* is the
+   project's — throughline ships no harness, delegating to
    `superpowers:verification-before-completion` / `/verify`
    ([ADR 0004](docs/adr/0004-verification-is-observation-governed-not-bundled.md)).
-5. **Independent review** — a separate `claude -p` on a **different model** (sonnet vs
+4. **Independent review** — a separate `claude -p` on a **different model** (sonnet vs
    an opus build, so it doesn't share the author's blind spots) fans out to
    `pr-review-toolkit:code-reviewer` + `silent-failure-hunter` +
    `throughline:security-reviewer` and must return `REVIEW_RESULT: PASS`.

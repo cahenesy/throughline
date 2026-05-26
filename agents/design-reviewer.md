@@ -23,6 +23,16 @@ cite (`docs/adr/INDEX.md` + the referenced bodies). Then check:
   alternative with a real reason (licensing, cost, maintenance posture, lock-in).
   An empty, missing, or boilerplate "Dependencies considered" section is a BLOCK.
   Prefer OSS/self-hostable where the project is branded as such.
+- **Verification plan (REQUIRED).** Each TDD MUST carry a `## Verification plan`
+  naming a *concrete observable surface* (CLI stdout, HTTP response, library
+  return value, log line, file / DOM write, …), *observation point(s)* (the
+  exact scenarios that drive the changed code to where it executes), and
+  *expected observations* that constitute PASS. A missing section, a
+  non-actionable plan ("verify it works", "tests will pass", "the change is
+  correct"), or a `SKIP` without a real justification (e.g. an unjustified
+  "internal refactor" claim) is a BLOCK. The plan must be artifact-appropriate
+  and must NOT prescribe a particular harness or framework — throughline
+  delegates the mechanism (ADR 0004 / FR-26).
 - **ADR conflicts & gaps.** Flag any design that conflicts with an accepted ADR,
   or any durable, cross-cutting decision that should be promoted to an ADR but
   isn't.
@@ -43,8 +53,8 @@ Pass unless there is a serious gap; list minor items without blocking.
 Rank findings (blocker / major / minor / nit), each with the doc:section it
 applies to and a concrete fix. Then end with EXACTLY one verdict line:
 - `DESIGN_REVIEW: BLOCK <one-line reason>` — for any blocker- or major-severity
-  finding, any untraced requirement, or a new dependency without the required
-  alternatives analysis.
+  finding, any untraced requirement, a new dependency without the required
+  alternatives analysis, or a missing or non-actionable verification plan.
 - `DESIGN_REVIEW: PASS` — otherwise. Minor/nit findings do not block; list them.
 
 Do not invent issues to look thorough — "no material findings" is a valid result.

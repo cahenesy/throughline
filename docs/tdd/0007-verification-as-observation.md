@@ -1,6 +1,6 @@
 # TDD 0007: Verification-as-observation across the pipeline
 
-Status: draft
+Status: implemented
 PRD refs: FR-23, FR-24, FR-25, FR-26 (new); FR-5, FR-8, FR-10, FR-15, FR-22, NFR-4 (verification deltas)
 PRD-rev: 962732c
 ADR constraints: 0003, 0004

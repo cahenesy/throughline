@@ -48,8 +48,12 @@ and open the design PR; do NOT merge.
 ## Requirement traceability
 - FR-7 → delta computation (PRD-rev diff) + coverage map + plan-for-approval.
 - FR-8 → TDD template: traceability table, dependencies-considered, no-placeholder.
+  Verification aspects of FR-8 (the `## Verification plan` template section +
+  authoring step + no-placeholder coverage) now covered by TDD 0007.
 - FR-9 → ADR evaluation + `/adr-new` invocation; only `accepted` ADRs bind.
 - FR-10 → author self-review + `design-reviewer` gate (fresh context, diff model).
+  Verification aspects of FR-10 (BLOCK on missing/non-actionable verification
+  plan) now covered by TDD 0007.
 - FR-11 → `docs/design/<slug>` branch, TDDs+ADRs together, verdict in PR, no merge.
 - NFR-1 → the human merge of the design PR is the design gate.
 - NFR-2 → the `design-reviewer` runs in an isolated subagent context.

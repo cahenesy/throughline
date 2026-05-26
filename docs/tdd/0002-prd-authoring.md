@@ -39,7 +39,9 @@ commit to `docs/prd/<slug>` and open a PR; do NOT merge.
 
 ## Requirement traceability
 - FR-4 → PRD-of-record output + WHAT/WHY-only template.
-- FR-5 → scope-decomposition check, YAGNI, inline self-review.
+- FR-5 → scope-decomposition check, YAGNI, inline self-review. Verification
+  aspects of FR-5 (observable-acceptance-criterion enforcement + the
+  missing-acceptance-criterion self-review bullet) now covered by TDD 0007.
 - FR-6 → `docs/prd/<slug>` branch + PR, never auto-merge.
 - NFR-1 → the human merge of the PRD PR is the requirements gate.
 

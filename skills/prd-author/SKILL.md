@@ -45,6 +45,20 @@ relocated. The canonical record is `docs/PRD.md`.
 5. Write `docs/PRD.md` from the template. Mark anything unresolved under Open
    questions rather than inventing an answer.
 
+**Observable acceptance criterion (REQUIRED per new requirement).** Every NEW
+requirement states an acceptance criterion phrased as an *observation of the
+real artifact's surface* — what a user (human or programmatic) would see when
+the change works. Examples: "running `foo --bar` prints `OK` and exits 0", "GET
+/widgets/42 returns 200 with `kind: 'gizmo'`", "calling `parse('')` throws
+`EmptyInputError`", "`error.log` contains `init complete` within 5s". Not
+acceptable: "a test exists for X", "X is implemented", "X is supported". The
+criterion belongs in the requirement line itself (a trailing "— Acceptance: …"
+sentence works well). A requirement without an observable acceptance criterion
+is what `/tdd-author`'s verification plan and `/implement`'s runtime-verify gate
+turn into evidence; if it cannot be observed it cannot be governed. Per the
+PRD's own open question, retrofitting this onto pre-existing requirements is
+out of scope here — enforce it for new requirements.
+
 ## Self-review (before the PR)
 After writing the PRD, reread it with fresh eyes and fix issues inline:
 - **Placeholder scan** — any "TBD"/"TODO"/empty section/vague requirement? Resolve
@@ -53,6 +67,9 @@ After writing the PRD, reread it with fresh eyes and fix issues inline:
 - **Scope** — still one coherent product, or did it sprawl into several?
 - **Ambiguity** — could a requirement be read two different ways? Pick one and make
   it explicit; an untestable requirement is not done.
+- **Missing acceptance criterion** — every NEW requirement carries an *observable
+  acceptance criterion* phrased as an observation of the artifact's surface (see
+  above), not "a test exists for X". A new requirement without one is not done.
 
 Fix and move on (no re-review loop) then commit and open the PR.
 

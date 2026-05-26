@@ -29,14 +29,24 @@
 # Each TDD is built in a FRESH `claude -p` process (clean context per feature),
 # pinned by default to the best model (opus). A build's own `BATCH_RESULT: OK` is
 # NOT trusted as done. Before a TDD is flipped to `Status: implemented`, the
-# runner enforces three independent gates:
-#   1. test-first — the build must show failing-test-first discipline: a dedicated
-#                   `test(failing): ...` commit BEFORE the implementation, unless
-#                   it emits `TEST_FIRST: SKIPPED` for a no-new-behavior change.
-#   2. verify.sh  — re-runs tests + typecheck + lint mechanically (deterministic).
-#   3. review     — a SEPARATE `claude -p` process on a DIFFERENT model (default
-#                   sonnet vs an opus build) for genuine reviewer diversity (not a
-#                   subagent of the author) that must end `REVIEW_RESULT: PASS`.
+# runner enforces four independent gates:
+#   1. test-first      — the build must show failing-test-first discipline: a
+#                        dedicated `test(failing): ...` commit BEFORE the impl,
+#                        unless it emits `TEST_FIRST: SKIPPED` for a no-new-
+#                        behavior change.
+#   2. verify.sh       — re-runs tests + typecheck + lint mechanically (this is
+#                        CI's job — running tests, not verification).
+#   3. runtime-verify  — a SEPARATE `claude -p` process drives the BUILT artifact
+#                        to the TDD's verification observation points and confirms
+#                        the expected observations hold (PASS/SKIP), keeping
+#                        PASS/FAIL/BLOCKED/SKIP distinct (NFR-4). The verification
+#                        mechanism is the project's — delegated to
+#                        `superpowers:verification-before-completion` / `/verify`,
+#                        never a bundled harness (FR-26 / ADR 0004).
+#   4. review          — a SEPARATE `claude -p` process on a DIFFERENT model
+#                        (default sonnet vs an opus build) for genuine reviewer
+#                        diversity (not a subagent of the author) that must end
+#                        `REVIEW_RESULT: PASS`.
 # Only after all pass does the runner flip the TDD and (if gh+remote) open a PR.
 # It never merges — merging is your gate.
 #
@@ -96,7 +106,8 @@ command -v claude >/dev/null 2>&1 || { echo "claude CLI not found on PATH"; exit
 HASGH=0; command -v gh >/dev/null 2>&1 && HASGH=1
 SDIR="$(cd "$(dirname "$0")" && pwd)"
 TMPL="$SDIR/build-prompt.md"; RTMPL="$SDIR/review-prompt.md"; VERIFY="$SDIR/verify.sh"
-for f in "$TMPL" "$RTMPL" "$VERIFY"; do [ -f "$f" ] || { echo "missing $f"; exit 1; }; done
+RVMTPL="$SDIR/verify-runtime-prompt.md"
+for f in "$TMPL" "$RTMPL" "$RVMTPL" "$VERIFY"; do [ -f "$f" ] || { echo "missing $f"; exit 1; }; done
 [ -x "$VERIFY" ] || chmod +x "$VERIFY" 2>/dev/null || true
 MAINREPO="$PWD"
 
@@ -150,8 +161,24 @@ review_one() {  # <tdd> <base-ref> <log>
   local args=(-p "$prompt" --permission-mode auto); [ -n "$REVIEW_MODEL" ] && args+=(--model "$REVIEW_MODEL")
   claude "${args[@]}" >>"$log" 2>&1
 }
-build_status()  { grep -aoE 'BATCH_RESULT: (OK|FAIL.*|BLOCKED.*)' "$1" 2>/dev/null | tail -1; }
-review_status() { grep -aoE 'REVIEW_RESULT: (PASS|BLOCK.*)' "$1" 2>/dev/null | tail -1; }
+# Runtime-verify gate (FR-25 / FR-26 / ADR 0004): drives the BUILT artifact to
+# the TDD's verification observation points in a FRESH `claude -p` process — so
+# it is independent of the build's self-report regardless of model. Runs on the
+# build model (capability to drive the artifact); cwd is already the build
+# worktree with deps installed by `install_deps`. The {{BASE}} substitution
+# scopes the diff so the verifier can SEE which change to focus its observation
+# on; it orients the verifier, it does not gate on the diff. The verdict is
+# parsed from the transcript (`VERIFY_RUNTIME: ...`), exactly as build's
+# `BATCH_RESULT:` and review's `REVIEW_RESULT:` already are.
+verify_runtime_one() {  # <tdd> <base-ref> <log>
+  local tdd="$1" base="$2" log="$3" prompt
+  prompt="$(sed -e "s#{{TDD}}#${tdd}#g" -e "s#{{BASE}}#${base}#g" "$RVMTPL")"
+  local args=(-p "$prompt" --permission-mode auto); [ -n "$MODEL" ] && args+=(--model "$MODEL")
+  claude "${args[@]}" >>"$log" 2>&1
+}
+build_status()          { grep -aoE 'BATCH_RESULT: (OK|FAIL.*|BLOCKED.*)' "$1" 2>/dev/null | tail -1; }
+review_status()         { grep -aoE 'REVIEW_RESULT: (PASS|BLOCK.*)' "$1" 2>/dev/null | tail -1; }
+verify_runtime_status() { grep -aoE 'VERIFY_RUNTIME: (PASS|FAIL.*|BLOCKED.*|SKIP.*)' "$1" 2>/dev/null | tail -1; }
 run_verify()    { bash "$VERIFY" >>"$1" 2>&1; }
 # test-first gate: mechanical, git-history only. The build must show failing-test-
 # first discipline — a dedicated `test(failing): ...` commit BEFORE the impl —
@@ -202,10 +229,11 @@ install_deps() {  # <log>
     || echo "install_deps: dependency install failed; build may fail at verify" >>"$log"
 }
 
-# gate_one: build -> classify -> verify gate -> independent review gate -> flip.
-# Echoes a one-line status; returns 0 ONLY when the TDD was flipped to implemented.
+# gate_one: build -> classify -> test-first -> verify.sh -> runtime-verify ->
+# independent review -> flip. Echoes a one-line status; returns 0 ONLY when the
+# TDD was flipped to implemented.
 gate_one() {  # <tdd> <review-base-ref> <log>
-  local tdd="$1" rbase="$2" log="$3" bs rs
+  local tdd="$1" rbase="$2" log="$3" bs rs rvs
   build_one "$tdd" "$log"; bs="$(build_status "$log")"
   case "$bs" in
     *BLOCKED*) record_blocker "$tdd" "${bs#*BLOCKED}"; echo "BLOCKED (design)${bs#*BLOCKED}"; return 1 ;;
@@ -215,6 +243,22 @@ gate_one() {  # <tdd> <review-base-ref> <log>
   if ! test_first_ok "$rbase" "$log"; then
     echo "FAIL test-first (no failing-test-first commit and no TEST_FIRST: SKIPPED; not flipped)"; return 1; fi
   if ! run_verify "$log"; then echo "FAIL verification (tests/typecheck/lint red; not flipped)"; return 1; fi
+  # Gate (c): runtime-verify — drive the BUILT artifact at its observable surface
+  # and confirm the TDD's verification observations hold. Distinct from verify.sh
+  # (CI's job). Verdicts kept honest per NFR-4: PASS/SKIP proceed; FAIL halts;
+  # BLOCKED ("couldn't observe") halts but is DISTINCT from FAIL ("observed and
+  # wrong") and is NOT a design blocker (only build BATCH_RESULT: BLOCKED
+  # appends to BLOCKERS.md). Missing verdict line → treat as FAIL (ambiguity is
+  # never a false PASS). Toggle mirrors THROUGHLINE_REQUIRE_TEST_FIRST.
+  if [ "${THROUGHLINE_REQUIRE_RUNTIME_VERIFY:-1}" = "1" ]; then
+    verify_runtime_one "$tdd" "$rbase" "$log"; rvs="$(verify_runtime_status "$log")"
+    case "$rvs" in
+      *PASS*|*SKIP*) : ;;
+      *BLOCKED*) echo "BLOCKED runtime-verify (couldn't observe)${rvs#*BLOCKED}"; return 1 ;;
+      *FAIL*)    echo "FAIL runtime-verify${rvs#*FAIL}"; return 1 ;;
+      *) echo "FAIL runtime-verify (no VERIFY_RUNTIME line; ambiguity is never a false PASS; see log)"; return 1 ;;
+    esac
+  fi
   review_one "$tdd" "$rbase" "$log"; rs="$(review_status "$log")"
   case "$rs" in
     *PASS*) : ;;
