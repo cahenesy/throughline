@@ -54,6 +54,70 @@ independently verifiable.
   `docs/adr/INDEX.md`, `docs/tdd/`, and a `docs/README.md` (canonical-vs-transient
   note), then initializes git on `main`.
 
+### Install/update lifecycle hygiene
+Two state layers can drift independently between bootstrap and "now": **repo
+state** (shared with teammates via git: configs, scaffolds, ignore rules) and
+**local-developer environment** (per-machine: installed binaries, dependency
+state). Bootstrap is re-runnable, a post-update reconciliation hook catches
+plugin updates, and consumer repos do not accumulate plugin-generated noise.
+
+- **FR-31 Bootstrap state marker (committed).** `/bootstrap-project` writes and
+  maintains a committed marker `docs/.throughline-bootstrap.json`
+  (`{schema, plugin_version_applied, language, repo_steps_applied: [...],
+  applied_at}`). Re-running bootstrap reads the marker, short-circuits steps
+  already recorded as applied, and re-applies only what is missing or out of
+  date. — Acceptance: running `/bootstrap-project` on a freshly-bootstrapped
+  repo prints a line of the form `already bootstrapped at <plugin_version>` and
+  performs no installs, no scaffold writes, and no `git init`; the marker file
+  is byte-identical before and after.
+- **FR-32 Consumer-repo `.gitignore` management.** Bootstrap ensures the
+  consumer repo's `.gitignore` ignores throughline's per-run artifacts —
+  minimally `docs/tdd/.implement-logs/` — adding the entry (and creating
+  `.gitignore` if absent) idempotently. No other path is added; design state
+  (`docs/PRD.md`, `docs/tdd/0*.md`, `docs/adr/`, `docs/tdd/BLOCKERS.md`,
+  `docs/.throughline-bootstrap.json`) remains tracked. — Acceptance: after
+  bootstrap, `git check-ignore -q docs/tdd/.implement-logs/anything.log` exits
+  0 and `git check-ignore -q docs/tdd/BLOCKERS.md` exits 1; re-running bootstrap
+  leaves the `.gitignore` file byte-identical.
+- **FR-33 Per-developer local-env marker.** A per-machine marker at
+  `${CLAUDE_PLUGIN_DATA}/<repo-id>/local.json`
+  (`{schema, plugin_version_seen, local_steps_completed: [...], updated_at}`)
+  records the local-environment work the current developer has applied for this
+  repo. It is written by `/bootstrap-project` on completion and read by the
+  post-update hook (FR-34). The `<repo-id>` is derived deterministically from
+  the repo's remote URL, falling back to its absolute path. — Acceptance: after
+  a successful local `/bootstrap-project`, the local marker exists with
+  `plugin_version_seen` equal to the currently-installed plugin version;
+  reading it from a second machine for the same repo shows that machine's
+  independent state, not the first machine's.
+- **FR-34 Post-update reconciliation hook.** A `SessionStart` hook reconciles
+  the two markers against the running plugin version without launching Claude:
+  (a) in a repo lacking `docs/.throughline-bootstrap.json` it exits silently
+  with no output; (b) on a repo-marker version mismatch it re-applies the cheap
+  idempotent repo-side steps (`.gitignore` entry per FR-32; any missing
+  docs-scaffold files per FR-3) and bumps `plugin_version_applied`; (c) on a
+  local-marker mismatch *and* a release flagged local-impacting (FR-35) it
+  prints exactly one session-start notice of the form
+  `throughline updated <old>→<new>; run /bootstrap-project to refresh your local
+  toolchain`, then updates `plugin_version_seen`. The hook never installs
+  software, never spawns Claude, and never edits files outside the contract
+  above. — Acceptance: on a repo without the bootstrap marker, the hook
+  produces no output and modifies no files at session start; on a repo with
+  a stale marker and a non-local-impacting plugin update, the next session's
+  `.gitignore` contains the `docs/tdd/.implement-logs/` entry and the
+  marker's `plugin_version_applied` equals the running plugin version, with
+  no session notice printed; on a stale marker with a local-impacting update,
+  the next session prints the notice exactly once.
+- **FR-35 Release metadata: local-impacting flag.** The plugin declares per
+  release whether the change requires developer-local action (e.g. a new
+  toolchain dependency, an incompatible deps bump). The post-update hook
+  (FR-34) reads this metadata to decide whether to surface the local notice
+  — without it, every version delta would notify and the signal would be
+  noise. — Acceptance: a release published with the local-impacting flag set
+  causes the FR-34 notice on the next session-start after update; a release
+  published without the flag set does not, even though the repo and local
+  markers both register the version delta.
+
 ### Requirements authoring
 - **FR-4 PRD of record.** `/prd-author` produces/updates `docs/PRD.md` — the WHAT and
   WHY only (no architecture, tech choices, or implementation). Requirements are
@@ -232,6 +296,13 @@ from the PRD forward. throughline owns the *governance* of verification; the
   estimate, not a forecast (FR-30).
 - **Run control from the progress view** — it is read-only observability, not a console
   to pause / resume / cancel a build.
+- **Auto-launching `/bootstrap-project` (or any Claude process) from the post-update
+  hook** — reconciliation (FR-34) is limited to cheap idempotent file edits and an
+  optional one-line notice; the human decides when to re-run the skill.
+- **Probing local toolchain binaries to detect drift** — the local-env marker (FR-33)
+  records what was applied, not what is currently present on disk; FR-34's local
+  notice is driven by release metadata (FR-35), not by introspecting the developer's
+  machine.
 
 ## Constraints & assumptions
 
@@ -249,6 +320,15 @@ from the PRD forward. throughline owns the *governance* of verification; the
   in its own processes / worktrees; Claude Code has no native always-on dashboard pane,
   so "live" means follow-until-interrupt. At most one run is active at a time (the
   single-run lock, FR-18), so there is a single run to report on.
+- The post-update reconciliation hook (FR-34) depends on Claude Code's `SessionStart`
+  event firing on every session start and on `${CLAUDE_PLUGIN_DATA}` being writable.
+  Claude Code has no native post-install or post-update plugin lifecycle event, so
+  reconciliation runs opportunistically at the next session-start after an update; the
+  hook short-circuits via a single `docs/.throughline-bootstrap.json` stat in repos
+  not using throughline, so its cost outside throughline projects is negligible.
+- The per-developer local marker's `<repo-id>` (FR-33) is derived deterministically
+  from the repo's remote URL when present, falling back to its absolute path; repos
+  moved on disk without a remote produce a fresh marker (no migration is performed).
 
 ## Open questions
 
