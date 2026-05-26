@@ -8,7 +8,7 @@ architectural decisions are recorded and binding, and nothing is marked "done" o
 the model's say-so.
 
 It is deliberately minimal. It owns **governance and traceability** and *delegates*
-discovery and generic engineering (brainstorming, TDD, code review, worktrees) to
+discovery and generic engineering (test-driven-development, code review, worktrees) to
 Anthropic's official plugins — **superpowers** and **pr-review-toolkit** — instead of
 re-implementing them.
 
@@ -90,7 +90,7 @@ throughline/
 ├── agents/
 │   ├── security-reviewer.md  # in-gate security review
 │   └── design-reviewer.md    # independent design critique before the design PR
-│   # build → superpowers:TDD; code review → pr-review-toolkit (see ADR 0003)
+│   # build → superpowers:test-driven-development; code review → pr-review-toolkit (ADR 0003)
 ├── skills/
 │   ├── bootstrap-project/    # /bootstrap-project — toolchain + docs scaffold
 │   ├── prd-author/           # /prd-author       — the WHAT → docs/PRD.md
@@ -100,7 +100,7 @@ throughline/
 │   └── implement-status/     # /implement-status — progress snapshot of a live run
 ├── scripts/
 │   ├── implement.sh             # detached runner (fresh claude -p per TDD) + run-state record
-│   ├── build-prompt.md          # build discipline; delegates to superpowers:TDD
+│   ├── build-prompt.md          # build discipline; delegates to superpowers:test-driven-development
 │   ├── review-prompt.md         # review gate: pr-review-toolkit + security-reviewer, separate process/model
 │   ├── verify.sh                # mechanical gate: tests + typecheck + lint (CI's job)
 │   ├── verify-runtime-prompt.md # runtime-verification gate: drive + observe the real artifact
@@ -233,7 +233,7 @@ competing with them
 ([ADR 0003](docs/adr/0003-keep-security-reviewer-in-gate.md), carrying ADR 0002
 forward):
 
-- **Superpowers owns discovery and engineering** — `brainstorming`, TDD, worktrees,
+- **Superpowers owns discovery and engineering** — test-driven-development, worktrees,
   code review, the verification *mechanism*, branch finishing. **Throughline owns
   governance** — PRD/TDD/ADR as the design-of-record, requirement traceability, the
   *requirement* that verification happens, and phase-gate PRs.
@@ -258,7 +258,7 @@ owns the governance layer (PRD/TDD/ADR) and **delegates overlapping engineering*
 the better-maintained official plugins + built-ins, so it **requires**:
 
 - **superpowers** — discovery (`brainstorming`) and the generic engineering skills
-  (TDD, worktrees, and the verification *mechanism* via
+  (test-driven-development, worktrees, and the verification *mechanism* via
   `verification-before-completion` / `/verify`). Throughline ingests its
   `docs/superpowers/*` artifacts if present.
 - **pr-review-toolkit** — code review (used on-demand via `/review-pr`, and by the
