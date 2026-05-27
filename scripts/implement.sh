@@ -123,7 +123,19 @@ MAINREPO="$PWD"
 
 # Logs/report live in the MAIN repo (absolute), so they survive the throwaway
 # worktree and stay tailable from your session regardless of where builds run.
-LOGDIR="$MAINREPO/docs/tdd/.implement-logs/$(date +%Y%m%d-%H%M%S)"; mkdir -p "$LOGDIR"
+# On --resume (TDD 0011 / FR-39), reuse the prior run's logdir (resolved from
+# the `latest` symlink) so state.d/ + per-TDD logs continue, not restart.
+if [ "$RESUME" -eq 1 ] && [ -L "$MAINREPO/docs/tdd/.implement-logs/latest" ]; then
+  _prior="$(readlink "$MAINREPO/docs/tdd/.implement-logs/latest")"
+  case "$_prior" in
+    /*) LOGDIR="$_prior" ;;
+    *)  LOGDIR="$MAINREPO/docs/tdd/.implement-logs/$_prior" ;;
+  esac
+  [ -d "$LOGDIR" ] || { echo "FATAL: --resume target '$LOGDIR' does not exist" >&2; exit 1; }
+else
+  LOGDIR="$MAINREPO/docs/tdd/.implement-logs/$(date +%Y%m%d-%H%M%S)"
+  mkdir -p "$LOGDIR"
+fi
 REPORT="$LOGDIR/report.md"; { echo "# Implement report — $(date)"; echo; } > "$REPORT"
 
 # Single-run lock: a second /implement on the same repo would double-build, so refuse
@@ -311,6 +323,19 @@ _write_run_fragment() {
 state_init() {
   STATE_DIR="$LOGDIR/state.d"
   mkdir -p "$STATE_DIR"
+  # On --resume (TDD 0011 / FR-40) the state.d already contains paused
+  # fragments from the prior run. Reuse the prior started_at and mode so
+  # the run-level header remains coherent; do not overwrite per-TDD
+  # fragments (the paused state IS the resume signal).
+  if [ "${RESUME:-0}" -eq 1 ] && [ -f "$STATE_DIR/run.json" ]; then
+    STATE_STARTED_AT="$(sed -n 's/.*"started_at":\([0-9]*\).*/\1/p' "$STATE_DIR/run.json" | head -1)"
+    STATE_MODE="$(sed -n 's/.*"mode":"\([^"]*\)".*/\1/p' "$STATE_DIR/run.json" | head -1)"
+    [ -z "$STATE_STARTED_AT" ] && STATE_STARTED_AT=$(date +%s)
+    [ -z "$STATE_MODE" ] && STATE_MODE="sequential"
+    _write_run_fragment running   # flip back to running for the resumed work
+    ln -sfn "$(basename "$LOGDIR")" "$MAINREPO/docs/tdd/.implement-logs/latest" 2>/dev/null || true
+    return 0
+  fi
   STATE_STARTED_AT=$(date +%s)
   if   [ "$PARALLEL" -eq 1 ]; then STATE_MODE="parallel"
   elif [ "$COMBINED" -eq 1 ]; then STATE_MODE="combined"
@@ -702,40 +727,197 @@ install_deps() {  # <log>
 # review / flip / null. Runtime-verify BLOCKED maps to status=blocked (distinct
 # from FAIL per NFR-4) but is NOT a design blocker — only build BATCH_RESULT:
 # BLOCKED appends to BLOCKERS.md (see record_blocker).
+# --- gate-call wrappers used by _retry_in_gate (TDD 0011 / FR-42) ------------
+# _retry_in_gate calls a gate-fn that returns 0 on success, non-zero on retry-
+# eligible failure. The raw build_one / verify_runtime_one / review_one print
+# to the log and don't return a useful exit code; these adapters parse the
+# log's verdict line and convert it.
+_build_one_gated() {  # <tdd> <log>
+  local tdd="$1" log="$2" bs
+  build_one "$tdd" "$log"
+  bs="$(build_status "$log")"
+  case "$bs" in *OK*) return 0 ;; esac
+  return 1
+}
+_verify_runtime_one_gated() {  # <tdd> <rbase> <log>
+  local tdd="$1" rbase="$2" log="$3" rvs
+  verify_runtime_one "$tdd" "$rbase" "$log"
+  rvs="$(verify_runtime_status "$log")"
+  case "$rvs" in *PASS*|*SKIP*) return 0 ;; esac
+  return 1
+}
+_review_one_gated() {  # <tdd> <rbase> <log>
+  local tdd="$1" rbase="$2" log="$3" rs
+  review_one "$tdd" "$rbase" "$log"
+  rs="$(review_status "$log")"
+  case "$rs" in *PASS*) return 0 ;; esac
+  return 1
+}
+
+# _resume_gates_var <slug> — convert a slug to a shell-safe variable name
+# (RESUME_GATES_DONE_<slug-with-non-alnum-replaced>). Used to set a per-TDD
+# resume hint without conflicting with shell variable name rules.
+_resume_gates_var() {
+  printf 'RESUME_GATES_DONE_%s' "$(printf '%s' "$1" | tr -c 'A-Za-z0-9_' '_')"
+}
+
+# _update_paused_cause <slug> <new-cause>
+# Mutate just the paused_cause field of a paused fragment. Used by
+# _resume_from to mark resume-blocked fragments. All other fields are
+# round-tripped via _write_tdd_fragment.
+_update_paused_cause() {
+  local slug="$1" new_cause="$2"
+  local f="${STATE_DIR:-}/$slug.json"
+  [ -n "$STATE_DIR" ] && [ -f "$f" ] || return 0
+  local n qp path status stage sta branch pr_url log_f note
+  local gates_csv retries_json branch_head
+  n="$(sed -n 's/.*"n":\([0-9]*\).*/\1/p'            "$f" | head -1)"
+  qp="$(sed -n 's/.*"queue_pos":\([0-9]*\).*/\1/p'   "$f" | head -1)"
+  path="$(sed -n 's/.*"path":"\([^"]*\)".*/\1/p'     "$f" | head -1)"
+  status="$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+  if grep -q '"stage":null' "$f" 2>/dev/null; then stage=""
+  else stage="$(sed -n 's/.*"stage":"\([^"]*\)".*/\1/p' "$f" | head -1)"; fi
+  sta="$(sed -n 's/.*"started_at":\([0-9]*\).*/\1/p' "$f" | head -1)"
+  branch="$(sed -n 's/.*"branch":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+  pr_url="$(sed -n 's/.*"pr_url":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+  log_f="$(sed -n 's/.*"log":"\([^"]*\)".*/\1/p'     "$f" | head -1)"
+  note="$(sed -n 's/.*"note":"\([^"]*\)".*/\1/p'     "$f" | head -1)"
+  gates_csv="$(_read_fragment_array_csv "$f" gates_completed)"
+  retries_json="$(_read_fragment_raw_array "$f" retries)"
+  branch_head="$(_read_fragment_field "$f" branch_head_at_pause)"
+  _write_tdd_fragment "$slug" "${n:-0}" "$path" "${qp:-0}" "$status" "$stage" \
+    "${sta:-$(date +%s)}" "$(date +%s)" "$branch" "$pr_url" "$log_f" "$note" \
+    "$new_cause" "$gates_csv" "$retries_json" "$branch_head"
+}
+
+# _resume_from <slug> (TDD 0011 / FR-40)
+# Validate that <slug>'s paused fragment is resumable; if so, set the
+# RESUME_GATES_DONE_<slug> variable listing the gates already completed
+# (build / test-first / verify / verify-runtime / review). Two sources of
+# truth, with the documented trust hierarchy:
+#   A — the build branch's commit history (authoritative for gate 1: a
+#       `test(failing):` commit must exist).
+#   B — the per-TDD fragment's gates_completed array (authoritative for
+#       gates 2-4).
+# On a refuse-to-resume condition, updates paused_cause to one of:
+#   resume-blocked-build-state-missing
+#   resume-blocked-branch-missing
+#   resume-blocked-branch-divergence
+# and leaves the RESUME_GATES_DONE_<slug> variable unset.
+_resume_from() {
+  local slug="$1" f var
+  f="${STATE_DIR:-}/$slug.json"
+  [ -n "$STATE_DIR" ] && [ -f "$f" ] || return 0
+  var="$(_resume_gates_var "$slug")"
+  local fragment_status
+  fragment_status="$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+  [ "$fragment_status" = "paused" ] || return 0
+
+  local branch branch_head_at_pause gates_csv
+  branch="$(sed -n 's/.*"branch":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+  branch_head_at_pause="$(_read_fragment_field "$f" branch_head_at_pause)"
+  gates_csv="$(_read_fragment_array_csv "$f" gates_completed)"
+
+  # Source A — gate-1 completion is signaled by a `test(failing):` commit
+  # in the branch history. Look at HEAD's full log (the resume invocation
+  # runs from the worktree, which is checked out on the build branch).
+  local has_test_first=0
+  if git log --format='%s' HEAD 2>/dev/null | grep -qiE '^test\(failing\)'; then
+    has_test_first=1
+  fi
+  if [ "$has_test_first" -ne 1 ]; then
+    _update_paused_cause "$slug" "resume-blocked-build-state-missing"
+    return 0
+  fi
+
+  # Divergence: if the fragment recorded a HEAD SHA at pause time and the
+  # current HEAD differs, the branch was rewritten while paused.
+  if [ -n "$branch_head_at_pause" ]; then
+    local current_head
+    current_head="$(git rev-parse --verify HEAD 2>/dev/null || true)"
+    if [ -n "$current_head" ] && [ "$current_head" != "$branch_head_at_pause" ]; then
+      _update_paused_cause "$slug" "resume-blocked-branch-divergence"
+      return 0
+    fi
+  fi
+
+  # All checks pass: build the done-list. Gate 1 (build) is implicit when
+  # the test(failing): commit is present; gates 2-4 come from gates_completed.
+  local done_list="build"
+  if [ -n "$gates_csv" ]; then done_list="${done_list},${gates_csv}"; fi
+  printf -v "$var" '%s' "$done_list"
+  export "$var"
+}
+
+# gate_one — build → test-first → verify.sh → runtime-verify → review → flip.
+# Return codes:
+#   0 — TDD flipped to implemented
+#   1 — gate failed (existing FAIL/BLOCKED semantics)
+#   2 — gate paused (TDD 0011 / FR-41) — drivers MUST stop iterating and not
+#       mark downstream as BLOCKED
+#
+# Resume-aware: when launched with --resume, _resume_from has set
+# RESUME_GATES_DONE_<slug> listing the gates already complete; gate_one
+# skips those gates. Each successfully-completed gate is recorded into
+# gates_completed via set_tdd_state's 5th param (TDD 0011 / FR-40).
 gate_one() {  # <tdd> <review-base-ref> <log>
-  local tdd="$1" rbase="$2" log="$3" bs rs rvs slug
+  local tdd="$1" rbase="$2" log="$3" bs rs rvs slug rrc
   slug="$(basename "$tdd" .md)"
   set_tdd_meta "$slug" "log=$log"
-  set_tdd_state "$slug" building build
-  build_one "$tdd" "$log"; bs="$(build_status "$log")"
-  case "$bs" in
-    *BLOCKED*) record_blocker "$tdd" "${bs#*BLOCKED}"
-               set_tdd_state "$slug" blocked "" "build BLOCKED (design):${bs#*BLOCKED}"
-               echo "BLOCKED (design)${bs#*BLOCKED}"; return 1 ;;
-    *OK*) : ;;
-    *) set_tdd_state "$slug" failed "" "build did not return OK (${bs:-no BATCH_RESULT})"
-       echo "${bs:-FAIL (no BATCH_RESULT; see log)}"; return 1 ;;
-  esac
-  set_tdd_state "$slug" verifying test-first
-  if ! test_first_ok "$rbase" "$log"; then
-    set_tdd_state "$slug" failed "" "test-first gate: no failing-test-first commit"
-    echo "FAIL test-first (no failing-test-first commit and no TEST_FIRST: SKIPPED; not flipped)"; return 1; fi
-  set_tdd_state "$slug" verifying verify
-  if ! run_verify "$log"; then
-    set_tdd_state "$slug" failed "" "verify.sh FAIL (tests/typecheck/lint)"
-    echo "FAIL verification (tests/typecheck/lint red; not flipped)"; return 1; fi
-  # Gate (c): runtime-verify — drive the BUILT artifact at its observable surface
-  # and confirm the TDD's verification observations hold. Distinct from verify.sh
-  # (CI's job). Verdicts kept honest per NFR-4: PASS/SKIP proceed; FAIL halts;
-  # BLOCKED ("couldn't observe") halts but is DISTINCT from FAIL ("observed and
-  # wrong") and is NOT a design blocker (only build BATCH_RESULT: BLOCKED
-  # appends to BLOCKERS.md). Missing verdict line → treat as FAIL (ambiguity is
-  # never a false PASS). Toggle mirrors THROUGHLINE_REQUIRE_TEST_FIRST.
-  if [ "${THROUGHLINE_REQUIRE_RUNTIME_VERIFY:-1}" = "1" ]; then
+
+  local _rkey _resume_done
+  _rkey="$(_resume_gates_var "$slug")"
+  _resume_done="${!_rkey:-}"
+  _is_done() { case ",$_resume_done," in *",$1,"*) return 0;; esac; return 1; }
+
+  # --- Gate 1: build (LLM-driven; retry-eligible) --------------------------
+  if _is_done build; then
+    : # branch already carries the impl + test(failing): commit; skip
+  else
+    set_tdd_state "$slug" building build
+    _retry_in_gate _build_one_gated build "$slug" "$log" "$tdd" "$log"
+    rrc=$?
+    bs="$(build_status "$log")"
+    case "$bs" in
+      *BLOCKED*) record_blocker "$tdd" "${bs#*BLOCKED}"
+                 set_tdd_state "$slug" blocked "" "build BLOCKED (design):${bs#*BLOCKED}"
+                 echo "BLOCKED (design)${bs#*BLOCKED}"; return 1 ;;
+    esac
+    if [ "$rrc" -eq 2 ]; then
+      echo "PAUSED build (see paused_cause in run state)"; return 2; fi
+    case "$bs" in
+      *OK*) : ;;
+      *) set_tdd_state "$slug" failed "" "build did not return OK (${bs:-no BATCH_RESULT})"
+         echo "${bs:-FAIL (no BATCH_RESULT; see log)}"; return 1 ;;
+    esac
+  fi
+
+  # --- Gate 2: test-first + verify.sh (mechanical; never retried) ----------
+  if ! _is_done test-first; then
+    set_tdd_state "$slug" verifying test-first
+    if ! test_first_ok "$rbase" "$log"; then
+      set_tdd_state "$slug" failed "" "test-first gate: no failing-test-first commit"
+      echo "FAIL test-first (no failing-test-first commit and no TEST_FIRST: SKIPPED; not flipped)"; return 1; fi
+    set_tdd_state "$slug" verifying test-first "" test-first
+  fi
+  if ! _is_done verify; then
+    set_tdd_state "$slug" verifying verify
+    if ! run_verify "$log"; then
+      set_tdd_state "$slug" failed "" "verify.sh FAIL (tests/typecheck/lint)"
+      echo "FAIL verification (tests/typecheck/lint red; not flipped)"; return 1; fi
+    set_tdd_state "$slug" verifying verify "" verify
+  fi
+
+  # --- Gate 3: runtime-verify (LLM-driven; retry-eligible) -----------------
+  if [ "${THROUGHLINE_REQUIRE_RUNTIME_VERIFY:-1}" = "1" ] && ! _is_done verify-runtime; then
     set_tdd_state "$slug" verifying verify-runtime
-    verify_runtime_one "$tdd" "$rbase" "$log"; rvs="$(verify_runtime_status "$log")"
+    _retry_in_gate _verify_runtime_one_gated verify-runtime "$slug" "$log" "$tdd" "$rbase" "$log"
+    rrc=$?
+    rvs="$(verify_runtime_status "$log")"
+    if [ "$rrc" -eq 2 ]; then
+      echo "PAUSED runtime-verify"; return 2; fi
     case "$rvs" in
-      *PASS*|*SKIP*) : ;;
+      *PASS*|*SKIP*) set_tdd_state "$slug" verifying verify-runtime "" verify-runtime ;;
       *BLOCKED*) set_tdd_state "$slug" blocked "" "runtime-verify BLOCKED (couldn't observe)"
                  echo "BLOCKED runtime-verify (couldn't observe)${rvs#*BLOCKED}"; return 1 ;;
       *FAIL*)    set_tdd_state "$slug" failed "" "runtime-verify FAIL"
@@ -744,15 +926,24 @@ gate_one() {  # <tdd> <review-base-ref> <log>
          echo "FAIL runtime-verify (no VERIFY_RUNTIME line; ambiguity is never a false PASS; see log)"; return 1 ;;
     esac
   fi
-  set_tdd_state "$slug" reviewing review
-  review_one "$tdd" "$rbase" "$log"; rs="$(review_status "$log")"
-  case "$rs" in
-    *PASS*) : ;;
-    *BLOCK*) set_tdd_state "$slug" failed "" "review BLOCK"
-             echo "FAIL review:${rs#*BLOCK}"; return 1 ;;
-    *) set_tdd_state "$slug" failed "" "review: no REVIEW_RESULT line"
-       echo "FAIL review (no REVIEW_RESULT; see log)"; return 1 ;;
-  esac
+
+  # --- Gate 4: review (LLM-driven; retry-eligible) -------------------------
+  if ! _is_done review; then
+    set_tdd_state "$slug" reviewing review
+    _retry_in_gate _review_one_gated review "$slug" "$log" "$tdd" "$rbase" "$log"
+    rrc=$?
+    rs="$(review_status "$log")"
+    if [ "$rrc" -eq 2 ]; then
+      echo "PAUSED review"; return 2; fi
+    case "$rs" in
+      *PASS*) set_tdd_state "$slug" reviewing review "" review ;;
+      *BLOCK*) set_tdd_state "$slug" failed "" "review BLOCK"
+               echo "FAIL review:${rs#*BLOCK}"; return 1 ;;
+      *) set_tdd_state "$slug" failed "" "review: no REVIEW_RESULT line"
+         echo "FAIL review (no REVIEW_RESULT; see log)"; return 1 ;;
+    esac
+  fi
+
   set_tdd_state "$slug" reviewing flip
   flip_status "$tdd" "$log"
   set_tdd_state "$slug" done "" "OK (verified + reviewed)"
@@ -865,18 +1056,27 @@ else
       done
     else
     git checkout -b "$CHANGE" "$BASE" >>"$REPORT" 2>&1 || git checkout "$CHANGE" >>"$REPORT" 2>&1
-    blocked=0
+    blocked=0; paused_halt=0
     for tdd in "${TDDS[@]}"; do slug="$(basename "$tdd" .md)"; log="$LOGDIR/$slug.log"
+      # Paused-halt: TDD 0011 / FR-41 — a paused TDD halts the run cleanly
+      # but does NOT mark downstream as BLOCKED (which would lie about the
+      # downstream's state). Just stop iterating; resume will pick up here.
+      [ "$paused_halt" -eq 1 ] && break
       if [ "$blocked" -eq 1 ]; then
         echo "- $slug — BLOCKED (upstream TDD failed; not attempted)" >>"$REPORT"
         set_tdd_state "$slug" blocked "" "upstream TDD failed; not attempted"
         continue
       fi
+      [ "$RESUME" -eq 1 ] && _resume_from "$slug"
       pre="$(git rev-parse HEAD 2>/dev/null || echo "$BASE")"
       echo ">>> $slug"; st="$(gate_one "$tdd" "$pre" "$log")"; rc=$?
       echo "  $st"; echo "- $slug — $st (log: $log)" >>"$REPORT"
       set_tdd_meta "$slug" "branch=$CHANGE"
-      [ "$rc" -ne 0 ] && blocked=1
+      case "$rc" in
+        0) : ;;
+        2) paused_halt=1 ;;
+        *) blocked=1 ;;
+      esac
     done
     if [ "$blocked" -eq 0 ] && [ "$HASGH" -eq 1 ]; then
       if git push -u origin "$CHANGE" >>"$REPORT" 2>&1; then
@@ -892,9 +1092,12 @@ else
   else
     # default: one stacked branch + PR per TDD (preserves dependency order while
     # keeping each feature a separately reviewable human gate).
-    prev="$BASE"; blocked=0
+    prev="$BASE"; blocked=0; paused_halt=0
     for tdd in "${TDDS[@]}"; do
       slug="$(basename "$tdd" .md)"; log="$LOGDIR/$slug.log"; branch="$CHANGE/$slug"
+      # Paused-halt: TDD 0011 / FR-41 — stop cleanly without marking
+      # downstream BLOCKED, since downstream simply hasn't been attempted.
+      [ "$paused_halt" -eq 1 ] && break
       if [ "$blocked" -eq 1 ]; then
         echo "- $slug — BLOCKED (upstream TDD failed; not attempted)" >>"$REPORT"
         set_tdd_state "$slug" blocked "" "upstream TDD failed; not attempted"
@@ -907,27 +1110,41 @@ else
         set_tdd_meta  "$slug" "branch=$built"
         prev="$built"; continue; fi   # stack later TDDs on the already-built branch
       if ! git checkout -b "$branch" "$prev" >>"$log" 2>&1; then
-        echo "- $slug — FAIL (could not branch off $prev; log: $log)" >>"$REPORT"
-        set_tdd_state "$slug" failed "" "could not branch off $prev"
-        blocked=1; continue; fi
+        # On --resume, the branch already exists; check it out instead.
+        if [ "$RESUME" -eq 1 ] && git checkout "$branch" >>"$log" 2>&1; then
+          : # successfully re-entered the existing build branch
+        else
+          echo "- $slug — FAIL (could not branch off $prev; log: $log)" >>"$REPORT"
+          set_tdd_state "$slug" failed "" "could not branch off $prev"
+          blocked=1; continue
+        fi
+      fi
       set_tdd_meta "$slug" "branch=$branch"
+      [ "$RESUME" -eq 1 ] && _resume_from "$slug"
       pre="$(git rev-parse HEAD)"
       echo ">>> $slug (off $prev)"; st="$(gate_one "$tdd" "$pre" "$log")"; rc=$?; echo "  $st"
-      if [ "$rc" -eq 0 ]; then
-        pr=""; pbase="${prev#origin/}"   # PR base is a branch name, never origin/<name>
-        if [ "$HASGH" -eq 1 ]; then
-          if git push -u origin "$branch" >>"$log" 2>&1; then
-            prurl="$(gh pr create --base "$pbase" --head "$branch" --fill 2>>"$log")"
-            if [ -n "$prurl" ]; then pr=", $prurl"; PR_PLAN+=("$prurl  (base $pbase)")
-              set_tdd_meta "$slug" "pr_url=$prurl"
-            else pr=", PR create failed (see log)"; fi
-          else pr=", push failed (see log)"; fi
-        fi
-        echo "- $slug — $st (branch $branch$pr, log: $log)" >>"$REPORT"
-        prev="$branch"
-      else
-        echo "- $slug — $st (branch $branch retained, NOT flipped; log: $log)" >>"$REPORT"; blocked=1
-      fi
+      case "$rc" in
+        0)
+          pr=""; pbase="${prev#origin/}"   # PR base is a branch name, never origin/<name>
+          if [ "$HASGH" -eq 1 ]; then
+            if git push -u origin "$branch" >>"$log" 2>&1; then
+              prurl="$(gh pr create --base "$pbase" --head "$branch" --fill 2>>"$log")"
+              if [ -n "$prurl" ]; then pr=", $prurl"; PR_PLAN+=("$prurl  (base $pbase)")
+                set_tdd_meta "$slug" "pr_url=$prurl"
+              else pr=", PR create failed (see log)"; fi
+            else pr=", push failed (see log)"; fi
+          fi
+          echo "- $slug — $st (branch $branch$pr, log: $log)" >>"$REPORT"
+          prev="$branch"
+          ;;
+        2)
+          echo "- $slug — $st (branch $branch retained, PAUSED; resume with /implement)" >>"$REPORT"
+          paused_halt=1
+          ;;
+        *)
+          echo "- $slug — $st (branch $branch retained, NOT flipped; log: $log)" >>"$REPORT"; blocked=1
+          ;;
+      esac
     done
     [ "$HASGH" -ne 1 ] && echo "gh/remote not available: per-TDD commits are on build/* branches; open PRs manually." >>"$REPORT"
   fi

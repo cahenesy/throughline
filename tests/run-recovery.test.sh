@@ -232,6 +232,96 @@ echo "[3.c] _retry_in_gate on fatal cause does NOT retry; returns 1, no paused"
     || ok "TDD fragment NOT paused on fatal"
 ) || true
 
+# --- Step 4: _resume_from + driver halt-on-paused ----------------------------
+echo "[4.a] _resume_from populates RESUME_GATES_DONE_<slug> from gates_completed when build branch HEAD matches"
+( D="$ROOT/4a"; mkdir -p "$D/state.d"
+  # Stand up a tiny git repo with a `test(failing):` commit on the build branch
+  # so the build-history source-of-truth says gate 1 is done.
+  REPO_T="$D/repo"
+  mkdir -p "$REPO_T" && cd "$REPO_T"
+  git init -q; git config user.email t@t.t; git config user.name t
+  printf 'base\n' > base.txt; git add -A; git commit -qm base
+  git checkout -q -b feat/0007-x
+  printf 'test\n' > test.txt; git add -A; git commit -qm "test(failing): 0007-x"
+  printf 'impl\n' > impl.txt; git add -A; git commit -qm "stub build 0007-x"
+  BRANCH_HEAD="$(git rev-parse HEAD)"
+
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="main" CHANGE="ci" LOGDIR="$D"
+  TDDS=("docs/tdd/0007-x.md")
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  _write_tdd_fragment 0007-x 7 docs/tdd/0007-x.md 1 paused verify-runtime \
+    1000 1000 "feat/0007-x" "" "log" "paused (ratelimit)" \
+    "ratelimit" "test-first,verify" "[]" "$BRANCH_HEAD"
+
+  # _resume_from sets a per-slug shell var listing the gates already done.
+  _resume_from 0007-x
+  rkey="RESUME_GATES_DONE_0007_x"
+  done_list="${!rkey:-}"
+  printf '%s' "$done_list" | grep -q 'build' \
+    && ok "build gate marked done (test(failing): commit present)" \
+    || bad "build gate should be marked done (got: '$done_list')"
+  printf '%s' "$done_list" | grep -q 'test-first' \
+    && ok "test-first gate carried forward" || bad "test-first should be in done list (got: '$done_list')"
+  printf '%s' "$done_list" | grep -q 'verify' \
+    && ok "verify gate carried forward" || bad "verify should be in done list (got: '$done_list')"
+  printf '%s' "$done_list" | grep -q 'verify-runtime' \
+    && bad "verify-runtime must NOT be marked done (it was in-flight at pause)" \
+    || ok "verify-runtime correctly NOT marked done (was in-flight)"
+  printf '%s' "$done_list" | grep -q 'review' \
+    && bad "review must NOT be marked done" \
+    || ok "review correctly NOT marked done"
+) || true
+
+echo "[4.b] _resume_from refuses to resume when build branch HEAD diverges -> paused_cause=resume-blocked-branch-divergence"
+( D="$ROOT/4b"; mkdir -p "$D/state.d"
+  REPO_T="$D/repo"; mkdir -p "$REPO_T" && cd "$REPO_T"
+  git init -q; git config user.email t@t.t; git config user.name t
+  printf 'base\n' > base.txt; git add -A; git commit -qm base
+  git checkout -q -b feat/0007-x
+  printf 'test\n' > test.txt; git add -A; git commit -qm "test(failing): 0007-x"
+
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="main" CHANGE="ci" LOGDIR="$D"
+  TDDS=("docs/tdd/0007-x.md")
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  _write_tdd_fragment 0007-x 7 docs/tdd/0007-x.md 1 paused verify-runtime \
+    1000 1000 "feat/0007-x" "" "log" "paused (ratelimit)" \
+    "ratelimit" "test-first,verify" "[]" "STALE_HEAD_FROM_PRIOR_RUN_abcdef"
+
+  _resume_from 0007-x
+  F="$STATE_DIR/0007-x.json"
+  grep -q 'resume-blocked-branch-divergence' "$F" \
+    && ok "paused_cause updated to resume-blocked-branch-divergence" \
+    || bad "paused_cause should be resume-blocked-branch-divergence"
+  rkey="RESUME_GATES_DONE_0007_x"
+  [ -z "${!rkey:-}" ] && ok "RESUME_GATES_DONE_<slug> not populated (refuse-to-resume)" \
+    || bad "RESUME_GATES_DONE should not be populated on divergence (got: '${!rkey:-}')"
+) || true
+
+echo "[4.c] _resume_from refuses when build branch has no test(failing): commit"
+( D="$ROOT/4c"; mkdir -p "$D/state.d"
+  REPO_T="$D/repo"; mkdir -p "$REPO_T" && cd "$REPO_T"
+  git init -q; git config user.email t@t.t; git config user.name t
+  printf 'base\n' > base.txt; git add -A; git commit -qm base
+  # No build branch / no test(failing): commit anywhere
+  BRANCH_HEAD="$(git rev-parse HEAD)"
+
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="main" CHANGE="ci" LOGDIR="$D"
+  TDDS=("docs/tdd/0007-x.md")
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  _write_tdd_fragment 0007-x 7 docs/tdd/0007-x.md 1 paused build \
+    1000 1000 "" "" "log" "paused (ratelimit)" \
+    "ratelimit" "" "[]" "$BRANCH_HEAD"
+
+  _resume_from 0007-x
+  F="$STATE_DIR/0007-x.json"
+  grep -q 'resume-blocked-build-state-missing' "$F" \
+    && ok "paused_cause updated to resume-blocked-build-state-missing" \
+    || bad "paused_cause should be resume-blocked-build-state-missing"
+) || true
+
 # --- Step 5: status.sh renderer extensions + --check-paused ------------------
 echo "[5.a] status.sh --check-paused prints one line per paused fragment"
 ( D="$ROOT/5a"; mkdir -p "$D/state.d"
