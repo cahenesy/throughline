@@ -20,13 +20,14 @@
 # bash path always works ⇒ no hard dependency.
 set -uo pipefail
 
-LOGDIR_ARG=""; FOLLOW=0; FOLLOW_INTERVAL=3
+LOGDIR_ARG=""; FOLLOW=0; FOLLOW_INTERVAL=3; CHECK_PAUSED=0
 while [ $# -gt 0 ]; do case "$1" in
   --logdir) LOGDIR_ARG="$2"; shift 2 ;;
   --follow)
     FOLLOW=1; shift
     if [ $# -gt 0 ] && printf '%s' "$1" | grep -qE '^[0-9]+$'; then
       FOLLOW_INTERVAL="$1"; shift; fi ;;
+  --check-paused) CHECK_PAUSED=1; shift ;;
   -h|--help)
     sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
   *) echo "status.sh: unknown arg: $1" >&2; exit 2 ;;
@@ -74,12 +75,14 @@ PY
   esac
 }
 
-# extract_tdd <file>   -> TAB: n slug path qp status stage updated_at branch pr_url note
+# extract_tdd <file>   -> TAB: n slug path qp status stage updated_at branch pr_url note paused_cause
+# TDD 0011 / FR-45 extends the emit shape with paused_cause (or empty
+# when the fragment is not in paused state / a pre-FR-39 fragment).
 extract_tdd() {
   local f="$1"
   case "$PARSER" in
     jq)
-      jq -r '[(.n|tostring), .slug, .path, (.queue_pos|tostring), .status, (.stage // ""), (.updated_at|tostring), (.branch // ""), (.pr_url // ""), (.note // "")] | @tsv' "$f" 2>/dev/null \
+      jq -r '[(.n|tostring), .slug, .path, (.queue_pos|tostring), .status, (.stage // ""), (.updated_at|tostring), (.branch // ""), (.pr_url // ""), (.note // ""), (.paused_cause // "")] | @tsv' "$f" 2>/dev/null \
         | tr '\t' "$SEP"
       ;;
     python)
@@ -87,11 +90,11 @@ extract_tdd() {
 import json, sys
 d = json.load(open(sys.argv[1])); sep = sys.argv[2]
 def s(v): return "" if v is None else str(v)
-print(sep.join(s(d.get(k, "")) for k in ("n","slug","path","queue_pos","status","stage","updated_at","branch","pr_url","note")))
+print(sep.join(s(d.get(k, "")) for k in ("n","slug","path","queue_pos","status","stage","updated_at","branch","pr_url","note","paused_cause")))
 PY
       ;;
     *)
-      local n slug path qp status stage upd br pr note
+      local n slug path qp status stage upd br pr note cause
       n="$(sed -n      's/.*"n":\([0-9]*\).*/\1/p'         "$f" | head -1)"
       slug="$(sed -n   's/.*"slug":"\([^"]*\)".*/\1/p'     "$f" | head -1)"
       path="$(sed -n   's/.*"path":"\([^"]*\)".*/\1/p'     "$f" | head -1)"
@@ -103,9 +106,11 @@ PY
       br="$(sed -n     's/.*"branch":"\([^"]*\)".*/\1/p'   "$f" | head -1)"
       pr="$(sed -n     's/.*"pr_url":"\([^"]*\)".*/\1/p'   "$f" | head -1)"
       note="$(sed -n   's/.*"note":"\([^"]*\)".*/\1/p'     "$f" | head -1)"
-      printf '%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n' \
+      if grep -q '"paused_cause":null' "$f" 2>/dev/null; then cause=""
+      else cause="$(sed -n 's/.*"paused_cause":"\([^"]*\)".*/\1/p' "$f" | head -1)"; fi
+      printf '%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n' \
         "$n" "$SEP" "$slug" "$SEP" "$path" "$SEP" "$qp" "$SEP" "$status" "$SEP" \
-        "$stage" "$SEP" "$upd" "$SEP" "$br" "$SEP" "$pr" "$SEP" "$note"
+        "$stage" "$SEP" "$upd" "$SEP" "$br" "$SEP" "$pr" "$SEP" "$note" "$SEP" "$cause"
       ;;
   esac
 }
@@ -154,16 +159,36 @@ render_snapshot() {
     mv "$tmp.sorted" "$tmp"
   fi
 
-  local completed=0 failed=0 blocked=0 skipped=0 nonterm=0 sum_num=0
+  local completed=0 failed=0 blocked=0 skipped=0 paused=0 nonterm=0 sum_num=0
   local cur_slug="" cur_status="" cur_stage=""
-  local n slug path qp status stage upd_t br pr note
-  while IFS="$SEP" read -r n slug path qp status stage upd_t br pr note; do
+  # paused_resume_* — the first paused TDD's slug + stage, used to render
+  # the FR-45 resume-instruction trailer once after the table.
+  local paused_resume_slug="" paused_resume_stage=""
+  local n slug path qp status stage upd_t br pr note cause
+  while IFS="$SEP" read -r n slug path qp status stage upd_t br pr note cause; do
     [ -z "$slug" ] && continue
     case "$status" in
       done)    completed=$((completed+1)); sum_num=$((sum_num + 100)) ;;
       failed)  failed=$((failed+1));       sum_num=$((sum_num + 100)) ;;
       blocked) blocked=$((blocked+1));     sum_num=$((sum_num + 100)) ;;
       skipped) skipped=$((skipped+1));     sum_num=$((sum_num + 100)) ;;
+      paused)  paused=$((paused+1))
+               # Paused is a non-terminal (resumable) state; the percent
+               # estimate should reflect the most-recent stage reached,
+               # not jump to 100.
+               case "$stage" in
+                 build)          sum_num=$((sum_num + 20)) ;;
+                 test-first)     sum_num=$((sum_num + 40)) ;;
+                 verify)         sum_num=$((sum_num + 50)) ;;
+                 verify-runtime) sum_num=$((sum_num + 70)) ;;
+                 review)         sum_num=$((sum_num + 85)) ;;
+                 flip)           sum_num=$((sum_num + 95)) ;;
+                 *)              : ;;
+               esac
+               nonterm=$((nonterm+1))
+               [ -z "$paused_resume_slug" ] && {
+                 paused_resume_slug="$slug"; paused_resume_stage="$stage"; }
+               ;;
       *)
         nonterm=$((nonterm+1))
         case "$stage" in
@@ -193,21 +218,37 @@ render_snapshot() {
   printf '/implement run — mode=%s · integration=%s · elapsed=%s · state=%s\n' \
     "${mode:-?}" "${integ:-?}" "$elapsed" "${state:-?}"
   printf '%d done / %d  ·  ~%d%% (estimate)' "$completed" "$total" "$pct"
-  if [ "$failed" -gt 0 ] || [ "$blocked" -gt 0 ] || [ "$skipped" -gt 0 ]; then
-    printf '  ·  failed=%d blocked=%d skipped=%d' "$failed" "$blocked" "$skipped"
+  if [ "$failed" -gt 0 ] || [ "$blocked" -gt 0 ] || [ "$skipped" -gt 0 ] || [ "$paused" -gt 0 ]; then
+    printf '  · '
+    [ "$failed" -gt 0 ]  && printf ' failed=%d'  "$failed"
+    [ "$blocked" -gt 0 ] && printf ' blocked=%d' "$blocked"
+    [ "$skipped" -gt 0 ] && printf ' skipped=%d' "$skipped"
+    [ "$paused" -gt 0 ]  && printf ' paused=%d'  "$paused"
   fi
   printf '\n\n'
 
-  printf '%-3s  %-30s  %-10s  %-15s  %s\n' "#" "slug" "status" "stage" "PR / branch"
-  printf '%-3s  %-30s  %-10s  %-15s  %s\n' "---" "------------------------------" "----------" "---------------" "-----------"
-  while IFS="$SEP" read -r n slug path qp status stage upd_t br pr note; do
+  printf '%-3s  %-30s  %-12s  %-15s  %s\n' "#" "slug" "status" "stage" "PR / branch"
+  printf '%-3s  %-30s  %-12s  %-15s  %s\n' "---" "------------------------------" "------------" "---------------" "-----------"
+  while IFS="$SEP" read -r n slug path qp status stage upd_t br pr note cause; do
     [ -z "$slug" ] && continue
     local ptr="${pr:-${br:-—}}"
-    printf '%-3s  %-30s  %-10s  %-15s  %s\n' "$qp" "$slug" "$status" "${stage:--}" "$ptr"
+    local status_disp="$status"
+    # TDD 0011 / FR-45: paused rows show the recoverable cause inline so
+    # the user sees ratelimit / usage-limit / transient at a glance.
+    if [ "$status" = "paused" ] && [ -n "$cause" ]; then
+      status_disp="paused ($cause)"
+    fi
+    printf '%-3s  %-30s  %-12s  %-15s  %s\n' "$qp" "$slug" "$status_disp" "${stage:--}" "$ptr"
   done < "$tmp"
 
   if [ -n "$cur_slug" ]; then
     printf '\nCurrent: %s (status=%s · stage=%s)\n' "$cur_slug" "$cur_status" "${cur_stage:--}"
+  fi
+  # FR-45: surface the resume instruction once. Only when there's a paused
+  # TDD; never on `failed` (NFR-4 distinct verdict honesty).
+  if [ -n "$paused_resume_slug" ]; then
+    printf '\nRun /implement to resume from %s on %s\n' \
+      "${paused_resume_stage:-?}" "$paused_resume_slug"
   fi
 
   rm -f "$tmp"
@@ -233,6 +274,28 @@ LOCK="$IMPL_ROOT/.run.lock"
 if [ -f "$LOCK" ]; then
   PID="$(cat "$LOCK" 2>/dev/null)"
   [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null && ACTIVE=1
+fi
+
+# --check-paused (TDD 0011 / FR-39): scan the resolved state.d for any
+# fragment with status=paused; print one machine-parseable line per paused
+# TDD (slug=<slug> gate=<gate> cause=<cause>) and exit 0. Print nothing
+# and exit 0 if none are paused or the run dir doesn't exist. Used by the
+# /implement skill's "Detect interrupted run" step BEFORE any build work.
+if [ "$CHECK_PAUSED" -eq 1 ]; then
+  [ -n "$RUNDIR" ] && [ -d "$RUNDIR/state.d" ] || exit 0
+  for f in "$RUNDIR"/state.d/*.json; do
+    [ -f "$f" ] || continue
+    case "$(basename "$f")" in run.json) continue ;; esac
+    st="$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+    [ "$st" = "paused" ] || continue
+    slug="$(sed -n 's/.*"slug":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+    if grep -q '"stage":null' "$f" 2>/dev/null; then stage="-"
+    else stage="$(sed -n 's/.*"stage":"\([^"]*\)".*/\1/p' "$f" | head -1)"; fi
+    if grep -q '"paused_cause":null' "$f" 2>/dev/null; then cause="-"
+    else cause="$(sed -n 's/.*"paused_cause":"\([^"]*\)".*/\1/p' "$f" | head -1)"; fi
+    printf 'slug=%s gate=%s cause=%s\n' "$slug" "${stage:--}" "${cause:--}"
+  done
+  exit 0
 fi
 
 # --logdir always renders the requested dir; default flow respects ACTIVE.
