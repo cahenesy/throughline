@@ -1,29 +1,25 @@
 # TDD 0013: Token-spend reduction — mechanical pre-checks + verification-gate model tiering
 
 Status: draft
-PRD refs: proposed FR-51, FR-52 (NOT yet in `docs/PRD.md`; see "PRD conflicts" below)
-PRD-rev: 9626a59
+PRD refs: FR-51, FR-52 (new)
+PRD-rev: d766d2d
 ADR constraints: 0003, 0004, 0005
 
-> **Pipeline note (read before reviewing).** This TDD is being authored
-> in the same pass that produced TDDs 0011 + 0012, at the user's explicit
-> direction. The PRD currently has no covering FRs — the
-> "Token-usage optimization" entry is in the PRD's `## Open questions`
-> section as a deferred follow-up. The design-reviewer gate (FR-10) is
-> therefore expected to flag a traceability gap; the resolution path is
-> either (a) the user runs `/prd-author` to land the proposed FRs below
-> as actual requirements before the design PR merges, or (b) the user
-> records an explicit waiver on the design PR. The proposed FR text in
-> "Requirement traceability" is concrete enough to be dropped into the
-> next `/prd-author` pass verbatim.
+> **Pipeline note.** This TDD was authored in the same pass that produced
+> TDDs 0011 + 0012, ahead of its covering FRs being landed in the PRD; the
+> "preferred resolution path" was then taken — FR-51 and FR-52 were landed
+> via a follow-up `/prd-author` pass (PR #33, commit `d766d2d`). The
+> traceability gap has been closed; the FR text in `docs/PRD.md` is the
+> same substance lifted from this TDD's traceability table. This note is
+> retained as a historical pointer; no further action is required.
 
 ## Approach
 
 Two independent reductions in per-flow token spend, neither of which
 changes any user-visible behavior of the pipeline:
 
-1. **Mechanical pre-checks before the LLM design-reviewer (proposed
-   FR-51).** A plain shell pre-pass runs against the authored TDD set
+1. **Mechanical pre-checks before the LLM design-reviewer (FR-51).**
+   A plain shell pre-pass runs against the authored TDD set
    inside `/tdd-author` step 7b, BEFORE spawning the
    `design-reviewer` subagent. It detects the structural-gap findings
    the reviewer currently produces — missing `## Verification plan`,
@@ -42,7 +38,7 @@ changes any user-visible behavior of the pipeline:
    findings like scope coherence, interface vagueness, ADR conflicts)
    is exactly what an LLM is irreplaceable for.
 
-2. **Model tiering for the runtime-verify gate (proposed FR-52).**
+2. **Model tiering for the runtime-verify gate (FR-52).**
    `verify_runtime_one` currently runs on the build model (opus by
    default per the runner's comment: "the gate needs the capability
    to drive the artifact"). For verification plans whose observations
@@ -62,7 +58,7 @@ weakens a gate's judgment, both reduce the cost of a clean run.
 
 ## Components & interfaces
 
-### Proposed FR-51 — Mechanical pre-checks before design-reviewer
+### FR-51 — Mechanical pre-checks before design-reviewer
 
 1. **`scripts/lib/tdd-lint.sh` (new).** Sourced helper.
 
@@ -182,7 +178,7 @@ weakens a gate's judgment, both reduce the cost of a clean run.
    spawning it on a structurally-broken TDD set is the wrong
    tool for the job and burns tokens."
 
-### Proposed FR-52 — Model tiering for the runtime-verify gate
+### FR-52 — Model tiering for the runtime-verify gate
 
 4. **`scripts/lib/plan-classifier.sh` (new).** One function:
 
@@ -217,7 +213,7 @@ weakens a gate's judgment, both reduce the cost of a clean run.
    verify_runtime_one() {  # <tdd> <base-ref> <log>
      local tdd="$1" base="$2" log="$3" prompt cls vm
      prompt="$(sed -e "s#{{TDD}}#${tdd}#g" -e "s#{{BASE}}#${base}#g" "$RVMTPL")"
-     # Model tiering (proposed FR-52). Env override always wins.
+     # Model tiering (FR-52). Env override always wins.
      vm="${THROUGHLINE_RUNTIME_VERIFY_MODEL:-}"
      if [ -z "$vm" ]; then
        cls="$(tl_classify_plan "$tdd")"
@@ -428,15 +424,10 @@ files — delegated, not bundled, per FR-26 / ADR 0004.)
 
 ## Requirement traceability
 
-> **Important:** these PRD refs are PROPOSED, not yet present in
-> `docs/PRD.md`. The user is expected to land them via the next
-> `/prd-author` pass; see "PRD conflicts surfaced" below for the
-> resolution path.
-
-| Proposed PRD | Design element |
+| PRD | Design element |
 |---|---|
-| **FR-51 (proposed): Mechanical pre-pass before LLM design-reviewer.** "Before invoking the design-reviewer subagent (FR-10), `/tdd-author` runs a mechanical pre-pass that detects structural-gap findings (missing required sections, missing frontmatter, placeholder strings, untraced FR/NFR). On any blocker or major finding, the skill BLOCKs without invoking the design-reviewer; on clean exit, the reviewer is invoked normally. — Acceptance: `/tdd-author` against a TDD set with a missing `## Verification plan` produces no `Task` tool call to `design-reviewer` in the session transcript and surfaces the missing-section finding to the user directly; against a structurally-clean set, the design-reviewer IS invoked and runs normally." | `scripts/lib/tdd-lint.sh` (three lints) + `skills/tdd-author/SKILL.md` step-7a edit invoking it + `agents/design-reviewer.md` preamble acknowledging the pre-pass |
-| **FR-52 (proposed): Verification-gate model tiering.** "The runtime-verify gate (FR-25) is run on a model the runner picks based on the TDD's verification plan: mechanical observations (CLI exit code, log line grep, file presence, HTTP status code) run on sonnet; verification plans requiring browser/UI driving, multi-step interactive flows, or judgment about ambiguous outputs run on the build model. Pin a model unconditionally via `THROUGHLINE_RUNTIME_VERIFY_MODEL`. The tiering preserves NFR-4 verdict honesty unconditionally — neither model is permitted to emit a false PASS on a verification it could not actually observe. — Acceptance: the per-TDD log records `runtime-verify model=<m> (plan=<cls>)` before each runtime-verify `claude` call; for a TDD with a mechanical verification plan, `<m>` is `sonnet` (or the env-pinned value); for a TDD with a nontrivial plan, `<m>` is the build model; for a TDD whose mechanical plan describes an observation the artifact fails, the verdict line is `VERIFY_RUNTIME: FAIL` (not a false PASS)." | `scripts/lib/plan-classifier.sh::tl_classify_plan` + `scripts/implement.sh::verify_runtime_one` model-tiering branch + `scripts/verify-runtime-prompt.md` model-context sentence edit + `skills/implement/SKILL.md` env note |
+| FR-51 Mechanical pre-pass before LLM design-reviewer | `scripts/lib/tdd-lint.sh` (three lints) + `skills/tdd-author/SKILL.md` step-7a edit invoking it + `agents/design-reviewer.md` preamble acknowledging the pre-pass |
+| FR-52 Verification-gate model tiering | `scripts/lib/plan-classifier.sh::tl_classify_plan` + `scripts/implement.sh::verify_runtime_one` model-tiering branch + `scripts/verify-runtime-prompt.md` model-context sentence edit + `skills/implement/SKILL.md` env note |
 
 ## Dependencies considered
 
@@ -494,39 +485,13 @@ Rejected alternatives evaluated:
 
 ## PRD conflicts surfaced (and resolution)
 
-**This is the major flag for human review.**
-
-`docs/PRD.md` at `9626a59` does NOT contain FR-51 or FR-52. The PRD
-has the open question "Token-usage optimization" which explicitly
-defers this work to a follow-up investigation, with the expectation
-that "concrete opportunities will be surfaced by a follow-up
-investigation and any resulting requirements PRD'd individually."
-
-This TDD authors the design for FR-51 + FR-52 against the PRD's
-deferred open question, NOT against landed requirements. The
-acceptance is that the user (a) lands the proposed FR text above
-verbatim into `docs/PRD.md` via the next `/prd-author` pass,
-moving them from the "Open questions" section into the "Run
-recovery"-adjacent area of the requirements list, and (b) merges
-that PRD update BEFORE merging this design PR — restoring normal
-pipeline order.
-
-The design-reviewer gate (FR-10) is expected to flag this as an
-"untraced requirement" finding because the traceability table
-points at PRD refs that don't exist yet. The resolution paths are:
-1. **Land the proposed FRs first** (preferred). Run `/prd-author`,
-   add FR-51 and FR-52 verbatim from the table above. Merge the
-   PRD PR, then re-run the design-reviewer against this TDD set;
-   it will find clean traceability and PASS. This restores normal
-   pipeline order.
-2. **Waive on the design PR** (acceptable). Record an explicit
-   waiver in the design PR body acknowledging that FR-51/52 are
-   pending PRD landing and that this TDD's traceability will
-   become clean once those FRs land. The TDD itself does not
-   change; the human reviewer accepts the waiver. The next
-   `/prd-author` pass MUST then land the FRs, or this TDD's
-   traceability remains broken — that follow-through is
-   user-discipline, not enforced by the runner.
+None remaining. This TDD was authored against PRD `9626a59`, which did
+not yet contain its covering FRs; a follow-up `/prd-author` pass landed
+FR-51 + FR-52 verbatim from the traceability table above (PR #33,
+commit `d766d2d`). The traceability is now clean: every FR in the table
+exists in `docs/PRD.md`, and the design substance here was not modified
+to fit the PRD — the PRD adopted the substance from here. The "Pipeline
+note" at the top of this TDD is retained as a historical pointer.
 
 No entries in `docs/tdd/BLOCKERS.md` to resolve (the file does not
 exist).
@@ -542,9 +507,11 @@ exist).
 - The model-tiering choice is a tuning decision, not a
   cross-cutting architectural one. Embedded in the runner with an
   env-override is the right level of ceremony.
-- The "land the PRD requirements before merging this design PR"
+- The "land the PRD requirements before merging the design PR"
   pipeline-order discipline is captured in throughline's existing
   PRD → TDD → implementation order (ADR 0001 superseded by 0003,
   but the principle holds via the PRD-merge-then-design-PR
   sequencing in `/tdd-author` step 9). No new ADR needed; this
-  TDD's "PRD conflicts surfaced" section is the local record.
+  TDD's history (PR #32 followed by PR #33's PRD landing) is a
+  concrete instance of that principle being followed after the
+  initial out-of-order authoring, not a counterexample to it.
