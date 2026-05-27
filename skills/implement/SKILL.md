@@ -24,6 +24,31 @@ The single entry point for turning TDDs into code.
   done-but-awaiting-merge and SKIPPED (it points you at the branch), so re-running
   never duplicates work or PRs. `--rebuild` forces a fresh build anyway.
 
+## Detect interrupted run (TDD 0011 / FR-39)
+
+Before showing the queue, check whether a prior `/implement` run was
+interrupted and left a *paused* TDD in the state record. If it did, the
+user must decide whether to **resume** or **start fresh** before any
+build work begins; the runner stays headless, so this is the only stage
+that asks.
+
+1. Run `bash "${CLAUDE_PLUGIN_ROOT}/scripts/status.sh" --check-paused`.
+   - If output is empty, proceed normally to "Prepare".
+   - If output names a paused run, output is one line per paused TDD in
+     the format `slug=<slug> gate=<gate> cause=<cause>`. Use the FIRST
+     line (the run's resume-point per FR-40's per-TDD queue order).
+2. Surface the interrupted run via `AskUserQuestion`. Options:
+   - **Resume from `<gate>` on `<slug>`** — re-launch the runner with
+     `--resume` so gates already completed are not re-run.
+   - **Start fresh (discard paused state)** — delete `state.d/*.json`
+     under the prior run's logdir (preserving the rest of the run dir for
+     forensic value), then launch normally.
+   - **Cancel** — exit without launching.
+3. On Resume, the launch line below MUST carry `--resume`. On Start fresh,
+   it does not.
+
+The non-paused interactive flow continues at "Prepare" below.
+
 ## Prepare
 1. Show the queue: the TDD(s) in scope and their Status. Confirm.
 2. Confirm mode:
@@ -53,13 +78,22 @@ branches it produces persist. After the user confirms the queue and mode (step
 1–2 above), LAUNCH the runner yourself as a detached background job and return
 control immediately. Do not print a command for the user to run.
 
-Launch with a single Bash call (adjust flags for the confirmed mode/scope):
+Launch with a single Bash call (adjust flags for the confirmed mode/scope).
+Append `--resume` when the user chose **Resume** at the "Detect interrupted
+run" step (TDD 0011 / FR-39); omit it for fresh starts.
 
 ```
 mkdir -p docs/tdd/.implement-logs
 nohup bash "${CLAUDE_PLUGIN_ROOT}/scripts/implement.sh" \
   > docs/tdd/.implement-logs/nohup.out 2>&1 &
 echo "launched pid $!"
+```
+
+Resume variant (only when the user chose Resume above):
+
+```
+nohup bash "${CLAUDE_PLUGIN_ROOT}/scripts/implement.sh" --resume \
+  > docs/tdd/.implement-logs/nohup.out 2>&1 &
 ```
 
 `nohup … &` survives the session closing and does not block, so the build runs

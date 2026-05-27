@@ -106,7 +106,9 @@ throughline/
 │   ├── verify-runtime-prompt.md # runtime-verification gate: drive + observe the real artifact
 │   └── status.sh                # renders run progress (snapshot + --follow watch)
 ├── tests/
-│   └── implement-gate.test.sh   # eval: proves the gates actually fire
+│   ├── implement-gate.test.sh         # eval: proves the four gates actually fire
+│   ├── run-progress-visibility.test.sh # eval: run-state record + status renderer
+│   └── run-recovery.test.sh           # eval: detached run recovery (paused / resume)
 └── hooks/{hooks.json, format-and-lint.sh}
 ```
 
@@ -287,6 +289,7 @@ commands throughline also leans on — `/code-review`, `/security-review`, and t
 ```
 chmod +x hooks/format-and-lint.sh scripts/implement.sh scripts/verify.sh scripts/status.sh
 bash tests/implement-gate.test.sh          # optional: prove the gates fire
+bash tests/run-recovery.test.sh            # optional: prove paused/resume works
 # push this dir to a private GitHub repo, then:
 /plugin marketplace add <your-org>/throughline
 /plugin install throughline@throughline
