@@ -58,12 +58,22 @@
 # appended to docs/tdd/BLOCKERS.md and surfaced for /tdd-author to revise.
 set -uo pipefail
 
+# THROUGHLINE_SOURCE_ONLY=1 lets the test suite `source` this script to call
+# individual helpers in isolation (per the TDD 0011 sequencing plan): the
+# helpers below are defined unconditionally, but every runtime side effect
+# (arg parsing, lock acquisition, state.d/ init, the drivers, the trailing
+# report) is bracketed by `if [ "${THROUGHLINE_SOURCE_ONLY:-0}" != "1" ]`.
+# The guard is a no-op when launched normally (the env var is unset).
+
+if [ "${THROUGHLINE_SOURCE_ONLY:-0}" != "1" ]; then
 PARALLEL=0; COMBINED=0; REBUILD=0; MODEL=""; REVIEW_MODEL=""; CHANGE=""; ONE=""
+RESUME=0
 BASE="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
 while [ $# -gt 0 ]; do case "$1" in
   --parallel) PARALLEL=1; shift ;;
   --combined) COMBINED=1; shift ;;
   --rebuild)  REBUILD=1;  shift ;;
+  --resume)   RESUME=1;   shift ;;
   --model)        MODEL="$2";        shift 2 ;;
   --review-model) REVIEW_MODEL="$2"; shift 2 ;;
   --change)   CHANGE="$2"; shift 2 ;;
@@ -150,6 +160,7 @@ fi
 echo "Queue (${#TDDS[@]}):"; printf '  %s\n' "${TDDS[@]}"; echo "Report: $REPORT"; echo
 # state_init runs once helpers are declared (see below); we can't call it here
 # because bash needs the function definition first.
+fi  # end THROUGHLINE_SOURCE_ONLY guard (setup block)
 
 # --- run-state record (FR-27) --------------------------------------------------
 # A per-run directory of atomic JSON fragments at $LOGDIR/state.d/:
@@ -161,6 +172,32 @@ echo "Queue (${#TDDS[@]}):"; printf '  %s\n' "${TDDS[@]}"; echo "Report: $REPORT
 # so run.json's counts are advisory — the per-TDD fragments are the truth.
 # Atomic write = `printf` to <file>.tmp then `mv`, so a reader sees the old or
 # the new file but never a torn one.
+
+# Read a single string-valued JSON field from a fragment, decoded back to the
+# raw string (or empty when the field is missing or `null`). Used by the FR-39
+# resume path so the additive fields survive a `set_tdd_state` rewrite.
+_read_fragment_field() {  # <file> <field-name>  -> echoes the value (no quotes)
+  local f="$1" k="$2"
+  if grep -q "\"$k\":null" "$f" 2>/dev/null; then printf ''; return 0; fi
+  sed -n "s/.*\"$k\":\"\\([^\"]*\\)\".*/\\1/p" "$f" | head -1
+}
+# Read a JSON string-array field (e.g. gates_completed) as a comma-separated list
+# of its members. Empty when the array is `[]` or absent.
+_read_fragment_array_csv() {  # <file> <field-name>
+  local f="$1" k="$2" raw
+  raw="$(sed -n "s/.*\"$k\":\\(\\[[^]]*\\]\\).*/\\1/p" "$f" | head -1)"
+  [ -z "$raw" ] && return 0
+  [ "$raw" = "[]" ] && return 0
+  printf '%s' "$raw" | tr -d '[]"' | sed 's/, */,/g'
+}
+# Read a raw JSON array literal (used for the structured `retries` array — its
+# nested objects don't fit the CSV scheme above).
+_read_fragment_raw_array() {  # <file> <field-name>
+  local f="$1" k="$2"
+  # Greedy-match the array literal up to its closing bracket. The retries
+  # array's elements are flat objects, so a single-level bracket match works.
+  sed -n "s/.*\"$k\":\\(\\[[^]]*\\]\\).*/\\1/p" "$f" | head -1
+}
 
 # Escape a string for safe inclusion as a JSON string value. Free-text fields
 # (note/branch/pr_url/log) ride through this; structural fields are integers or
@@ -177,31 +214,70 @@ json_escape() {
 
 # _write_tdd_fragment <slug> <n> <path> <qp> <status> <stage> <started> <updated>
 #                     <branch> <pr_url> <log> <note>
+#                     [<paused_cause> <gates_completed_csv> <retries_json> <branch_head>]
 # stage="" → JSON `null` literal; non-empty → quoted string (matches the TDD's
 # `stage ∈ {build, test-first, verify, verify-runtime, review, flip, null}`).
+# The four trailing params (TDD 0011 / FR-39..FR-45) are additive and optional:
+#   paused_cause       free-text (or empty → JSON null)
+#   gates_completed    comma-separated list (or empty → [])
+#   retries_json       a complete JSON array literal (or empty → [])
+#   branch_head_at_pause   commit SHA at pause time (or empty → JSON null)
+# Callers that do not need them omit them; the existing twelve-param call sites
+# continue to work unchanged.
 _write_tdd_fragment() {
   local slug="$1" n="$2" path="$3" qp="$4" status="$5" stage="$6" sta="$7" upd="$8"
   local branch="$9" pr_url="${10}" log="${11}" note="${12}"
-  local stage_lit
+  local paused_cause="${13:-}" gates_csv="${14:-}" retries_json="${15:-}" branch_head="${16:-}"
+  local stage_lit cause_lit head_lit gates_lit retries_lit
   if [ -z "$stage" ]; then stage_lit='null'
   else stage_lit="\"$(json_escape "$stage")\""; fi
-  local f="$STATE_DIR/$slug.json" tmp="$f.tmp.$$"
-  printf '{"n":%d,"slug":"%s","path":"%s","queue_pos":%d,"status":"%s","stage":%s,"started_at":%d,"updated_at":%d,"branch":"%s","pr_url":"%s","log":"%s","note":"%s"}\n' \
+  if [ -z "$paused_cause" ]; then cause_lit='null'
+  else cause_lit="\"$(json_escape "$paused_cause")\""; fi
+  if [ -z "$branch_head" ]; then head_lit='null'
+  else head_lit="\"$(json_escape "$branch_head")\""; fi
+  if [ -z "$gates_csv" ]; then
+    gates_lit='[]'
+  else
+    # Split CSV → JSON string array. Each entry is JSON-escaped.
+    local g entry first=1
+    gates_lit='['
+    local IFS=','; for g in $gates_csv; do
+      if [ -n "$g" ]; then
+        entry="\"$(json_escape "$g")\""
+        if [ "$first" -eq 1 ]; then gates_lit+="$entry"; first=0
+        else gates_lit+=",$entry"; fi
+      fi
+    done
+    gates_lit+=']'
+  fi
+  if [ -z "$retries_json" ]; then retries_lit='[]'
+  else retries_lit="$retries_json"; fi
+  # Split the `local` declaration: under bash 5.3 `set -u`, a single
+  # `local f="..." tmp="$f..."` raises 'f: unbound variable' because the
+  # `tmp` initializer references `$f` before the local declaration has bound
+  # it. Two separate assignments avoid the ordering issue.
+  local f tmp
+  f="$STATE_DIR/$slug.json"
+  tmp="$f.tmp.$$"
+  printf '{"n":%d,"slug":"%s","path":"%s","queue_pos":%d,"status":"%s","stage":%s,"started_at":%d,"updated_at":%d,"branch":"%s","pr_url":"%s","log":"%s","note":"%s","paused_cause":%s,"gates_completed":%s,"retries":%s,"branch_head_at_pause":%s}\n' \
     "$n" "$(json_escape "$slug")" "$(json_escape "$path")" "$qp" \
     "$(json_escape "$status")" "$stage_lit" \
     "$sta" "$upd" \
     "$(json_escape "$branch")" "$(json_escape "$pr_url")" "$(json_escape "$log")" \
     "$(json_escape "$note")" \
+    "$cause_lit" "$gates_lit" "$retries_lit" "$head_lit" \
     > "$tmp"
   mv "$tmp" "$f"
 }
 
 # Re-roll the run-level rollup from per-TDD fragments and rewrite run.json.
-# state ∈ {running, done}. Called by state_init (running) and at run end (done).
+# state ∈ {running, done, paused}. Called by state_init (running), at run end
+# (done), and by _enter_paused (paused). When state is paused, pause_started_at
+# is stamped (display only).
 _write_run_fragment() {
   local state="$1" tmp="$STATE_DIR/run.json.tmp.$$"
   local total="${#TDDS[@]}"
-  local completed=0 failed=0 blocked=0 skipped=0 st f
+  local completed=0 failed=0 blocked=0 skipped=0 paused=0 st f
   if [ -d "$STATE_DIR" ]; then
     for f in "$STATE_DIR"/*.json; do
       [ -f "$f" ] || continue
@@ -212,14 +288,17 @@ _write_run_fragment() {
         failed)  failed=$((failed+1)) ;;
         blocked) blocked=$((blocked+1)) ;;
         skipped) skipped=$((skipped+1)) ;;
+        paused)  paused=$((paused+1)) ;;
       esac
     done
   fi
-  printf '{"schema":1,"started_at":%d,"updated_at":%d,"pid":%d,"integration_branch":"%s","mode":"%s","change":"%s","logdir":"%s","total":%d,"completed":%d,"failed":%d,"blocked":%d,"skipped":%d,"state":"%s"}\n' \
+  local pause_started_lit='null'
+  if [ "$state" = "paused" ]; then pause_started_lit="$(date +%s)"; fi
+  printf '{"schema":1,"started_at":%d,"updated_at":%d,"pid":%d,"integration_branch":"%s","mode":"%s","change":"%s","logdir":"%s","total":%d,"completed":%d,"failed":%d,"blocked":%d,"skipped":%d,"paused":%d,"state":"%s","pause_started_at":%s}\n' \
     "$STATE_STARTED_AT" "$(date +%s)" "$$" \
     "$(json_escape "$INTEGRATION")" "$STATE_MODE" "$(json_escape "$CHANGE")" "$(json_escape "$LOGDIR")" \
-    "$total" "$completed" "$failed" "$blocked" "$skipped" \
-    "$(json_escape "$state")" \
+    "$total" "$completed" "$failed" "$blocked" "$skipped" "$paused" \
+    "$(json_escape "$state")" "$pause_started_lit" \
     > "$tmp"
   mv "$tmp" "$STATE_DIR/run.json"
 }
@@ -251,14 +330,19 @@ state_init() {
 # set_run_state <state>  — rewrite run.json (refresh updated_at + rollup counts).
 set_run_state() { _write_run_fragment "$1"; }
 
-# set_tdd_state <slug> <status> <stage> [note]
+# set_tdd_state <slug> <status> <stage> [note] [gate-completed-append]
 # Rewrite that TDD's fragment atomically; carry n/queue_pos/path/started_at/
-# branch/pr_url/log forward. `stage=""` writes JSON null.
+# branch/pr_url/log + the FR-39..45 additive fields forward. `stage=""` writes
+# JSON null. The optional 5th param `gate-completed-append` (TDD 0011) appends
+# a gate name to the carried-forward `gates_completed` array IF it is not
+# already present — used by gate_one to record progressive gate completion
+# (FR-40 / FR-44).
 set_tdd_state() {
-  local slug="$1" status="$2" stage="$3" note="${4:-}"
+  local slug="$1" status="$2" stage="$3" note="${4:-}" gate_done="${5:-}"
   local f="${STATE_DIR:-}/$slug.json"
   [ -n "$STATE_DIR" ] && [ -f "$f" ] || return 0
   local n qp path sta branch pr_url log now
+  local paused_cause gates_csv retries_json branch_head
   n="$(sed -n 's/.*"n":\([0-9]*\).*/\1/p'            "$f" | head -1)"
   qp="$(sed -n 's/.*"queue_pos":\([0-9]*\).*/\1/p'   "$f" | head -1)"
   path="$(sed -n 's/.*"path":"\([^"]*\)".*/\1/p'     "$f" | head -1)"
@@ -266,19 +350,33 @@ set_tdd_state() {
   branch="$(sed -n 's/.*"branch":"\([^"]*\)".*/\1/p' "$f" | head -1)"
   pr_url="$(sed -n 's/.*"pr_url":"\([^"]*\)".*/\1/p' "$f" | head -1)"
   log="$(sed -n 's/.*"log":"\([^"]*\)".*/\1/p'       "$f" | head -1)"
+  paused_cause="$(_read_fragment_field "$f" paused_cause)"
+  gates_csv="$(_read_fragment_array_csv "$f" gates_completed)"
+  retries_json="$(_read_fragment_raw_array "$f" retries)"
+  branch_head="$(_read_fragment_field "$f" branch_head_at_pause)"
+  if [ -n "$gate_done" ]; then
+    case ",$gates_csv," in
+      *",$gate_done,"*) : ;;  # already recorded; idempotent
+      *) if [ -z "$gates_csv" ]; then gates_csv="$gate_done"
+         else gates_csv="$gates_csv,$gate_done"; fi ;;
+    esac
+  fi
   now=$(date +%s)
   _write_tdd_fragment "$slug" "${n:-0}" "$path" "${qp:-0}" "$status" "$stage" \
-    "${sta:-$now}" "$now" "$branch" "$pr_url" "$log" "$note"
+    "${sta:-$now}" "$now" "$branch" "$pr_url" "$log" "$note" \
+    "$paused_cause" "$gates_csv" "$retries_json" "$branch_head"
 }
 
 # set_tdd_meta <slug> [branch=<v>] [pr_url=<v>] [log=<v>] [note=<v>]
-# Update branch/pr_url/log/note while preserving status/stage. Used after PR
-# creation to record `branch`/`pr_url` against the existing fragment.
+# Update branch/pr_url/log/note while preserving status/stage and the FR-39..45
+# additive fields. Used after PR creation to record `branch`/`pr_url` against
+# the existing fragment.
 set_tdd_meta() {
   local slug="$1"; shift
   local f="${STATE_DIR:-}/$slug.json"
   [ -n "$STATE_DIR" ] && [ -f "$f" ] || return 0
   local n qp path status stage sta branch pr_url log note kv now
+  local paused_cause gates_csv retries_json branch_head
   n="$(sed -n 's/.*"n":\([0-9]*\).*/\1/p'            "$f" | head -1)"
   qp="$(sed -n 's/.*"queue_pos":\([0-9]*\).*/\1/p'   "$f" | head -1)"
   path="$(sed -n 's/.*"path":"\([^"]*\)".*/\1/p'     "$f" | head -1)"
@@ -290,6 +388,10 @@ set_tdd_meta() {
   pr_url="$(sed -n 's/.*"pr_url":"\([^"]*\)".*/\1/p' "$f" | head -1)"
   log="$(sed -n 's/.*"log":"\([^"]*\)".*/\1/p'       "$f" | head -1)"
   note="$(sed -n 's/.*"note":"\([^"]*\)".*/\1/p'     "$f" | head -1)"
+  paused_cause="$(_read_fragment_field "$f" paused_cause)"
+  gates_csv="$(_read_fragment_array_csv "$f" gates_completed)"
+  retries_json="$(_read_fragment_raw_array "$f" retries)"
+  branch_head="$(_read_fragment_field "$f" branch_head_at_pause)"
   for kv in "$@"; do case "$kv" in
     branch=*) branch="${kv#branch=}" ;;
     pr_url=*) pr_url="${kv#pr_url=}" ;;
@@ -298,7 +400,8 @@ set_tdd_meta() {
   esac; done
   now=$(date +%s)
   _write_tdd_fragment "$slug" "${n:-0}" "$path" "${qp:-0}" "$status" "$stage" \
-    "${sta:-$now}" "$now" "$branch" "$pr_url" "$log" "$note"
+    "${sta:-$now}" "$now" "$branch" "$pr_url" "$log" "$note" \
+    "$paused_cause" "$gates_csv" "$retries_json" "$branch_head"
 }
 
 # --- per-TDD primitives (cwd = the repo or worktree they run in) ---------------
@@ -511,6 +614,7 @@ combined_built_branch() {  # echoes a branch where EVERY queued TDD is implement
   done < <(git for-each-ref --format='%(refname:short)' refs/heads refs/remotes/origin 2>/dev/null)
   return 1
 }
+if [ "${THROUGHLINE_SOURCE_ONLY:-0}" = "1" ]; then return 0 2>/dev/null || exit 0; fi
 PR_PLAN=()  # ordered, bottom-up "merge me" list for stacked sequential PRs
 
 # Initialize the per-run state record (FR-27). One fragment per queued TDD so
