@@ -1,0 +1,308 @@
+#!/usr/bin/env bash
+# run-recovery.test.sh — eval for detached `/implement` run recovery & restart
+# resilience (TDD 0011 / FR-39..FR-45).
+#
+# Each block tests one slice from the TDD's "Sequencing / implementation plan",
+# so a regression in one step does not mask another.
+#
+# Many blocks source implement.sh in `THROUGHLINE_SOURCE_ONLY=1` mode (an early-
+# return guard the runner declares for testability), so they can call individual
+# helpers directly without spinning up a full detached run for every assertion.
+#
+# Run: bash tests/run-recovery.test.sh
+set -uo pipefail
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+IMPL="$REPO/scripts/implement.sh"
+STATUS="$REPO/scripts/status.sh"
+RESULTS="$(mktemp)"; export RESULTS
+ok()   { printf 'ok\n'   >>"$RESULTS"; printf '  ok   — %s\n' "$1"; }
+bad()  { printf 'fail\n' >>"$RESULTS"; printf '  FAIL — %s\n' "$1"; }
+
+ROOT="$(mktemp -d)"; trap 'rm -rf "$ROOT"' EXIT
+
+# --- Step 1: schema extensions + paused status enum ---------------------------
+echo "[1.a] _write_tdd_fragment writes the four additive fields (paused_cause, gates_completed, retries, branch_head_at_pause)"
+( D="$ROOT/1a"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="main" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "implement.sh must support THROUGHLINE_SOURCE_ONLY guard"; exit 0; }
+  _write_tdd_fragment 0007-x 7 docs/tdd/0007-x.md 1 paused verify-runtime \
+    1000 1100 "feat/0007-x" "" "log.txt" "ratelimit" \
+    "ratelimit" "test-first,verify" '[{"gate":"verify-runtime","count":1,"backoff_s":30}]' "deadbeefcafe"
+  F="$D/state.d/0007-x.json"
+  grep -q '"paused_cause":"ratelimit"' "$F" 2>/dev/null \
+    && ok "paused_cause field present" || bad "paused_cause should be in fragment"
+  grep -q '"gates_completed":\["test-first","verify"\]' "$F" 2>/dev/null \
+    && ok "gates_completed array present" || bad "gates_completed array should be in fragment"
+  grep -q '"retries":\[{"gate":"verify-runtime","count":1,"backoff_s":30}\]' "$F" 2>/dev/null \
+    && ok "retries array present" || bad "retries array should be in fragment"
+  grep -q '"branch_head_at_pause":"deadbeefcafe"' "$F" 2>/dev/null \
+    && ok "branch_head_at_pause field present" || bad "branch_head_at_pause should be in fragment"
+  grep -q '"status":"paused"' "$F" 2>/dev/null \
+    && ok "status=paused round-trips" || bad "status=paused should round-trip"
+) || true
+
+echo "[1.b] _write_tdd_fragment with empty cause/gates/retries emits null + [] (back-compat)"
+( D="$ROOT/1b"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="main" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "implement.sh must support THROUGHLINE_SOURCE_ONLY guard"; exit 0; }
+  _write_tdd_fragment 0001-alpha 1 docs/tdd/0001-alpha.md 1 pending "" \
+    1000 1000 "" "" "" "" \
+    "" "" "" ""
+  F="$D/state.d/0001-alpha.json"
+  grep -q '"paused_cause":null' "$F" 2>/dev/null \
+    && ok "paused_cause null when empty" || bad "paused_cause should be JSON null when empty"
+  grep -q '"gates_completed":\[\]' "$F" 2>/dev/null \
+    && ok "gates_completed [] when empty" || bad "gates_completed should be []"
+  grep -q '"retries":\[\]' "$F" 2>/dev/null \
+    && ok "retries [] when empty" || bad "retries should be [] when empty/missing"
+  grep -q '"branch_head_at_pause":null' "$F" 2>/dev/null \
+    && ok "branch_head_at_pause null when empty" || bad "branch_head_at_pause should be JSON null when empty"
+) || true
+
+echo "[1.c] _write_run_fragment accepts paused and stamps pause_started_at"
+( D="$ROOT/1c"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="main" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "implement.sh must support THROUGHLINE_SOURCE_ONLY guard"; exit 0; }
+  _write_run_fragment paused
+  R="$D/state.d/run.json"
+  grep -q '"state":"paused"' "$R" 2>/dev/null \
+    && ok "run.json state=paused" || bad "run.json should accept state=paused"
+  grep -qE '"pause_started_at":[0-9]+' "$R" 2>/dev/null \
+    && ok "pause_started_at stamped" || bad "pause_started_at should be stamped"
+) || true
+
+echo "[1.d] status.sh renders an unfamiliar status without crashing"
+( D="$ROOT/1d"; mkdir -p "$D/state.d"
+  cat > "$D/state.d/run.json" <<EOF
+{"schema":1,"started_at":1,"updated_at":2,"pid":1,"integration_branch":"main","mode":"sequential","change":"ci","logdir":"$D","total":1,"completed":0,"failed":0,"blocked":0,"skipped":0,"state":"paused","pause_started_at":3}
+EOF
+  cat > "$D/state.d/0001-alpha.json" <<EOF
+{"n":1,"slug":"0001-alpha","path":"docs/tdd/0001-alpha.md","queue_pos":1,"status":"paused","stage":"verify-runtime","started_at":1,"updated_at":2,"branch":"","pr_url":"","log":"","note":"","paused_cause":"ratelimit","gates_completed":["test-first","verify"],"retries":[],"branch_head_at_pause":null}
+EOF
+  out="$(bash "$STATUS" --logdir "$D" 2>&1)"; rc=$?
+  [ "$rc" -eq 0 ] && ok "status.sh exits 0 on a paused fragment" || bad "status.sh should exit 0 (got $rc)"
+  printf '%s\n' "$out" | grep -qi 'paused' \
+    && ok "status.sh names the paused status" || bad "status.sh should print the paused status"
+) || true
+
+# --- Step 2: _classify_cause + _recoverable_patterns -------------------------
+echo "[2.a] _classify_cause maps each documented stderr pattern to its cause"
+( D="$ROOT/2a"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="main" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  L="$D/log"
+
+  printf 'foo bar ratelimit_error here\n' > "$L"
+  [ "$(_classify_cause "$L" 0)" = "ratelimit" ] && ok "ratelimit pattern -> ratelimit" \
+    || bad "ratelimit pattern should classify as ratelimit (got '$(_classify_cause "$L" 0)')"
+
+  printf 'HTTP/1.1 429 Too Many Requests\n' > "$L"
+  [ "$(_classify_cause "$L" 0)" = "ratelimit" ] && ok "429 -> ratelimit" \
+    || bad "429 should classify as ratelimit"
+
+  printf 'monthly-limit-reached for opus\n' > "$L"
+  [ "$(_classify_cause "$L" 0)" = "usage-limit" ] && ok "monthly-limit-reached -> usage-limit" \
+    || bad "monthly-limit should classify as usage-limit"
+
+  printf 'connection reset by peer\n' > "$L"
+  [ "$(_classify_cause "$L" 0)" = "transient" ] && ok "connection reset -> transient" \
+    || bad "connection reset should classify as transient"
+
+  printf '503 Service Unavailable\n' > "$L"
+  [ "$(_classify_cause "$L" 0)" = "transient" ] && ok "503 -> transient" \
+    || bad "503 should classify as transient"
+
+  printf 'some unrelated message\n' > "$L"
+  [ "$(_classify_cause "$L" 0)" = "fatal" ] && ok "unmatched -> fatal (NFR-4)" \
+    || bad "unmatched stderr should classify as fatal (NFR-4 conservatism)"
+) || true
+
+echo "[2.b] _classify_cause uses exit-signal table: SIGTERM transient, SIGKILL fatal"
+( D="$ROOT/2b"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="main" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  L="$D/log"; : > "$L"
+  # 128+15 SIGTERM
+  [ "$(_classify_cause "$L" 143)" = "transient" ] && ok "exit=143 (SIGTERM) -> transient" \
+    || bad "SIGTERM exit should classify as transient"
+  # 128+9 SIGKILL
+  [ "$(_classify_cause "$L" 137)" = "fatal" ] && ok "exit=137 (SIGKILL) -> fatal" \
+    || bad "SIGKILL exit should classify as fatal"
+  # generic non-zero exit with clean log -> fatal
+  [ "$(_classify_cause "$L" 2)" = "fatal" ] && ok "exit=2 clean log -> fatal" \
+    || bad "non-zero exit with clean log should classify as fatal"
+) || true
+
+# --- Step 3: _retry_in_gate + _enter_paused ----------------------------------
+echo "[3.a] _retry_in_gate retries transient until success and records each retry"
+( D="$ROOT/3a"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="main" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  _write_tdd_fragment 0007-x 7 docs/tdd/0007-x.md 1 building build \
+    1000 1000 "" "" "log" "" "" "" "" ""
+
+  COUNTER_FILE="$D/calls"; printf '0\n' > "$COUNTER_FILE"
+  my_gate_fn() {  # writes the supplied log; returns 0 only on the 3rd call
+    local logfile="$1"
+    local n; n=$(cat "$COUNTER_FILE"); n=$((n+1)); printf '%s\n' "$n" > "$COUNTER_FILE"
+    if [ "$n" -lt 3 ]; then
+      printf 'simulated 429 ratelimit\n' >> "$logfile"
+      return 1
+    fi
+    return 0
+  }
+  L="$D/3a.log"; : > "$L"
+  # Override backoff so the test does not block on real sleeps.
+  THROUGHLINE_GATE_RETRIES=3 THROUGHLINE_GATE_BACKOFF_BASE=0 \
+    _retry_in_gate my_gate_fn build 0007-x "$L" "$L"
+  rc=$?
+  [ "$rc" -eq 0 ] && ok "_retry_in_gate returns 0 on eventual success" \
+    || bad "_retry_in_gate should return 0 after a successful retry (rc=$rc)"
+  F="$D/state.d/0007-x.json"
+  count="$(grep -oE '"count":[0-9]+' "$F" | wc -l)"
+  [ "$count" -ge 2 ] && ok "retries[] records each retry (count=$count)" \
+    || bad "retries[] should record both transient retries (count=$count)"
+) || true
+
+echo "[3.b] _retry_in_gate exhausts budget -> _enter_paused, returns 2"
+( D="$ROOT/3b"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="main" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  _write_tdd_fragment 0007-x 7 docs/tdd/0007-x.md 1 building verify-runtime \
+    1000 1000 "" "" "log" "" "" "" "" ""
+  my_gate_fn() {
+    local logfile="$1"
+    printf 'simulated 429 ratelimit\n' >> "$logfile"
+    return 1
+  }
+  L="$D/3b.log"; : > "$L"
+  THROUGHLINE_GATE_RETRIES=3 THROUGHLINE_GATE_BACKOFF_BASE=0 \
+    _retry_in_gate my_gate_fn verify-runtime 0007-x "$L" "$L"
+  rc=$?
+  [ "$rc" -eq 2 ] && ok "_retry_in_gate returns 2 on exhausted retries (paused signal)" \
+    || bad "_retry_in_gate should return 2 when retries exhaust (rc=$rc)"
+  F="$D/state.d/0007-x.json"
+  grep -q '"status":"paused"' "$F" \
+    && ok "TDD fragment is paused after exhaustion" || bad "fragment should be paused"
+  grep -q '"paused_cause":"ratelimit"' "$F" \
+    && ok "paused_cause=ratelimit" || bad "paused_cause should be ratelimit"
+) || true
+
+echo "[3.c] _retry_in_gate on fatal cause does NOT retry; returns 1, no paused"
+( D="$ROOT/3c"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="main" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  _write_tdd_fragment 0007-x 7 docs/tdd/0007-x.md 1 building verify-runtime \
+    1000 1000 "" "" "log" "" "" "" "" ""
+  COUNTER_FILE="$D/calls"; printf '0\n' > "$COUNTER_FILE"
+  my_gate_fn() {
+    local logfile="$1"
+    local n; n=$(cat "$COUNTER_FILE"); n=$((n+1)); printf '%s\n' "$n" > "$COUNTER_FILE"
+    printf 'unmatched fatal output\n' >> "$logfile"
+    return 1
+  }
+  L="$D/3c.log"; : > "$L"
+  THROUGHLINE_GATE_RETRIES=3 THROUGHLINE_GATE_BACKOFF_BASE=0 \
+    _retry_in_gate my_gate_fn verify-runtime 0007-x "$L" "$L"
+  rc=$?
+  [ "$rc" -eq 1 ] && ok "_retry_in_gate returns 1 on fatal (not 2)" \
+    || bad "_retry_in_gate fatal path should return 1 (rc=$rc)"
+  n="$(cat "$COUNTER_FILE")"
+  [ "$n" -eq 1 ] && ok "no retry on fatal (gate-fn called exactly once)" \
+    || bad "fatal should not retry (calls=$n)"
+  F="$D/state.d/0007-x.json"
+  grep -q '"status":"paused"' "$F" \
+    && bad "fragment must not be paused on fatal" \
+    || ok "TDD fragment NOT paused on fatal"
+) || true
+
+# --- Step 5: status.sh renderer extensions + --check-paused ------------------
+echo "[5.a] status.sh --check-paused prints one line per paused fragment"
+( D="$ROOT/5a"; mkdir -p "$D/state.d"
+  cat > "$D/state.d/run.json" <<EOF
+{"schema":1,"started_at":1,"updated_at":2,"pid":1,"integration_branch":"main","mode":"sequential","change":"ci","logdir":"$D","total":2,"completed":0,"failed":0,"blocked":0,"skipped":0,"state":"paused","pause_started_at":3}
+EOF
+  cat > "$D/state.d/0001-alpha.json" <<EOF
+{"n":1,"slug":"0001-alpha","path":"docs/tdd/0001-alpha.md","queue_pos":1,"status":"paused","stage":"verify-runtime","started_at":1,"updated_at":2,"branch":"","pr_url":"","log":"","note":"","paused_cause":"ratelimit","gates_completed":["test-first","verify"],"retries":[],"branch_head_at_pause":null}
+EOF
+  cat > "$D/state.d/0002-beta.json" <<EOF
+{"n":2,"slug":"0002-beta","path":"docs/tdd/0002-beta.md","queue_pos":2,"status":"pending","stage":null,"started_at":1,"updated_at":1,"branch":"","pr_url":"","log":"","note":"","paused_cause":null,"gates_completed":[],"retries":[],"branch_head_at_pause":null}
+EOF
+  out="$(bash "$STATUS" --logdir "$D" --check-paused 2>&1)"; rc=$?
+  [ "$rc" -eq 0 ] && ok "--check-paused exits 0" || bad "--check-paused should exit 0 (got $rc)"
+  printf '%s\n' "$out" | grep -qE '^slug=0001-alpha gate=verify-runtime cause=ratelimit$' \
+    && ok "--check-paused emits machine-parseable line" \
+    || bad "--check-paused should print 'slug=0001-alpha gate=verify-runtime cause=ratelimit'"
+  count="$(printf '%s\n' "$out" | grep -c '^slug=')"
+  [ "$count" -eq 1 ] && ok "--check-paused prints exactly one line per paused TDD" \
+    || bad "--check-paused should print only the paused fragment (got $count lines)"
+) || true
+
+echo "[5.b] status.sh --check-paused on a clean run prints nothing"
+( D="$ROOT/5b"; mkdir -p "$D/state.d"
+  cat > "$D/state.d/run.json" <<EOF
+{"schema":1,"started_at":1,"updated_at":2,"pid":1,"integration_branch":"main","mode":"sequential","change":"ci","logdir":"$D","total":1,"completed":1,"failed":0,"blocked":0,"skipped":0,"state":"done"}
+EOF
+  cat > "$D/state.d/0001-alpha.json" <<EOF
+{"n":1,"slug":"0001-alpha","path":"docs/tdd/0001-alpha.md","queue_pos":1,"status":"done","stage":null,"started_at":1,"updated_at":2,"branch":"","pr_url":"","log":"","note":"","paused_cause":null,"gates_completed":["test-first","verify","verify-runtime","review"],"retries":[],"branch_head_at_pause":null}
+EOF
+  out="$(bash "$STATUS" --logdir "$D" --check-paused 2>&1)"; rc=$?
+  [ "$rc" -eq 0 ] && ok "--check-paused on done run exits 0" || bad "--check-paused done-run should exit 0"
+  [ -z "$out" ] && ok "--check-paused on done run prints nothing" \
+    || bad "--check-paused should print nothing for a done run (got: '$out')"
+) || true
+
+echo "[5.c] status.sh snapshot shows paused column + cause + resume hint"
+( D="$ROOT/5c"; mkdir -p "$D/state.d"
+  cat > "$D/state.d/run.json" <<EOF
+{"schema":1,"started_at":1,"updated_at":2,"pid":1,"integration_branch":"main","mode":"sequential","change":"ci","logdir":"$D","total":1,"completed":0,"failed":0,"blocked":0,"skipped":0,"state":"paused","pause_started_at":3}
+EOF
+  cat > "$D/state.d/0007-x.json" <<EOF
+{"n":7,"slug":"0007-x","path":"docs/tdd/0007-x.md","queue_pos":1,"status":"paused","stage":"verify-runtime","started_at":1,"updated_at":2,"branch":"feat/0007-x","pr_url":"","log":"","note":"","paused_cause":"ratelimit","gates_completed":["test-first","verify"],"retries":[],"branch_head_at_pause":null}
+EOF
+  out="$(bash "$STATUS" --logdir "$D" 2>&1)"
+  printf '%s\n' "$out" | grep -qE 'paused' \
+    && ok "snapshot prints 'paused'" || bad "snapshot should print paused"
+  printf '%s\n' "$out" | grep -qE 'ratelimit' \
+    && ok "snapshot names the cause" || bad "snapshot should name the cause"
+  printf '%s\n' "$out" | grep -qE 'Run /implement to resume from verify-runtime on 0007-x' \
+    && ok "snapshot prints the resume instruction" \
+    || bad "snapshot should print 'Run /implement to resume from <gate> on <slug>'"
+  printf '%s\n' "$out" | grep -qE 'paused=1' \
+    && ok "summary line includes paused=N counter" \
+    || bad "summary line should include paused=1"
+) || true
+
+# --- Step 6: skill's "Detect interrupted run" step ---------------------------
+echo "[6.a] skills/implement/SKILL.md documents --check-paused and conditional --resume"
+( cd "$REPO"
+  F="skills/implement/SKILL.md"
+  grep -q -- '--check-paused' "$F" \
+    && ok "skill mentions --check-paused" || bad "skill should mention --check-paused"
+  grep -q -- '--resume' "$F" \
+    && ok "skill mentions --resume on the launch line" \
+    || bad "skill should mention --resume on the launch line"
+) || true
+
+echo
+PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
+FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
+rm -f "$RESULTS"
+echo "=== run-recovery eval: $PASS passed, $FAIL failed ==="
+[ "$FAIL" -eq 0 ]
