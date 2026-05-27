@@ -416,6 +416,46 @@ think about).
   design PR whose body carries a freshly-issued reviewer verdict
   (timestamped after the resume), not the prior session's verdict.
 
+### Token-spend reduction
+LLM-driven gates dominate throughline's per-flow token cost. Two targeted
+reductions cut that cost without weakening any gate's judgment: shift cheap
+structural checks left of the LLM design-reviewer so it spends its judgment
+where a model is irreplaceable, and pick the smallest capable model for the
+runtime-verify gate based on the verification plan's complexity. Neither
+relaxes verdict honesty (NFR-4); both are reversible per-run via env overrides.
+
+- **FR-51 Mechanical pre-pass before LLM design-reviewer.** Before invoking the
+  design-reviewer subagent (FR-10), `/tdd-author` runs a mechanical pre-pass
+  that detects structural-gap findings — missing required sections, missing
+  frontmatter, placeholder strings, untraced FR/NFR. On any blocker- or
+  major-severity finding the skill BLOCKs without invoking the design-reviewer
+  (the LLM gate is not invoked on a structurally-broken TDD set); on clean exit
+  the reviewer is invoked normally and judges the irreplaceable findings
+  (scope coherence, interface vagueness, ADR conflicts, naming consistency).
+  Findings the pre-pass missed remain visible: the reviewer surfaces any
+  structural gap it notices as a nit, never silently. — Acceptance: running
+  `/tdd-author` against a TDD set with a missing `## Verification plan`
+  produces no `Task` tool call to `design-reviewer` in the session transcript
+  and surfaces the missing-section finding to the user directly; running
+  `/tdd-author` against a structurally-clean TDD set DOES invoke the
+  design-reviewer (its `Task` tool call is present in the transcript) and the
+  reviewer runs normally.
+- **FR-52 Verification-gate model tiering.** The runtime-verify gate (FR-25)
+  is run on a model the runner picks based on the TDD's verification plan:
+  mechanical observations (CLI exit code, log line grep, file presence, HTTP
+  status code) run on `sonnet`; verification plans requiring browser/UI
+  driving, multi-step interactive flows, or judgment about ambiguous outputs
+  run on the build model. The choice is pinnable unconditionally via
+  `THROUGHLINE_RUNTIME_VERIFY_MODEL`. The tiering preserves NFR-4 verdict
+  honesty unconditionally — neither model is permitted to emit a false PASS
+  on a verification it could not actually observe. — Acceptance: the per-TDD
+  log records `runtime-verify model=<m> (plan=<cls>)` before each
+  runtime-verify `claude` call; for a TDD with a mechanical verification plan
+  `<m>` is `sonnet` (or the env-pinned value); for a TDD with a nontrivial
+  plan `<m>` is the build model; for a TDD whose mechanical plan describes
+  an observation the artifact fails, the verdict line is
+  `VERIFY_RUNTIME: FAIL` (not a false PASS).
+
 ### Quality hook & delegation
 - **FR-21 Format + lint hook.** A `format-and-lint` PostToolUse hook formats then
   lints edited files when a linter is configured (no-op otherwise), debounced, for
@@ -558,8 +598,9 @@ think about).
 - **Pause TTL (FR-39, FR-47).** Whether a very old paused run (e.g. weeks
   old) should be treated as stale and require an explicit resume flag rather
   than the FR-39/FR-47 prompt is open; today there is no TTL.
-- **Token-usage optimization.** A separate investigation, not in this PRD —
-  the parent ask included a hypothesis that throughline's per-flow token spend
-  has grown and warrants targeted reduction. Concrete opportunities will be
-  surfaced by a follow-up investigation and any resulting requirements PRD'd
-  individually.
+- **Further token-spend reductions.** FR-51 + FR-52 land the highest-confidence
+  reductions surfaced by the investigation that produced TDD 0013. Other ideas
+  from that investigation (prompt-caching the PRD + cited-ADR bodies across the
+  per-TDD `claude -p` invocations within a single `/implement` run; trimming
+  build-prompt re-reads when a TDD has no `ADR constraints`) need measurement
+  before commitment and are deferred to a follow-up pass with empirical data.
