@@ -654,6 +654,39 @@ EOF3
   cd "$REPO"; rm -rf "$TMPROOT"
 )
 
+# --- Pass 4: plan-classifier CLI dispatcher NFR-4 gap -----------------------
+
+echo "[cls-M2cli] plan-classifier CLI dispatcher surfaces tl_classify_plan failure (MAJ-2 from pass 4)"
+(
+  # Pre-fix: the standalone `bash plan-classifier.sh <tdd>` dispatcher
+  # discards `tl_classify_plan`'s exit code. An awk crash inside the
+  # function leaves `cls` empty, the dispatcher prints a tab-separated
+  # blank line, and exits 0 — indistinguishable from a clean classification.
+  # The fix must (a) propagate a non-zero exit, (b) emit a stderr line,
+  # and (c) substitute a non-blank `error` token in the stdout column so
+  # the failed entry stands out in a batch.
+  TMP="$(mktemp -d)"
+  cat > "$TMP/awk" <<'EOF2'
+#!/usr/bin/env bash
+exit 3
+EOF2
+  chmod +x "$TMP/awk"
+  err="$(PATH="$TMP:$PATH" bash "$CLS" "$FIX/clean.md" 2>&1 >"$TMP/stdout")"; rc=$?
+  out="$(cat "$TMP/stdout")"
+  rm -rf "$TMP"
+  if [ "$rc" -eq 0 ]; then
+    bad "dispatcher rc=0 despite classifier failure (got out='$out')"
+  else
+    ok "dispatcher non-zero rc on classifier failure (rc=$rc)"
+  fi
+  printf '%s\n' "$out" | grep -q '^error' \
+    && ok "stdout names the failed row with an 'error' token" \
+    || bad "expected stdout 'error\\t<tdd>' on classifier failure (got: $out)"
+  printf '%s\n' "$err" | grep -qi 'classifier\|awk\|fail' \
+    && ok "stderr names the failure (standalone path)" \
+    || bad "expected stderr to mention the classifier failure (got: $err)"
+)
+
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
 rm -f "$RESULTS"
