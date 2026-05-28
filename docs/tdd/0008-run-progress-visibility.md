@@ -92,7 +92,15 @@ follow-until-interrupt via a foreground `!` command.
   committed (a small gap inherited from TDD 0005's log tree, closed here since this TDD
   is what populates it with per-transition fragments).
 - The `latest` symlink is for discovery; the existing `.run.lock` (FR-18) is what
-  distinguishes an active run from a finished one.
+  distinguishes an active run from a finished one. **Hardening (added via
+  TDD 0011's review):** the runner resolves `latest` via `readlink` and refuses
+  to proceed if the resolved target is outside `docs/tdd/.implement-logs/`. The
+  threat model is local only — anyone with write access to the gitignored log
+  dir already has write access to the repo — but the one-line confinement
+  check is belt-and-suspenders defense in shared-repo dev environments
+  (devcontainers, shared CI runners) where the log dir and the script source
+  may have different trust boundaries. See TDD 0011 §"Failure modes" for the
+  symlink-target validation.
 - The rendered view is DERIVED on each read, never stored — so there is no second
   artifact to drift from the record.
 

@@ -365,6 +365,19 @@ validated.
   (`paused_cause: resume-blocked-branch-divergence`); the human
   decides whether to fresh-start or investigate. (Adding this field
   to the additive list — see Components above.)
+- **New TDDs merged to integration between pause and resume.** Resume
+  freezes the queue at its pause-time snapshot: `state_init`'s resume
+  branch diffs the current buildable set against the existing
+  `state.d/` fragments and *removes* any newly-detected TDDs from the
+  in-memory queue, naming each one in the run report
+  (`Skipping <slug>: newly-buildable, not in paused queue`). The user
+  invokes `/implement` again *after* the resume completes to build
+  them via the fresh-run path. `gate_one` carries a belt-and-suspenders
+  guard: a slug whose state fragment is missing is refused. Rationale:
+  resume's "pick up where you left off" contract stays clean; silently
+  growing the queue mid-run would change scope without consent (NFR-4
+  honesty). The fresh-run path is the right tool for queue growth — two
+  commands, two semantics.
 
 ## Verification plan
 
