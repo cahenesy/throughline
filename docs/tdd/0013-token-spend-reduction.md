@@ -149,8 +149,12 @@ weakens a gate's judgment, both reduce the cost of a clean run.
      complete findings; there is no early-exit. Exit code per the
      unified contract above: the function tracks the maximum exit
      code returned by any sub-lint and returns that (capped at 2).
-     Stdout is the concatenation of each sub-lint's findings,
-     prefixed by the lint's name to make sources traceable.
+     Stdout is the concatenation of each sub-lint's findings; the
+     per-finding `<code>` token (e.g. `section.empty`,
+     `placeholder.forbidden_phrase`, `traceability.untraced`)
+     already names the source lint unambiguously, so the wrapper
+     does not add an additional lint-name prefix — the code IS the
+     traceable source signal.
 
 2. **`agents/design-reviewer.md` (modified).** Add a "Pre-check
    already ran" preamble paragraph: "The skill that invokes you

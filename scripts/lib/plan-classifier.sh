@@ -82,8 +82,26 @@ if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
     echo "usage: $0 <tdd-path>..." >&2
     exit 2
   fi
+  # MAJ-2 (review pass 4): the dispatcher loop used to discard
+  # `tl_classify_plan`'s exit code. An awk crash inside the function
+  # left `cls` empty, the dispatcher printed a tab-separated blank line,
+  # and the script exited 0 — indistinguishable from a clean
+  # classification on this batch CLI path. NFR-4 requires
+  # "couldn't classify" to remain distinguishable from "classified
+  # successfully" on every observable surface, including this one.
+  # Surface failures as: an `error` token in the first column, the
+  # function's own stderr (already emitted by BL-2's fix), and a
+  # non-zero overall exit code.
+  any_err=0
   for tdd in "$@"; do
     cls="$(tl_classify_plan "$tdd")"
-    printf '%s\t%s\n' "$cls" "$tdd"
+    cls_rc=$?
+    if [ "$cls_rc" -ne 0 ] || [ -z "$cls" ]; then
+      printf 'error\t%s\n' "$tdd"
+      any_err=1
+    else
+      printf '%s\t%s\n' "$cls" "$tdd"
+    fi
   done
+  exit "$any_err"
 fi
