@@ -9,3 +9,5 @@
 | 0003 | Keep security-reviewer in the gate; delegate build + code-review | accepted | workflow / plugin-architecture |
 | 0004 | Verification is runtime observation at the surface; governed, not bundled | accepted | workflow / verification |
 | 0005 | Gate scope enforced by prompt + downstream detection, not sandboxing | accepted | workflow / runner-safety / gate-architecture |
+| 0006 | Gate verdicts grounded in verifiable artifacts, not author self-report | accepted | workflow / gate-architecture / verification-integrity |
+| 0007 | Halt model: bounded rework + structural escalation (not first-failure halt) | accepted | workflow / gate-architecture / halt-semantics |

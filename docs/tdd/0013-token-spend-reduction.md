@@ -13,6 +13,15 @@ ADR constraints: 0003, 0004, 0005
 > same substance lifted from this TDD's traceability table. This note is
 > retained as a historical pointer; no further action is required.
 
+> **Cross-ref to TDD 0019 (FR-68).** A sibling token-spend reduction
+> surface landed in the same design pass as this TDD's deferred build:
+> FR-68 (rework-attempt token-spend telemetry) is implemented by
+> TDD 0019. The two reductions are independent — this TDD covers the
+> design-reviewer pre-pass (FR-51) and the runtime-verify gate's model
+> tiering (FR-52); TDD 0019 covers per-attempt token-spend recording
+> for the bounded automatic rework loop. Neither overlaps the other's
+> mechanism or scope.
+
 ## Approach
 
 Two independent reductions in per-flow token spend, neither of which
