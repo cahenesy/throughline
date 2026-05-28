@@ -437,8 +437,14 @@ state_init() {
     # next concrete step.
     if [ "${#TDDS[@]}" -eq 0 ]; then
       echo "No TDDs to resume: every queued buildable TDD is newly-added since the pause. Run /implement (without --resume) to build them." | tee -a "$REPORT"
-      _write_run_fragment running
-      _write_run_fragment done
+      # TDD 0011 / iter-4 MAJOR-6: surface write failures on this
+      # early-exit path. A disk-full here would otherwise leave
+      # run.json in the prior `paused` state while the script exits
+      # 0 — status.sh would show "still paused with nothing to do."
+      _write_run_fragment running \
+        || echo "warning: state_init exit-path: run.json running update failed" | tee -a "$REPORT" >&2
+      _write_run_fragment done \
+        || echo "warning: state_init exit-path: run.json done update failed" | tee -a "$REPORT" >&2
       ln -sfn "$(basename "$LOGDIR")" "$MAINREPO/docs/tdd/.implement-logs/latest" 2>/dev/null || true
       exit 0
     fi
@@ -630,10 +636,22 @@ _enter_paused() {
   # failure mode: "Build branch HEAD differs at resume from what gates saw").
   branch_head_now="$(git rev-parse --verify HEAD 2>/dev/null || true)"
   now=$(date +%s)
-  _write_tdd_fragment "$slug" "${n:-0}" "$path" "${qp:-0}" paused "$stage" \
+  # TDD 0011 / iter-4 MAJOR-1: check the fragment-write outcome. If it
+  # fails (disk full / perm), do NOT call _write_run_fragment paused —
+  # otherwise run.json would say `paused` while the per-TDD fragment
+  # still says `building`, and the run would exit cleanly with a
+  # falsely consistent appearance. Propagate the failure so
+  # _retry_in_gate returns FAIL (rc=1), not paused (rc=2).
+  if ! _write_tdd_fragment "$slug" "${n:-0}" "$path" "${qp:-0}" paused "$stage" \
     "${sta:-$now}" "$now" "$branch" "$pr_url" "$log_f" "${note:-paused ($cause)}" \
-    "$cause" "$gates_csv" "$retries_json" "$branch_head_now"
-  _write_run_fragment paused
+    "$cause" "$gates_csv" "$retries_json" "$branch_head_now"; then
+    echo "error: _enter_paused: could not write per-TDD fragment for $slug; not promoting to paused" >&2
+    return 1
+  fi
+  # TDD 0011 / iter-4 MAJOR-2: warn on run.json write failure. The
+  # rollup is re-derivable from per-TDD fragments so this is not
+  # fatal, but a stale run.json.state misleads any direct consumer.
+  _write_run_fragment paused || echo "warning: _enter_paused: run.json not updated to paused for $slug" >&2
   # Best-effort: append a marker to the per-TDD log so a future operator
   # has a clear timestamped paused entry above the resume timestamp.
   if [ -n "$log" ] && [ -w "$(dirname "$log")" ] 2>/dev/null; then
@@ -668,6 +686,7 @@ _retry_in_gate() {
   # visible.
   case "$max_retries" in
     ''|*[!0-9]*) echo "warning: THROUGHLINE_GATE_RETRIES='$max_retries' not numeric; falling back to 3" >&2; max_retries=3 ;;
+    0) echo "warning: THROUGHLINE_GATE_RETRIES=0 not allowed (would cause immediate paused-with-no-attempt); normalizing to 1" >&2; max_retries=1 ;;
   esac
   case "$backoff_base" in
     ''|*[!0-9]*) echo "warning: THROUGHLINE_GATE_BACKOFF_BASE='$backoff_base' not numeric; falling back to 30" >&2; backoff_base=30 ;;
@@ -987,7 +1006,21 @@ _update_paused_cause() {
 _resume_from() {
   local slug="$1" f var
   f="${STATE_DIR:-}/$slug.json"
-  [ -n "$STATE_DIR" ] && [ -f "$f" ] || return 0
+  # TDD 0011 / iter-4 MAJOR-4: under --resume the fragment MUST exist
+  # (state_init's queue-freeze already filtered TDDs without fragments).
+  # Returning 0 (success) here would let callers treat the missing
+  # fragment as "not paused, proceed normally" — gate_one's own MA-4
+  # guard then sets blocked=1, marking ALL downstream sequential TDDs
+  # as BLOCKED instead of pausing this one. Refuse with rc=3 so the
+  # driver halts cleanly. Outside --resume the helper is harmless to
+  # call defensively, so keep the silent-0 path for that case.
+  if [ -z "${STATE_DIR:-}" ] || [ ! -f "$f" ]; then
+    if [ "${RESUME:-0}" -eq 1 ]; then
+      echo "error: _resume_from $slug: state fragment missing under --resume; refusing to proceed" >&2
+      return 3
+    fi
+    return 0
+  fi
   var="$(_resume_gates_var "$slug")"
   local fragment_status
   fragment_status="$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$f" | head -1)"
@@ -1009,16 +1042,23 @@ _resume_from() {
   # falsely match a `test(failing):` commit from any prior TDD on the same
   # long-lived integration branch.
   #
-  # TDD 0011 / BLOCKER-3: in COMBINED mode the build branch is SHARED across
-  # all TDDs in $CHANGE; another TDD's `test(failing):` commit would falsely
-  # satisfy this TDD's gate-1 check. Skip the resume optimization in
-  # combined mode — force has_test_first=0 so gate 1 re-runs. The fragment
-  # still carries the prior gates_completed list (which is cleared below
-  # via the empty done_list), so we get safe rebuild semantics without
-  # double-committing (gate_one's build wrapper handles that case).
-  local has_test_first=0 base_ref="" ref_to_scan
+  # TDD 0011 / iter-4 BLOCKER-1: in COMBINED mode the build branch is
+  # SHARED across all TDDs in $CHANGE — another TDD's `test(failing):`
+  # commit lives in the ancestry of this paused TDD, so the test-first
+  # scan would falsely declare gate 1 done. Instead of trying to scope
+  # the scan (no slug-keyed marker exists in the commit subjects),
+  # SKIP the gate-1 resume optimization entirely for combined mode:
+  # treat gate 1 as NOT-done so gate_one re-runs it. The done_list
+  # below is intentionally constructed WITHOUT 'build' for combined,
+  # so gate_one's `_is_done build` returns false and gate 1 executes.
+  # Re-running gate 1 is safe in combined mode: build_one is idempotent
+  # at the prompt level (the LLM sees the current branch state); if it
+  # already committed the change in the prior attempt, the new attempt
+  # will see it and either no-op or extend it.
+  local has_test_first=0 base_ref="" ref_to_scan combined_resume=0
   if [ "${COMBINED:-0}" = "1" ]; then
-    has_test_first=0
+    combined_resume=1
+    # Skip the entire test-first scan branch; jump to divergence check.
   else
     # Source A's scan target: TDD 0011 / BLOCKER-1+MAJOR-10 — the divergence
     # guard below now resolves the build branch via refs/heads/$branch (not
@@ -1038,16 +1078,20 @@ _resume_from() {
         has_test_first=1
       fi
     else
-      # No merge-base computable (integration missing / detached history).
-      # Fall back to the wider scan but warn — NFR-4: never silently claim
-      # a gate complete on degraded evidence.
-      echo "warning: _resume_from $slug — no merge-base with ${integration:-<unset>}; falling back to full $ref_to_scan scan" >&2
-      if git log --format='%s' "$ref_to_scan" 2>/dev/null | grep -qiE '^test\(failing\)'; then
-        has_test_first=1
-      fi
+      # TDD 0011 / iter-4 MAJOR-5: no merge-base means we cannot
+      # distinguish THIS TDD's `test(failing):` commit from a prior
+      # stacked TDD's. Per NFR-4 "never silently claim a gate complete
+      # on degraded evidence", REFUSE to resume rather than emit an
+      # affirmative based on the wider ancestry scan (the prior
+      # warning-and-pass behavior).
+      echo "warning: _resume_from $slug — no merge-base with ${integration:-<unset>}; refusing to claim gate 1 done on degraded evidence" >&2
+      _update_paused_cause "$slug" "resume-blocked-build-state-missing" || true
+      return 3
     fi
   fi
-  if [ "$has_test_first" -ne 1 ]; then
+  # In combined mode we deliberately bypass the has_test_first check —
+  # gate 1 will re-run via the empty done_list below.
+  if [ "$combined_resume" -eq 0 ] && [ "$has_test_first" -ne 1 ]; then
     # TDD 0011 / BLOCKER-2: refuse-to-resume returns rc=3 so the driver can
     # halt this TDD without falling through to gate_one (which would
     # silently overwrite paused→building). All callers (parallel /
@@ -1071,10 +1115,20 @@ _resume_from() {
     fi
   fi
 
-  # All checks pass: build the done-list. Gate 1 (build) is implicit when
-  # the test(failing): commit is present; gates 2-4 come from gates_completed.
-  local done_list="build"
-  if [ -n "$gates_csv" ]; then done_list="${done_list},${gates_csv}"; fi
+  # All checks pass: build the done-list.
+  # - Non-combined: gate 1 (build) is implicit when the test(failing):
+  #   commit is present.
+  # - Combined (iter-4 BLOCKER-1): explicitly omit 'build' so gate_one
+  #   re-runs gate 1 against the shared branch (idempotent at the
+  #   prompt level). Gates 2-4 come from gates_completed in both modes.
+  local done_list
+  if [ "${combined_resume:-0}" -eq 1 ]; then
+    done_list=""
+    if [ -n "$gates_csv" ]; then done_list="$gates_csv"; fi
+  else
+    done_list="build"
+    if [ -n "$gates_csv" ]; then done_list="${done_list},${gates_csv}"; fi
+  fi
   printf -v "$var" '%s' "$done_list"
   export "$var"
 }

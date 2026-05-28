@@ -24,7 +24,7 @@ ROOT="$(mktemp -d)"; trap 'rm -rf "$ROOT"' EXIT
 echo "[1.a] _write_tdd_fragment writes the four additive fields (paused_cause, gates_completed, retries, branch_head_at_pause)"
 ( D="$ROOT/1a"; mkdir -p "$D/state.d"
   export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
-  export INTEGRATION="main" CHANGE="ci" LOGDIR="$D"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
   TDDS=()
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "implement.sh must support THROUGHLINE_SOURCE_ONLY guard"; exit 0; }
   _write_tdd_fragment 0007-x 7 docs/tdd/0007-x.md 1 paused verify-runtime \
@@ -46,7 +46,7 @@ echo "[1.a] _write_tdd_fragment writes the four additive fields (paused_cause, g
 echo "[1.b] _write_tdd_fragment with empty cause/gates/retries emits null + [] (back-compat)"
 ( D="$ROOT/1b"; mkdir -p "$D/state.d"
   export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
-  export INTEGRATION="main" CHANGE="ci" LOGDIR="$D"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
   TDDS=()
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "implement.sh must support THROUGHLINE_SOURCE_ONLY guard"; exit 0; }
   _write_tdd_fragment 0001-alpha 1 docs/tdd/0001-alpha.md 1 pending "" \
@@ -66,7 +66,7 @@ echo "[1.b] _write_tdd_fragment with empty cause/gates/retries emits null + [] (
 echo "[1.c] _write_run_fragment accepts paused and stamps pause_started_at"
 ( D="$ROOT/1c"; mkdir -p "$D/state.d"
   export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
-  export INTEGRATION="main" CHANGE="ci" LOGDIR="$D"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
   TDDS=()
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "implement.sh must support THROUGHLINE_SOURCE_ONLY guard"; exit 0; }
   _write_run_fragment paused
@@ -95,7 +95,7 @@ EOF
 echo "[2.a] _classify_cause maps each documented stderr pattern to its cause"
 ( D="$ROOT/2a"; mkdir -p "$D/state.d"
   export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
-  export INTEGRATION="main" CHANGE="ci" LOGDIR="$D"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
   TDDS=()
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
   L="$D/log"
@@ -128,7 +128,7 @@ echo "[2.a] _classify_cause maps each documented stderr pattern to its cause"
 echo "[2.b] _classify_cause uses exit-signal table: SIGTERM transient, SIGKILL fatal"
 ( D="$ROOT/2b"; mkdir -p "$D/state.d"
   export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
-  export INTEGRATION="main" CHANGE="ci" LOGDIR="$D"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
   TDDS=()
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
   L="$D/log"; : > "$L"
@@ -147,7 +147,7 @@ echo "[2.b] _classify_cause uses exit-signal table: SIGTERM transient, SIGKILL f
 echo "[3.a] _retry_in_gate retries transient until success and records each retry"
 ( D="$ROOT/3a"; mkdir -p "$D/state.d"
   export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
-  export INTEGRATION="main" CHANGE="ci" LOGDIR="$D"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
   TDDS=()
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
   _write_tdd_fragment 0007-x 7 docs/tdd/0007-x.md 1 building build \
@@ -179,7 +179,7 @@ echo "[3.a] _retry_in_gate retries transient until success and records each retr
 echo "[3.b] _retry_in_gate exhausts budget -> _enter_paused, returns 2"
 ( D="$ROOT/3b"; mkdir -p "$D/state.d"
   export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
-  export INTEGRATION="main" CHANGE="ci" LOGDIR="$D"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
   TDDS=()
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
   _write_tdd_fragment 0007-x 7 docs/tdd/0007-x.md 1 building verify-runtime \
@@ -205,7 +205,7 @@ echo "[3.b] _retry_in_gate exhausts budget -> _enter_paused, returns 2"
 echo "[3.c] _retry_in_gate on fatal cause does NOT retry; returns 1, no paused"
 ( D="$ROOT/3c"; mkdir -p "$D/state.d"
   export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
-  export INTEGRATION="main" CHANGE="ci" LOGDIR="$D"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
   TDDS=()
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
   _write_tdd_fragment 0007-x 7 docs/tdd/0007-x.md 1 building verify-runtime \
@@ -247,7 +247,7 @@ echo "[4.a] _resume_from populates RESUME_GATES_DONE_<slug> from gates_completed
   BRANCH_HEAD="$(git rev-parse HEAD)"
 
   export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
-  export INTEGRATION="main" CHANGE="ci" LOGDIR="$D"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
   TDDS=("docs/tdd/0007-x.md")
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
   _write_tdd_fragment 0007-x 7 docs/tdd/0007-x.md 1 paused verify-runtime \
@@ -282,7 +282,7 @@ echo "[4.b] _resume_from refuses to resume when build branch HEAD diverges -> pa
   printf 'test\n' > test.txt; git add -A; git commit -qm "test(failing): 0007-x"
 
   export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
-  export INTEGRATION="main" CHANGE="ci" LOGDIR="$D"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
   TDDS=("docs/tdd/0007-x.md")
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
   _write_tdd_fragment 0007-x 7 docs/tdd/0007-x.md 1 paused verify-runtime \
@@ -308,7 +308,7 @@ echo "[4.c] _resume_from refuses when build branch has no test(failing): commit"
   BRANCH_HEAD="$(git rev-parse HEAD)"
 
   export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
-  export INTEGRATION="main" CHANGE="ci" LOGDIR="$D"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
   TDDS=("docs/tdd/0007-x.md")
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
   _write_tdd_fragment 0007-x 7 docs/tdd/0007-x.md 1 paused build \
@@ -377,6 +377,43 @@ EOF
   printf '%s\n' "$out" | grep -qE 'paused=1' \
     && ok "summary line includes paused=N counter" \
     || bad "summary line should include paused=1"
+) || true
+
+# --- iter-4 BLOCKER-1: combined-mode resume re-runs gate 1 -------------------
+echo "[4.d] _resume_from in combined mode skips gate-1 done-list (force re-run)"
+( D="$ROOT/4d"; mkdir -p "$D/state.d"
+  REPO_T="$D/repo"; mkdir -p "$REPO_T" && cd "$REPO_T"
+  git init -q; git config user.email t@t.t; git config user.name t
+  printf 'base\n' > base.txt; git add -A; git commit -qm base
+  # In combined mode, ALL TDDs share the same $CHANGE branch — but no
+  # per-TDD test(failing): commits are required for resume to succeed.
+  git checkout -q -b ci
+  # Simulate two TDDs already partially built: one fully (with a
+  # test(failing): commit), one just starting.
+  printf 'test-a\n' > test-a.txt; git add -A; git commit -qm "test(failing): 0001-alpha"
+  printf 'impl-a\n' > impl-a.txt; git add -A; git commit -qm "stub build 0001-alpha"
+  BRANCH_HEAD="$(git rev-parse HEAD)"
+
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="combined"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D" COMBINED=1
+  TDDS=("docs/tdd/0002-beta.md")
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  # 0002-beta has no test(failing): commit on the branch (its turn was
+  # interrupted before gate 1 finished). In non-combined mode this would
+  # be refused. In combined mode it should resume; gate-1 will re-run.
+  _write_tdd_fragment 0002-beta 2 docs/tdd/0002-beta.md 1 paused build \
+    1000 1000 "ci" "" "log" "paused (ratelimit)" \
+    "ratelimit" "" "[]" "$BRANCH_HEAD"
+
+  _resume_from 0002-beta
+  rrc=$?
+  [ "$rrc" -ne 3 ] && ok "combined-mode resume does NOT refuse with rc=3 (got $rrc)" \
+    || bad "combined-mode resume should NOT refuse (rc=3 means BLOCKER-1 regression)"
+  rkey="RESUME_GATES_DONE_0002_beta"
+  done_list="${!rkey:-}"
+  # done_list MUST be empty for combined mode — gate 1 must re-run.
+  [ -z "$done_list" ] && ok "combined-mode done_list omits 'build' so gate 1 re-runs" \
+    || bad "combined-mode done_list should be empty (got: '$done_list')"
 ) || true
 
 # --- iter-3 BLOCKER-1: schema-version refusal gate -------------------------
