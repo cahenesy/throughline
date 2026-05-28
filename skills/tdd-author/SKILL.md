@@ -183,6 +183,20 @@ obvious stuff so the independent gate spends its judgment on substance:
 
 Fix and move on (no re-review loop).
 
+**Mechanical pre-pass (TDD 0013 / FR-51).** Before moving to 7b, run
+
+```
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/lib/tdd-lint.sh" docs/tdd/<your-set>
+```
+
+and address every finding. The pre-pass detects the structural-gap findings the
+design-reviewer would otherwise spend tokens on (missing required section,
+missing frontmatter, placeholder strings outside fences, untraced FR/NFR).
+If `tl_lint_all` exits non-zero, fix the findings or record an explicit waiver
+in the design PR body before invoking the design-reviewer in 7b. The
+design-reviewer subagent is NOT invoked when there are unaddressed mechanical
+findings — that would waste tokens on work a `grep` already did.
+
 **7b. Independent design critique (gate — do not skip).** Before opening the design
 PR, get an INDEPENDENT critique of the whole authored set. Spawn the
 `design-reviewer` subagent — it runs in fresh context on a
@@ -191,6 +205,10 @@ reads the PRD, the TDD(s), and the accepted ADRs and checks requirement
 traceability, interface specification, the REQUIRED alternatives analysis, ADR
 conflicts, and scope coherence, ending with `DESIGN_REVIEW: PASS` or
 `DESIGN_REVIEW: BLOCK <reason>`.
+
+- Pre-requisite: `tl_lint_all` exit 0 (or recorded waiver). The design-reviewer
+  assumes the pre-pass is clean; spawning it on a structurally-broken TDD set
+  is the wrong tool for the job and burns tokens (TDD 0013 / FR-51).
 
 - On BLOCK: fix the design — tighten interfaces, add the missing alternatives
   analysis, resolve the ADR conflict, re-scope — and re-run the critique until it

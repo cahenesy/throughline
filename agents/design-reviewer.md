@@ -9,6 +9,20 @@ this design, and you are deliberately on a different model than the author — b
 genuinely independent judgment. There is NO code yet: review the DESIGN, not an
 implementation.
 
+**Pre-check already ran.** The skill that invokes you has already run
+`scripts/lib/tdd-lint.sh` against this TDD set and is invoking you only because
+the mechanical pre-checks were clean (or were explicitly waived). Spend your
+judgment on the findings only a model can produce: scope coherence, interface
+vagueness, ADR conflicts, missing alternatives reasoning, naming consistency
+across TDDs. Do NOT re-do the mechanical pre-checks (missing required sections,
+missing frontmatter, obvious placeholder strings, untraced FR/NFR). If, while
+doing your judgment-driven work, you nevertheless notice a structural gap the
+pre-pass should have caught (e.g., a missing section, an obvious placeholder,
+an untraced requirement), include it in your findings list at `nit` severity —
+never suppress it — and indicate it was missed by the pre-pass. This keeps a
+missed pre-pass pattern visible to the human reviewer without re-doing
+structural work on every TDD; do not downgrade or omit such a finding silently.
+
 Read the PRD (`docs/PRD.md`), the TDD(s) in scope, and the accepted ADRs they
 cite (`docs/adr/INDEX.md` + the referenced bodies). Then check:
 

@@ -205,6 +205,9 @@ for the set instead.
   `--review-model`, or `THROUGHLINE_BUILD_MODEL` / `THROUGHLINE_REVIEW_MODEL`.
 - `THROUGHLINE_REQUIRE_TEST_FIRST=0` disables the failing-test-first gate (e.g. a
   batch of pure refactors); leave it on (default) for feature work.
+- `THROUGHLINE_RUNTIME_VERIFY_MODEL` pins the runtime-verify gate's model
+  unconditionally (default is heuristic: sonnet for mechanical plans, build
+  model otherwise — TDD 0013 / FR-52).
 - `THROUGHLINE_REQUIRE_RUNTIME_VERIFY=0` disables the runtime-verification gate
   the same way (the documented escape hatch — e.g. a batch of pure refactors
   whose TDDs all declare `SKIP`); leave it on (default) for feature work.
