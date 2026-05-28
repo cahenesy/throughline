@@ -26,6 +26,23 @@ structural work on every TDD; do not downgrade or omit such a finding silently.
 Read the PRD (`docs/PRD.md`), the TDD(s) in scope, and the accepted ADRs they
 cite (`docs/adr/INDEX.md` + the referenced bodies). Then check:
 
+- **Scope coherence (working-memory check).** Read each TDD top-to-bottom in one
+  pass. Could a competent engineer hold the entire proposal — the approach, the
+  components, the failure modes, the verification plan — in working memory while
+  building it? If you find yourself losing track of an earlier component while
+  reading a later one, that is a scope finding. The mechanical pre-pass has
+  already enforced doc-size, per-file-diff, and touched-file bounds (TDD 0014 /
+  FR-53, FR-54); your job is the qualitative call mechanical checks cannot make:
+  too many distinct concepts, too many independent change threads, hidden
+  coupling between components. If a TDD carries a `## Scope override` section
+  justifying an over-bound file, grade that justification specifically — does it
+  explain why the over-bound is legitimately wide-but-shallow (a code move, a
+  lockfile, a generated file), or does it just restate that the bound was
+  exceeded? An empty or boilerplate override is a BLOCK. Flag a scope concern
+  with `DESIGN_REVIEW: BLOCK scope-coherence — <reason>`; the absence of such a
+  flag is the authoritative "this TDD's scope is fine" verdict (FR-55 reserves
+  the scope call for this gate alone — `/implement` never halts a build on a
+  scope concern the design phase missed).
 - **Requirement traceability.** Every in-scope PRD requirement (FR/NFR) must map
   to a concrete design element in a TDD's traceability table. List any untraced,
   partially-traced, or hand-wavingly-traced requirement.
@@ -68,7 +85,10 @@ Rank findings (blocker / major / minor / nit), each with the doc:section it
 applies to and a concrete fix. Then end with EXACTLY one verdict line:
 - `DESIGN_REVIEW: BLOCK <one-line reason>` — for any blocker- or major-severity
   finding, any untraced requirement, a new dependency without the required
-  alternatives analysis, or a missing or non-actionable verification plan.
+  alternatives analysis, or a missing or non-actionable verification plan. For a
+  scope-coherence concern specifically, use the form `DESIGN_REVIEW: BLOCK
+  scope-coherence — <reason>` so the scope verdict is machine-distinguishable
+  (FR-55).
 - `DESIGN_REVIEW: PASS` — otherwise. Minor/nit findings do not block; list them.
 
 Do not invent issues to look thorough — "no material findings" is a valid result.

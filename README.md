@@ -149,7 +149,7 @@ throughline/
 │   │   ├── pause-retry.sh       # pause/retry classification (rate-limit, transient, usage-limit)
 │   │   ├── gates.sh             # gate executors: build / verify / runtime-verify / review
 │   │   ├── resume.sh            # resume orchestration: re-enter paused state, pick gates to re-run
-│   │   ├── tdd-lint.sh          # mechanical pre-pass: structural lint + placeholder + traceability
+│   │   ├── tdd-lint.sh          # mechanical pre-pass: structural lint + placeholder + traceability; --bounds runs the TDD-scope checks (doc size / per-file diff / touched-file count)
 │   │   └── plan-classifier.sh   # mechanical / nontrivial verification-plan heuristic (model tiering)
 │   ├── build-prompt.md          # build discipline; delegates to superpowers:test-driven-development
 │   ├── review-prompt.md         # review gate: pr-review-toolkit + security-reviewer, separate process/model

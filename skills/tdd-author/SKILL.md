@@ -131,6 +131,26 @@ delegated (FR-26 / ADR 0004), so do NOT specify a particular harness or framewor
 — state what to observe and where to observe it. A missing or non-actionable
 plan is BLOCKed by the design-critique gate (step 7b).
 
+**Declared scope (REQUIRED — TDD 0014 / FR-53, FR-54).** Every TDD declares its
+scope in two sections so the bound is a falsifiable design input, not a
+build-time surprise:
+- `## Touched files` — an explicit list of the source files this TDD changes,
+  one per line as `- <path> — <one-line purpose>`. This is the declared set the
+  build-time structural-finding check (FR-67) reads to detect a fix that touches
+  files outside it.
+- `## Expected diff size` — a per-file estimate of lines added/removed, one per
+  line as `- <path> — <N> lines`, closed by a summary line
+  `Total expected diff: <N> lines across <M> files.`. A file legitimately over
+  the per-file cap (a code move, a lockfile, a generated file) declares an
+  inline exception: `- <path> — <N> lines (exception: <one-line justification>)`.
+
+  Keep each TDD inside the bounds (defaults: body ≤ `THROUGHLINE_TDD_MAX_LINES`
+  = 350 lines, per-file diff ≤ `THROUGHLINE_TDD_MAX_FILE_DIFF` = 300 lines,
+  touched files ≤ `THROUGHLINE_TDD_MAX_TOUCHED` = 8). A TDD that blows a bound
+  without a recorded exception is refused at design time by step 7b's scope
+  pre-pass — split it instead. The bounds are env-overridable for
+  experimentation, matching the `THROUGHLINE_REVIEW_MODEL` pattern.
+
 ```
 # TDD NNNN: <feature>
 Status: draft | ready | implemented
@@ -149,6 +169,8 @@ Supersedes: <NNNN, only when this TDD replaces a previously-implemented one>
 ## Dependencies considered    (REQUIRED per new dep: chosen + ≥1 rejected alternative + reason)
 ## PRD conflicts surfaced (and resolution)
 ## Decisions to promote (ADR candidates)
+## Touched files              (REQUIRED: declared scope set for the FR-67 structural-finding check)
+## Expected diff size         (REQUIRED: per-file lines added/removed estimate; declare exceptions inline)
 ```
 
 ## 6. ADR evaluation
@@ -196,6 +218,38 @@ If `tl_lint_all` exits non-zero, fix the findings or record an explicit waiver
 in the design PR body before invoking the design-reviewer in 7b. The
 design-reviewer subagent is NOT invoked when there are unaddressed mechanical
 findings — that would waste tokens on work a `grep` already did.
+
+**Scope-bound pre-pass + refusal flow (TDD 0014 / FR-53, FR-54).** After the
+structural pre-pass is clean and BEFORE spawning the design-reviewer, run the
+scope-bound checks on each authored TDD (run per-file so a `PRECHECK_FAIL` is
+attributable to a specific TDD):
+
+```
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/lib/tdd-lint.sh" --bounds docs/tdd/<each-tdd>
+```
+
+This emits a `PRECHECK_FAIL: <check> <details>` line per bound violation
+(`tdd-doc-size`, `per-file-diff`, `touched-files`, `missing-section`, or
+`expected-diff-malformed`). No model time is spent here — these are pure-`awk`
+checks. On a clean exit (no `PRECHECK_FAIL`), proceed to 7b.
+
+On ANY `PRECHECK_FAIL`, collect the failing TDD(s) and present the user three
+options via `AskUserQuestion`, with the question text containing the verbatim
+`PRECHECK_FAIL` lines (when several fail at once, surface them all in one
+question — the user decides once, not per-failure):
+
+| Option | Effect |
+|---|---|
+| **Split manually** | Exit the gate. The user revises the TDD and re-invokes `/tdd-author`. |
+| **Accept draft split set** | Propose a per-`Sequencing` split: one new TDD per top-level numbered item in the offending TDD's `## Sequencing / implementation plan` (this is a deterministic transformation — no model judgment in the proposal itself). The user reviews and may edit the proposed file set before approval; if rejected entirely, fall back to "split manually". On approval, rewrite the file set. |
+| **Override with justification** | Prompt for a justification (min 20, max 400 chars). Insert it into the offending TDD as a new `## Scope override` section. Re-run the scope pre-pass; if any bound is still violated and no inline `(exception: …)` marker covers that specific file, the refusal repeats — the user must justify *each* over-bound file individually, never blanket the whole TDD. A boilerplate or empty justification still BLOCKs at the design-reviewer (it grades the `## Scope override` text specifically). |
+
+The draft-split-set rule uses `## Sequencing / implementation plan` items as the
+split unit deliberately: they are already the unit chosen for continuous-review
+checkpointing, so the split aligns authoring granularity with review
+granularity. Do NOT add a scope check to `/implement` — per ADR 0005 and FR-55,
+the design-critique gate is the sole scope authority; the build never halts on a
+scope concern this gate missed.
 
 **7b. Independent design critique (gate — do not skip).** Before opening the design
 PR, get an INDEPENDENT critique of the whole authored set. Spawn the

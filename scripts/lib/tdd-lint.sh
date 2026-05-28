@@ -318,6 +318,179 @@ EOF
   return "$rc"
 }
 
+# ============================================================================
+# Scope-bound checks (TDD 0014 / FR-53 + FR-54). These are a SEPARATE concern
+# from the tl_lint_* structural pre-pass: they enforce the declared-scope bounds
+# a TDD authored under FR-53 must respect, and they emit a distinct
+# `PRECHECK_FAIL: <check> <details>` line (not the `<file>:<line> <sev> <code>`
+# finding format) because /tdd-author's step-7b refusal flow keys its
+# three-option AskUserQuestion off that exact prefix.
+#
+# Three bounds, each env-overridable (matching the THROUGHLINE_REVIEW_MODEL /
+# THROUGHLINE_RUNTIME_VERIFY_MODEL pattern from TDD 0013):
+#   THROUGHLINE_TDD_MAX_LINES      default 350  (TDD body size)
+#   THROUGHLINE_TDD_MAX_FILE_DIFF  default 300  (per-touched-file diff estimate)
+#   THROUGHLINE_TDD_MAX_TOUCHED    default 8    (touched-file count)
+# A non-positive (or non-integer) value SKIPS that bound entirely — the escape
+# valve for /tdd-author re-runs against the legacy TDD set during the Theme D
+# refactor period, before the existing drafts gain the two new sections.
+
+# Emit a scope-bound failure line on stdout.
+_tl_precheck_fail() {  # <details...>
+  printf 'PRECHECK_FAIL: %s\n' "$*"
+}
+
+# True when an env-configured bound is an active positive integer; false (skip)
+# for empty / non-integer / zero / negative values.
+_tl_bound_active() {  # <value>
+  printf '%s' "$1" | grep -qE '^[1-9][0-9]*$'
+}
+
+# check_tdd_doc_size — count the TDD body (frontmatter excluded: the body is
+# everything from the first `^## ` heading through EOF) and fail if it exceeds
+# THROUGHLINE_TDD_MAX_LINES.
+check_tdd_doc_size() {  # <tdd-path>
+  local f="$1"
+  if [ ! -f "$f" ]; then
+    echo "tdd-lint: doc-size: input not found: $f" >&2
+    return 2
+  fi
+  local max="${THROUGHLINE_TDD_MAX_LINES:-350}"
+  _tl_bound_active "$max" || return 0   # non-positive / non-int → skip
+
+  local n awk_rc
+  n="$(awk '/^## /{started=1} started{c++} END{print c+0}' "$f")"
+  awk_rc=$?
+  if [ "$awk_rc" -ne 0 ]; then
+    echo "tdd-lint: doc-size: body-count awk failed (exit $awk_rc) on $f" >&2
+    return 2
+  fi
+  if [ "$n" -gt "$max" ]; then
+    _tl_precheck_fail "tdd-doc-size $n > $max"
+    return 1
+  fi
+  return 0
+}
+
+# check_touched_file_count — count `^- \S` entries in the `## Touched files`
+# section (fence-aware) and fail if it exceeds THROUGHLINE_TDD_MAX_TOUCHED. A
+# missing section is itself a PRECHECK_FAIL (the section is REQUIRED).
+check_touched_file_count() {  # <tdd-path>
+  local f="$1"
+  if [ ! -f "$f" ]; then
+    echo "tdd-lint: touched-files: input not found: $f" >&2
+    return 2
+  fi
+  local max="${THROUGHLINE_TDD_MAX_TOUCHED:-8}"
+  _tl_bound_active "$max" || return 0   # non-positive / non-int → skip
+
+  local out awk_rc
+  out="$(awk '
+    BEGIN { in_fence=0; in_sec=0; found=0; n=0 }
+    /^[[:space:]]*```/ { in_fence = !in_fence; next }
+    !in_fence && /^## Touched files[[:space:]]*$/ { in_sec=1; found=1; next }
+    !in_fence && /^## / { in_sec=0; next }
+    in_sec && !in_fence && /^- [^[:space:]]/ { n++ }
+    END { printf "%d %d\n", found, n }
+  ' "$f")"
+  awk_rc=$?
+  if [ "$awk_rc" -ne 0 ]; then
+    echo "tdd-lint: touched-files: awk failed (exit $awk_rc) on $f" >&2
+    return 2
+  fi
+  local found="${out%% *}" n="${out##* }"
+  if [ "$found" -eq 0 ]; then
+    _tl_precheck_fail "missing-section ## Touched files"
+    return 1
+  fi
+  if [ "$n" -gt "$max" ]; then
+    _tl_precheck_fail "touched-files $n > $max"
+    return 1
+  fi
+  return 0
+}
+
+# check_per_file_diff_bound — parse the `## Expected diff size` section into
+# (file, lines, exception?) triples (fence-aware). For any file whose estimate
+# exceeds THROUGHLINE_TDD_MAX_FILE_DIFF with no inline `(exception: …)` marker,
+# emit a per-file-diff PRECHECK_FAIL. Unparseable entries emit
+# expected-diff-malformed; a missing section is a missing-section PRECHECK_FAIL.
+# The whole awk pass emits the lines directly and signals via exit code:
+#   0 clean, 1 at least one finding, 2 section missing.
+check_per_file_diff_bound() {  # <tdd-path>
+  local f="$1"
+  if [ ! -f "$f" ]; then
+    echo "tdd-lint: per-file-diff: input not found: $f" >&2
+    return 2
+  fi
+  local max="${THROUGHLINE_TDD_MAX_FILE_DIFF:-300}"
+  _tl_bound_active "$max" || return 0   # non-positive / non-int → skip
+
+  # The em-dash (—) is the file/estimate separator in the declared section; the
+  # awk index() below is byte-based so it works regardless of locale.
+  local out awk_rc
+  out="$(awk -v MAX="$max" '
+    BEGIN { in_fence=0; in_sec=0; found=0; fail=0 }
+    /^[[:space:]]*```/ { in_fence = !in_fence; next }
+    !in_fence && /^## Expected diff size[[:space:]]*$/ { in_sec=1; found=1; next }
+    !in_fence && /^## / { in_sec=0; next }
+    in_sec && !in_fence && /^- [^[:space:]]/ {
+      rest = substr($0, 3)                       # strip the leading "- "
+      em = index(rest, "—")
+      if (em > 0) { file = substr(rest, 1, em - 1) }
+      else        { file = rest; sub(/[[:space:]].*/, "", file) }
+      gsub(/`/, "", file)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", file)
+      if (match(rest, /[0-9]+[[:space:]]*lines?/)) {
+        num = substr(rest, RSTART, RLENGTH)
+        sub(/[^0-9].*/, "", num)
+        n = num + 0
+        if (n > MAX && index(rest, "(exception:") == 0) {
+          printf "PRECHECK_FAIL: per-file-diff %s %d > %d (no exception)\n", file, n, MAX
+          fail = 1
+        }
+      } else {
+        printf "PRECHECK_FAIL: expected-diff-malformed %s\n", $0
+        fail = 1
+      }
+    }
+    END {
+      if (!found) { printf "PRECHECK_FAIL: missing-section ## Expected diff size\n"; exit 2 }
+      exit (fail ? 1 : 0)
+    }
+  ' "$f")"
+  awk_rc=$?
+  if [ "$awk_rc" -gt 2 ]; then
+    echo "tdd-lint: per-file-diff: awk failed (exit $awk_rc) on $f" >&2
+    return 2
+  fi
+  [ -n "$out" ] && printf '%s\n' "$out"
+  [ "$awk_rc" -eq 0 ] && return 0
+  return 1
+}
+
+# tl_check_bounds — run the three scope-bound checks over each TDD. Findings
+# always print (PRECHECK_FAIL lines); the exit code is the routable signal:
+#   0 — every TDD is within bounds.
+#   1 — at least one PRECHECK_FAIL was emitted.
+#   2 — a script-level error (missing input / awk crash).
+tl_check_bounds() {  # <tdd-path>...
+  local rc=0 r tdd
+  for tdd in "$@"; do
+    if [ ! -f "$tdd" ]; then
+      echo "tdd-lint: bounds: input not found: $tdd" >&2
+      [ "$rc" -lt 2 ] && rc=2
+      continue
+    fi
+    for fn in check_tdd_doc_size check_touched_file_count check_per_file_diff_bound; do
+      "$fn" "$tdd"; r=$?
+      [ "$r" -gt "$rc" ] && rc="$r"
+    done
+  done
+  [ "$rc" -gt 2 ] && rc=2
+  return "$rc"
+}
+
 # tl_lint_all — run the three lints over each TDD in turn. All three lints
 # always run (no early-exit) so findings accumulate; the aggregate exit is the
 # MAX of any sub-lint's exit code, capped at 2.
@@ -340,8 +513,19 @@ tl_lint_all() {  # <tdd-path>...
 # unset (e.g. when the file is sourced into a function-only context).
 if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
   if [ "$#" -eq 0 ]; then
-    echo "usage: $0 <tdd-path>..." >&2
+    echo "usage: $0 [--bounds] <tdd-path>..." >&2
     exit 2
+  fi
+  # `--bounds` runs the TDD 0014 scope-bound checks (PRECHECK_FAIL output);
+  # the default path runs the FR-51 structural pre-pass (tl_lint_all).
+  if [ "$1" = "--bounds" ]; then
+    shift
+    if [ "$#" -eq 0 ]; then
+      echo "usage: $0 --bounds <tdd-path>..." >&2
+      exit 2
+    fi
+    tl_check_bounds "$@"
+    exit "$?"
   fi
   tl_lint_all "$@"
   exit "$?"

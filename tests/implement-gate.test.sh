@@ -323,4 +323,15 @@ if [ -f "$TSR" ]; then
   bash "$TSR" || TSR_FAIL=1
 fi
 
-[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ]
+# Run the bounded-tdd-scope eval (TDD 0014 / FR-53..FR-55) as part of the same
+# suite. Same rationale: it tests the scope-bound checks added to tdd-lint.sh
+# plus the design-time refusal/critique wiring — gate scaffolding that
+# CI_CHECKS_TEST_CMD exercises in CI.
+BTS="$(dirname "$0")/bounded-tdd-scope.test.sh"
+BTS_FAIL=0
+if [ -f "$BTS" ]; then
+  echo
+  bash "$BTS" || BTS_FAIL=1
+fi
+
+[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ]
