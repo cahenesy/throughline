@@ -24,18 +24,37 @@ tl_classify_plan() {
   # Extract just the verification-plan section body (between its heading and
   # the next `^## ` heading). The body, lowercased, is what the keyword
   # checks scan — nothing else in the TDD should influence the classifier.
-  local body
+  #
+  # MAJ-3 (review pass 2): check PIPESTATUS for the awk|tr pipeline. An awk
+  # crash would otherwise leave body empty and fall through to the
+  # conservative "nontrivial" default with rc=0 — which the runner's M3
+  # fix then treats as a genuine nontrivial classification, bypassing
+  # the "(classifier failed, ...)" log note.
+  local body body_rcs
   body="$(awk '
     /^## Verification plan/ { in_sec=1; next }
     /^## / { in_sec=0; next }
     in_sec { print }
   ' "$f" | tr '[:upper:]' '[:lower:]')"
+  body_rcs=("${PIPESTATUS[@]}")
+  if [ "${body_rcs[0]}" -ne 0 ] || [ "${body_rcs[1]:-0}" -ne 0 ]; then
+    echo "plan-classifier: body-extract pipeline failed (awk=${body_rcs[0]} tr=${body_rcs[1]:-0}) on $f" >&2
+    return 2
+  fi
 
   # Nontrivial triggers — the bare keyword set the TDD enumerates. Case-
   # insensitive match against the lowercased body. "websocket" covers the
   # protocol-level streaming case; bare "streaming" is intentionally not in
   # this list (a curl + line-count plan is mechanical).
-  if printf '%s' "$body" | grep -qE 'browser|dom|playwright|selenium|screenshot|interactive|multi-step|multi-turn|judgment|rendered output|websocket|(^| )ui( |$|[.,:;])'; then
+  #
+  # MAJ-1 (review pass 2): the UI boundary character class also covers `?`
+  # `)` `!`, and the start-anchor allows a preceding `(` so `(UI)` /
+  # `the UI?` / `UI!` all match. The narrower form `(^| )ui( |$|[.,:;])`
+  # missed those — a plan that drove a UI element with question-mark or
+  # closing-paren punctuation got misclassified as mechanical (or fell
+  # through to the conservative default for the wrong reason) and
+  # ran on sonnet instead of the build model.
+  if printf '%s' "$body" | grep -qE 'browser|dom|playwright|selenium|screenshot|interactive|multi-step|multi-turn|judgment|rendered output|websocket|(^| |[(])ui( |$|[.,:;?)!])'; then
     echo nontrivial
     return 0
   fi

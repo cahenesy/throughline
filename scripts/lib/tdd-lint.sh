@@ -89,12 +89,25 @@ tl_lint_structural() {  # <tdd-path>
       "missing '## Requirement traceability' section"
     rc=2
   else
-    local has_rows
+    # BL-2 + MAJ-4 (review pass 2): capture awk's rc directly (command
+    # substitution would otherwise mask a crash as "no rows" — a
+    # false-positive blocker that hides the real error). Also track
+    # fenced-code state so a fenced-only |-table inside the section does
+    # NOT satisfy has_rows (the traceability rows must be real markdown
+    # structure, not example literals inside a code fence).
+    local has_rows awk_rc
     has_rows="$(awk '
-      /^## Requirement traceability$/ { in_sec=1; next }
-      /^## / { in_sec=0; next }
-      in_sec && (/^\|/ || /^- FR-/ || /^- NFR-/) { print "yes"; exit }
+      BEGIN { in_sec=0; in_fence=0 }
+      /^[[:space:]]*```/ { in_fence = !in_fence; next }
+      !in_fence && /^## Requirement traceability$/ { in_sec=1; next }
+      !in_fence && /^## / { in_sec=0; next }
+      in_sec && !in_fence && (/^\|/ || /^- FR-/ || /^- NFR-/) { print "yes"; exit }
     ' "$f")"
+    awk_rc=$?
+    if [ "$awk_rc" -ne 0 ]; then
+      echo "tdd-lint: structural: traceability has_rows awk failed (exit $awk_rc) on $f" >&2
+      return 2
+    fi
     if [ -z "$has_rows" ]; then
       _tl_emit "$f" 0 blocker "section.traceability" \
         "'## Requirement traceability' section contains no table-row or '- FR-/NFR-' definition-list entry"
@@ -144,6 +157,16 @@ tl_lint_structural() {  # <tdd-path>
       if (last_ln > 0 && count == 0) emit(last_ln, last_hdr)
     }
   ' FILE="$f" "$f")"
+  # BL-1 (review pass 2): capture awk's rc directly. The first M1 fix
+  # moved the section.empty pass from a temp-file redirect to a command
+  # substitution, but still ignored awk's exit code — an awk crash left
+  # empty_out empty and the [ -n ] guard returned "no findings" rc=0,
+  # the same NFR-4 violation the temp-file form had.
+  local empty_awk_rc=$?
+  if [ "$empty_awk_rc" -ne 0 ]; then
+    echo "tdd-lint: structural: section.empty awk failed (exit $empty_awk_rc) on $f" >&2
+    return 2
+  fi
   if [ -n "$empty_out" ]; then
     printf '%s\n' "$empty_out"
     # Promote rc to 1 (major) but never demote a 2 (blocker).
@@ -243,11 +266,27 @@ tl_lint_traced() {  # <tdd-path>
   [ -z "$refs_ids" ] && return 0   # nothing to trace
 
   # Pull all FR-/NFR- mentions from the traceability section body.
+  # MAJ-2 (review pass 2): check the pipeline's exit code via PIPESTATUS so
+  # an awk crash surfaces as rc=2 rather than silently producing an empty
+  # ids_in_table — which would map every FR in `PRD refs` to a
+  # false-positive "untraced" major finding.
   ids_in_table="$(awk '
     /^## Requirement traceability$/ { in_sec=1; next }
     /^## / { in_sec=0; next }
     in_sec { print }
   ' "$f" | grep -oE '(FR|NFR)-[0-9]+' | sort -u)"
+  local pipe_rcs=("${PIPESTATUS[@]}")
+  if [ "${pipe_rcs[0]}" -ne 0 ]; then
+    echo "tdd-lint: traced: ids_in_table awk failed (exit ${pipe_rcs[0]}) on $f" >&2
+    return 2
+  fi
+  # grep returns 1 when no FR-/NFR- IDs are present, which is valid (just
+  # means the traceability section has no ID mentions). Only treat
+  # grep/sort exit ≥2 as a real error.
+  if [ "${pipe_rcs[1]}" -ge 2 ] || [ "${pipe_rcs[2]:-0}" -ne 0 ]; then
+    echo "tdd-lint: traced: ids_in_table pipeline failed (grep=${pipe_rcs[1]} sort=${pipe_rcs[2]:-0}) on $f" >&2
+    return 2
+  fi
 
   # Find the PRD-refs line's actual line number for the finding pointer.
   local refs_line_num
