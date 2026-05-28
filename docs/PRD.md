@@ -456,6 +456,216 @@ relaxes verdict honesty (NFR-4); both are reversible per-run via env overrides.
   an observation the artifact fails, the verdict line is
   `VERIFY_RUNTIME: FAIL` (not a false PASS).
 
+### Bounded scope, continuous review, automatic rework, trustworthy reporting
+A diagnosis of TDD 0011 (PR #36) found an over-scoped TDD (540 lines vs the
+prior two TDDs' ~185) produced an implementation whose largest file grew 56%
+during the review-fix loop alone, and that the loop required 11 fix iterations
+the user had to drive manually. The requirements below bound design-time scope
+(Theme A), run review continuously during builds rather than only at the end
+(Theme B), tie halting findings to a bounded automatic rework loop inside the
+same `/implement` invocation (Theme C), and hold throughline's own codebase to
+the scope discipline it enforces on its users while requiring gate decisions to
+rest on independently verifiable facts and reports to be honest about what
+actually changed (Theme D). Together they sharpen three existing requirements:
+
+- **FR-15's four-gate model** — the review gate (gate d) keeps its verdict
+  authority and its independent-process / different-model execution (NFR-3
+  model diversity unchanged) but moves from a single end-of-build pass to
+  continuous per-step passes during the build, plus a final consolidated
+  pass that issues the flip verdict.
+- **FR-16's halt-on-failure model** — a gate halt now means "halts after
+  bounded rework exhausts," not "halts on first failure." The downstream-
+  BLOCKED semantics inside sequential mode (don't build TDD N+1 if TDD N
+  failed) are unchanged.
+- **FR-39 / FR-41 / FR-45's paused-state taxonomy** — `paused` ceases to be
+  a "stopped, awaiting manual re-invocation" terminal; it becomes a
+  sub-category of FR-63's human-needed halt enum. The recoverable causes
+  (ratelimit, transient, usage-limit) become specific values within that
+  enum, distinguished from `rework-budget-exhausted`, `structural-finding`,
+  and `design-escalation` causes. Existing `paused`-state surfaces in
+  `/implement-status` (FR-45) and the resume flow (FR-39) carry forward
+  unchanged on the recoverable sub-categories; FR-64 adds the one-screen
+  context surface for the new sub-categories.
+
+NFR-1's human control is preserved at phase boundaries (PRD PR merge, design
+PR merge, implementation PR merge) and narrowed inside a build to "informed
+of progress; not asked to drive between findings and convergence."
+
+#### Bounded change size (Theme A)
+- **FR-53 TDD scope bound (size + per-file impact).** Each TDD describes a
+  change small enough that a single review pass can hold the proposal in
+  working memory and a single build session can execute it without thrashing.
+  The bound is measured on two surfaces: (a) the TDD document's own size, and
+  (b) an expected-diff-size estimate the TDD declares per touched source file.
+  The bound is escapable per-TDD with an explicit justification recorded in
+  the TDD itself; declared exceptions cover generated files, lockfiles, and
+  legitimately-wide-but-shallow edits. — Acceptance: TDDs converge to
+  `implemented` without `/tdd-author` having to be re-run mid-build to revise
+  scope.
+- **FR-54 Design-time refusal of over-ambitious per-file change.** A TDD that
+  demands more change in a single touched source file than the per-file bound
+  (FR-53) without a declared, justified exception is refused at design time
+  rather than discovered as a problem at build time. — Acceptance: no merged
+  TDD produces a build that fails on grounds of file complexity that were
+  predictable from the design (i.e., observable from the TDD's declared
+  expected-diff-size estimate and its touched-file list).
+- **FR-55 Scope-check authority of the design-critique gate.** The design
+  phase detects over-ambitious scope before the design PR opens, not after
+  implementation begins. The design-critique gate (FR-10) is the authority
+  for scope concerns; if it does not flag a scope concern, the build does not
+  halt on one. — Acceptance: the design-critique gate's verdict cites scope
+  concerns when they exist; no build halts on a scope concern the design
+  phase missed (i.e., a scope-related halt at build time is itself a defect
+  in the design-critique gate, not normal operation).
+
+#### Continuous, scoped review (Theme B)
+- **FR-56 Continuous in-build review (not end-of-build only).** Review runs
+  continuously during a build, not only after the build claims completion.
+  Issues surface while their cause is fresh and their fix is local. —
+  Acceptance: for any TDD, the first review finding (if there is one) is
+  emitted before more than half of the implementation's eventual line count
+  has been written.
+- **FR-57 Scoped review reads — no re-evaluation of cleared code.** Each
+  review pass evaluates only what changed since the last review pass on the
+  same build branch; code a prior review pass already cleared without
+  intervening modification is not re-reviewed. — Acceptance: no review
+  finding is raised against code that a prior review pass on the same TDD
+  already approved and that has not been modified since.
+- **FR-58 Severity taxonomy: halt only on halting categories.** Review
+  findings are triaged by severity; only categories defined as halting
+  (`blocker` and `major`) suspend forward progress and trigger the rework
+  loop (FR-61, FR-62). Lower categories (`minor`, `nit`) accumulate without
+  blocking. — Acceptance: the per-run report categorizes findings by
+  severity; every halt event in the run-state record (FR-27) cites a
+  finding in a halting category, and no halt event is recorded for a
+  finding in a non-halting category.
+- **FR-59 Cross-step learning within one TDD.** A build session that begins
+  a new step benefits from the lessons of prior steps' reviews; the same
+  categorical mistake is not made twice within one TDD. — Acceptance: for
+  any TDD whose review log contains an addressed finding of categorical
+  pattern P in step N, no step N+1..M's review pass surfaces another
+  finding of the same categorical pattern P. (Categorical pattern is the
+  finding's *kind*, not its exact file:line — e.g., "unchecked
+  fragment-write return" addressed once should not recur for a different
+  call site in a later step of the same TDD.)
+- **FR-60 Author self-review before independent review.** The author gives
+  its own work a critical pass against the same criteria the independent
+  reviewer uses, before handing off. — Acceptance: aggregated across runs,
+  review gates report fewer findings per build, on average, after this
+  requirement lands than before (measurable from the run-state record's
+  findings-per-build distribution).
+- **FR-61 Halting findings trigger the in-invocation rework loop.** A
+  finding classified as halting (FR-58) suspends forward progress and
+  triggers the bounded automatic rework loop (FR-62) in the same
+  `/implement` invocation; the user is informed of progress but is not
+  asked to drive the loop. — Acceptance: between a halting per-step
+  finding and either convergence (continued forward progress) or
+  escalation (human-needed halt per C2), no user message is required.
+
+#### Bounded, automatic rework (Theme C)
+- **FR-62 Bounded in-invocation automatic rework.** When a gate fails on
+  findings the system classifies as fixable (not structural per FR-67), the
+  runner attempts the fix and re-runs the affected gates without user
+  intervention. The user is involved only when the system has exhausted its
+  bounded attempts (FR-65) or detected a structural finding warranting
+  design reconsideration (FR-67). — Acceptance: a build that ultimately
+  converges does so within a single `/implement` invocation; the user is
+  not asked to restart the runner between a failed gate and its rework
+  attempts.
+- **FR-63 Halt taxonomy: human-needed only.** Every halt recorded in the
+  run-state record carries an explicit, enumerated cause explaining why
+  human attention is required — e.g., design escalation (FR-67), rework
+  budget exhausted (FR-65), scope concern surfacing post-design (defect in
+  FR-55), or external blocker (existing FR-17). No halt carries a cause
+  equivalent to "stopped, awaiting manual re-invocation"; that category is
+  eliminated. — Acceptance: every halt event in any `/implement` run-state
+  record cites a value from a closed enum of human-needed causes; no halt
+  event cites a non-enumerated or process-ended cause.
+- **FR-64 One-screen halt context.** When the system requires human
+  intervention, `/implement-status` (and the equivalent surface for halted
+  runs) presents the halt cause, the triggering findings or decisions, and
+  the available next actions on a single screen, so the human can decide
+  what to do without reading logs or re-deriving state. — Acceptance: on
+  any halted run, `/implement-status` output fits one terminal screen
+  (≤ 24 lines × 80 cols by default) and contains the cause label, the
+  triggering finding or decision, and the next-action options.
+- **FR-65 Rework budget bound + design escalation on exceed.** Rework
+  attempts are bounded per gate per step; on exceed, the TDD is marked
+  for design reconsideration (a BLOCKED outcome routed into
+  `docs/tdd/BLOCKERS.md` per FR-17) rather than further attempts. The
+  bound's configured value is recorded in the run-state record. —
+  Acceptance: no TDD's build records more rework attempts than the
+  configured number for any given gate-step pair; on exceed, the
+  triggering TDD is marked BLOCKED with a `rework-budget-exhausted`
+  cause and the run-state record names the gate-step pair that hit the
+  bound.
+- **FR-66 Bounded rework scope per attempt.** A rework attempt remains
+  proportional in scope to the finding it addresses. Oversized rework
+  is rejected before it ships (i.e., before being included in the
+  re-evaluated diff for the next review pass). — Acceptance: every
+  rework commit's diff fits within a bound scaled by the cited
+  finding's region size; oversized rework attempts are recorded in the
+  run-state as rejected-before-ship with a `rework-scope-exceeded`
+  cause, and do not advance to the next review pass.
+- **FR-67 Structural-finding escalation, not local sweep.** When the
+  system detects an issue as structural — meaning the fix would (a)
+  touch files outside the TDD's declared touched-file set (FR-53),
+  (b) exceed the TDD's per-file bound for the touched file, or
+  (c) be explicitly classified as structural by the reviewer — the
+  finding produces a `BLOCKED` outcome and a design-level entry in
+  `docs/tdd/BLOCKERS.md`, not a large in-iteration refactor. —
+  Acceptance: any finding meeting one or more of the three structural
+  criteria results in a `BLOCKED` outcome (not `FAIL`, not a rework
+  attempt), and a corresponding entry appears in
+  `docs/tdd/BLOCKERS.md` naming the TDD, the gate, and the structural
+  trigger.
+- **FR-68 Rework cost less than original build cost (observable).** The
+  token spend per rework attempt is meaningfully less than the token
+  spend on the original build attempt for the same TDD. The
+  expectation is recorded as observable telemetry, not enforced as a
+  hard per-attempt cap. — Acceptance: the run-state record (FR-27) for
+  any TDD with rework attempts contains per-attempt token-spend
+  values, and the values for rework attempts are less than the value
+  for the original build attempt on the same TDD.
+
+#### Trustworthy reporting and a tractable codebase (Theme D)
+- **FR-69 Throughline holds itself to Theme A.** The shell scripts and
+  skill prompts throughline ships obey the scope bounds throughline
+  enforces on its users' TDDs (FR-53, FR-54). Files in the
+  throughline codebase that exceed those bounds are first refactored
+  to compliance via a Theme D TDD before any new Themes B / C
+  behavior ships, so subsequent behavior-change TDDs land on a
+  compliant base. The escape clause from FR-53 (per-TDD justification
+  for legitimate exceptions) applies to throughline's own TDDs as
+  well. — Acceptance: after the Theme D refactor lands, no shell
+  script (`scripts/*.sh`) or skill prompt (`skills/*/SKILL.md`)
+  throughline ships is in a state that, if proposed via a new TDD
+  authored under FR-53, would be rejected for scope under FR-54
+  without a recorded exception.
+- **FR-70 Gate decisions grounded in verifiable artifacts only.**
+  Decisions made by gates (design-critique, mechanical pre-pass,
+  in-build review, runtime-verify) rest on facts independently
+  reproducible from the design + run artifacts — git history, the
+  TDD itself, and the run-state record — not on the author's
+  self-report about its own work. Any scope or progress claim a gate
+  acts upon is reproducible from those artifacts without consulting
+  the author. — Acceptance: every halt-causing or rework-causing
+  claim in any run's report is reproducible from `git log`,
+  `git diff`, the TDD file, and the run-state record alone (i.e., a
+  re-verifier with only those four inputs reaches the same verdict).
+- **FR-71 Honest report: actual diff and scope, not narrative.** The
+  per-run report and run-state record reflect the actual diff size
+  and scope of work the build performed, not the author's narrative
+  summary; discrepancies between the author's narrative and the
+  ground truth are surfaced as `major` review findings (i.e., they
+  trip FR-58's halt boundary and FR-61's rework loop), not silently
+  recorded. — Acceptance: for any build that produced a narrative
+  summary, a diff-vs-narrative discrepancy (e.g., narrative claims
+  three touched files but `git diff` shows seven) appears in that
+  build's review log as a `major` finding; the run-state record's
+  per-TDD scope metrics reflect the git-derived ground truth (not
+  the narrative).
+
 ### Quality hook & delegation
 - **FR-21 Format + lint hook.** A `format-and-lint` PostToolUse hook formats then
   lints edited files when a linter is configured (no-op otherwise), debounced, for
@@ -535,6 +745,21 @@ relaxes verdict honesty (NFR-4); both are reversible per-run via env overrides.
 - **Recovering uncommitted edits in a build worktree** — committed history on
   the build branch is the source of truth across a resume (FR-40); any
   uncommitted edits left by an unclean shutdown are discarded.
+- **Hard per-attempt token caps on rework (FR-68).** Token spend on rework
+  is held to "meaningfully less than original build" via observable
+  telemetry, not via a runtime cap that aborts a mid-rework gate. A hard
+  per-attempt cap would risk aborting legitimate cases; the retrospective
+  audit + the bounded-attempts cap (FR-65) are the enforcement levers.
+- **Sandboxing or static-analysis enforcement of the per-file diff bound
+  (FR-54).** The per-file bound is enforced via the design-critique gate
+  (FR-55) and the mechanical pre-pass (FR-51), not by sandboxing the
+  build's edit tool or filtering its commits. This matches ADR 0005's
+  "gate scope by prompt, not sandbox" disposition.
+- **In-build human-override of a halt cause (FR-63).** Halt causes are
+  system-determined and enumerated; the user cannot reclassify a halt to
+  bypass the rework loop or skip a structural escalation inside the same
+  invocation. Overrides happen at the next phase (design revision, TDD
+  edit, or fresh `/implement` run).
 
 ## Constraints & assumptions
 
@@ -604,3 +829,39 @@ relaxes verdict honesty (NFR-4); both are reversible per-run via env overrides.
   per-TDD `claude -p` invocations within a single `/implement` run; trimming
   build-prompt re-reads when a TDD has no `ADR constraints`) need measurement
   before commitment and are deferred to a follow-up pass with empirical data.
+- **Specific bound values (FR-53, FR-54, FR-65, FR-66).** The TDD doc-size cap,
+  expected-diff-size-per-file cap, per-gate-per-step rework attempt cap, and
+  the rework-scope scaling factor are configured constants whose values are
+  deferred to TDD-time. Initial values should be calibrated against the
+  TDD 0011 vs 0007/0008 data (TDDs of ~185 lines converged in zero iterations;
+  TDD 0011 at 540 lines required 11) and revisited after the first builds run
+  under the new bounds. The bounds should be env-overridable for
+  experimentation.
+- **Verify.sh / runtime-verify gate participation in the rework loop (FR-61,
+  FR-62).** The continuous-review loop and the bounded-rework loop are
+  defined here in terms of the review gate's findings. Whether the rework
+  loop also re-runs `verify.sh` and the runtime-verify gate after each
+  rework commit (cheaper to re-run; could compound cost) versus only after
+  rework converges (riskier; later failures cost a full unwind) is a design
+  decision deferred to `/tdd-author`.
+- **Author self-review model (FR-60).** Whether the author self-review pass
+  runs on the same model as the author (cheapest; shares blind spots) or a
+  different model (matches NFR-3 model diversity; doubles author-side
+  token cost) is deferred to `/tdd-author`. The acceptance criterion is
+  outcome-based (fewer findings on average), so either model choice can
+  satisfy it.
+- **Sequencing.** The intended order is Theme A (FR-53..FR-55) →
+  Theme D refactor (FR-69 applied to throughline's existing files) →
+  Theme C (FR-62..FR-68) → Theme B (FR-56..FR-61). Theme B requires
+  Theme C's rework loop to exist (FR-61 depends on FR-62), so B and C
+  are coupled with C necessarily first. The Theme D refactor lands as
+  its own TDD between A and C, so subsequent behavior TDDs land on a
+  compliant base. Whether the Theme D refactor should be split into
+  per-file refactor TDDs (one per non-compliant shipped file) or
+  bundled is open.
+- **Discrepancy detection mechanism (FR-71).** FR-71 requires the
+  per-build report and run-state record to reflect the actual diff,
+  with narrative-vs-ground-truth discrepancies surfaced as `major`
+  findings. Whether the discrepancy check runs as part of the in-build
+  review gate (FR-56) or as a separate mechanical pass before the
+  review gate is a design decision deferred to `/tdd-author`.
