@@ -379,6 +379,34 @@ EOF
     || bad "summary line should include paused=1"
 ) || true
 
+# --- iter-3 BLOCKER-1: schema-version refusal gate -------------------------
+echo "[7.a] state_init refuses to resume across an incompatible schema"
+( cd "$REPO"
+  # Create a fake paused run with schema=2 and assert the runner refuses.
+  TMP="$(mktemp -d)"
+  STATE_D="$TMP/state.d"
+  mkdir -p "$STATE_D"
+  LATEST_LINK="$TMP/latest"
+  # Minimal run.json with schema:2 — the only field state_init's gate
+  # reads at the refusal step.
+  printf '{"schema":2,"started_at":1,"updated_at":1,"pid":0,"integration_branch":"master","mode":"sequential","change":"x","logdir":"%s","total":0,"completed":0,"failed":0,"blocked":0,"skipped":0,"paused":0,"state":"paused","pause_started_at":1}\n' "$TMP" > "$STATE_D/run.json"
+  ln -sfn "$TMP" "$LATEST_LINK"
+  # Source the script and call state_init under RESUME=1; capture the message + exit code.
+  OUT="$TMP/out"; ERR="$TMP/err"
+  ( export THROUGHLINE_SOURCE_ONLY=1
+    # shellcheck disable=SC1090
+    source "$REPO/scripts/implement.sh"
+    LOGDIR="$TMP"; STATE_DIR="$STATE_D"; RESUME=1; REPORT="$TMP/report.md"; TDDS=()
+    state_init >"$OUT" 2>"$ERR"
+  ) ; rc=$?
+  if [ "$rc" -ne 0 ] && grep -q 'paused-run schema 2 not compatible' "$OUT" "$ERR" 2>/dev/null; then
+    ok "schema=2 paused run is refused with the spec'd message + non-zero exit"
+  else
+    bad "schema=2 should refuse resume with TDD 0011 §schema-version policy message (rc=$rc, out=$(cat "$OUT" "$ERR" 2>/dev/null | head -1))"
+  fi
+  rm -rf "$TMP"
+) || true
+
 # --- Step 6: skill's "Detect interrupted run" step ---------------------------
 echo "[6.a] skills/implement/SKILL.md documents --check-paused and conditional --resume"
 ( cd "$REPO"

@@ -145,6 +145,16 @@ if [ "$RESUME" -eq 1 ] && [ -L "$MAINREPO/docs/tdd/.implement-logs/latest" ]; th
     *) echo "FATAL: 'latest' symlink target escapes log dir: $_resolved_logdir" >&2; exit 1 ;;
   esac
   [ -d "$LOGDIR" ] || { echo "FATAL: --resume target '$LOGDIR' does not exist" >&2; exit 1; }
+  # TDD 0011 / iter-3 MAJOR-8: when "Start fresh" deleted state.d/*.json
+  # but left the `latest` symlink, --resume would otherwise reach state_init
+  # with a missing run.json, fall through to the fresh-init branch INSIDE
+  # the prior run's directory, and silently overwrite it. Refuse explicitly
+  # so the user understands the prior state was cleaned.
+  if [ ! -f "$LOGDIR/state.d/run.json" ]; then
+    echo "FATAL: --resume target has no paused state ($LOGDIR/state.d/run.json missing)." >&2
+    echo "       Drop --resume to start fresh, or remove the 'latest' symlink." >&2
+    exit 1
+  fi
 elif [ "$RESUME" -eq 1 ]; then
   # TDD 0011 / MAJOR-7: --resume with no `latest` symlink would otherwise
   # silently fall back to a fresh LOGDIR while RESUME=1 stays set. In
@@ -209,8 +219,21 @@ fi  # end THROUGHLINE_SOURCE_ONLY guard (setup block)
 # Read a single string-valued JSON field from a fragment, decoded back to the
 # raw string (or empty when the field is missing or `null`). Used by the FR-39
 # resume path so the additive fields survive a `set_tdd_state` rewrite.
+# TDD 0011 / iter-3 MAJOR-4: validate the field-name parameter is a plain
+# identifier before it is interpolated into grep/sed patterns. All current
+# call sites pass hard-coded literals, but defending here means a future
+# caller passing a name with `|`, `/`, or other metacharacters cannot
+# corrupt the pattern or sed delimiter (which would produce silent
+# wrong-field reads).
+_validate_field_name() {  # <field-name> — return 0 if safe, 1 otherwise
+  case "${1:-}" in
+    ''|*[!A-Za-z0-9_]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
 _read_fragment_field() {  # <file> <field-name>  -> echoes the value (no quotes)
   local f="$1" k="$2"
+  _validate_field_name "$k" || { echo "error: _read_fragment_field rejected unsafe field name '$k'" >&2; return 1; }
   if grep -q "\"$k\":null" "$f" 2>/dev/null; then printf ''; return 0; fi
   sed -n "s/.*\"$k\":\"\\([^\"]*\\)\".*/\\1/p" "$f" | head -1
 }
@@ -218,6 +241,7 @@ _read_fragment_field() {  # <file> <field-name>  -> echoes the value (no quotes)
 # of its members. Empty when the array is `[]` or absent.
 _read_fragment_array_csv() {  # <file> <field-name>
   local f="$1" k="$2" raw
+  _validate_field_name "$k" || { echo "error: _read_fragment_array_csv rejected unsafe field name '$k'" >&2; return 1; }
   raw="$(sed -n "s/.*\"$k\":\\(\\[[^]]*\\]\\).*/\\1/p" "$f" | head -1)"
   [ -z "$raw" ] && return 0
   [ "$raw" = "[]" ] && return 0
@@ -227,6 +251,7 @@ _read_fragment_array_csv() {  # <file> <field-name>
 # nested objects don't fit the CSV scheme above).
 _read_fragment_raw_array() {  # <file> <field-name>
   local f="$1" k="$2"
+  _validate_field_name "$k" || { echo "error: _read_fragment_raw_array rejected unsafe field name '$k'" >&2; return 1; }
   # Greedy-match the array literal up to its closing bracket. The retries
   # array's elements are flat objects, so a single-level bracket match works.
   sed -n "s/.*\"$k\":\\(\\[[^]]*\\]\\).*/\\1/p" "$f" | head -1
@@ -292,15 +317,29 @@ _write_tdd_fragment() {
   local f tmp
   f="$STATE_DIR/$slug.json"
   tmp="$f.tmp.$$"
-  printf '{"n":%d,"slug":"%s","path":"%s","queue_pos":%d,"status":"%s","stage":%s,"started_at":%d,"updated_at":%d,"branch":"%s","pr_url":"%s","log":"%s","note":"%s","paused_cause":%s,"gates_completed":%s,"retries":%s,"branch_head_at_pause":%s}\n' \
+  # TDD 0011 / iter-3 MAJOR-5: detect printf or mv failure. A disk-full
+  # or permission failure on `printf > $tmp` under set -uo pipefail (no -e)
+  # would not abort the runner; mv would then atomically replace the live
+  # fragment with a corrupted/empty one, and subsequent reads would
+  # round-trip empty values back. Bail loudly instead so the run is
+  # halted while data is still recoverable.
+  if ! printf '{"n":%d,"slug":"%s","path":"%s","queue_pos":%d,"status":"%s","stage":%s,"started_at":%d,"updated_at":%d,"branch":"%s","pr_url":"%s","log":"%s","note":"%s","paused_cause":%s,"gates_completed":%s,"retries":%s,"branch_head_at_pause":%s}\n' \
     "$n" "$(json_escape "$slug")" "$(json_escape "$path")" "$qp" \
     "$(json_escape "$status")" "$stage_lit" \
     "$sta" "$upd" \
     "$(json_escape "$branch")" "$(json_escape "$pr_url")" "$(json_escape "$log")" \
     "$(json_escape "$note")" \
     "$cause_lit" "$gates_lit" "$retries_lit" "$head_lit" \
-    > "$tmp"
-  mv "$tmp" "$f"
+    > "$tmp"; then
+    echo "error: _write_tdd_fragment printf failed for $slug (disk full? perm?); fragment NOT updated" >&2
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
+  if ! mv "$tmp" "$f"; then
+    echo "error: _write_tdd_fragment mv failed for $slug; fragment may be stale" >&2
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
 }
 
 # Re-roll the run-level rollup from per-TDD fragments and rewrite run.json.
@@ -327,13 +366,23 @@ _write_run_fragment() {
   fi
   local pause_started_lit='null'
   if [ "$state" = "paused" ]; then pause_started_lit="$(date +%s)"; fi
-  printf '{"schema":1,"started_at":%d,"updated_at":%d,"pid":%d,"integration_branch":"%s","mode":"%s","change":"%s","logdir":"%s","total":%d,"completed":%d,"failed":%d,"blocked":%d,"skipped":%d,"paused":%d,"state":"%s","pause_started_at":%s}\n' \
+  # TDD 0011 / iter-3 MAJOR-5: same printf+mv failure handling as
+  # _write_tdd_fragment.
+  if ! printf '{"schema":1,"started_at":%d,"updated_at":%d,"pid":%d,"integration_branch":"%s","mode":"%s","change":"%s","logdir":"%s","total":%d,"completed":%d,"failed":%d,"blocked":%d,"skipped":%d,"paused":%d,"state":"%s","pause_started_at":%s}\n' \
     "$STATE_STARTED_AT" "$(date +%s)" "$$" \
     "$(json_escape "$INTEGRATION")" "$STATE_MODE" "$(json_escape "$CHANGE")" "$(json_escape "$LOGDIR")" \
     "$total" "$completed" "$failed" "$blocked" "$skipped" "$paused" \
     "$(json_escape "$state")" "$pause_started_lit" \
-    > "$tmp"
-  mv "$tmp" "$STATE_DIR/run.json"
+    > "$tmp"; then
+    echo "error: _write_run_fragment printf failed; run.json NOT updated" >&2
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
+  if ! mv "$tmp" "$STATE_DIR/run.json"; then
+    echo "error: _write_run_fragment mv failed; run.json may be stale" >&2
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
 }
 
 # state_init — at run start: create state.d/, write a pending <slug>.json per
@@ -349,6 +398,18 @@ state_init() {
   # the run-level header remains coherent; do not overwrite per-TDD
   # fragments (the paused state IS the resume signal).
   if [ "${RESUME:-0}" -eq 1 ] && [ -f "$STATE_DIR/run.json" ]; then
+    # TDD 0011 / iter-3 BLOCKER-1: schema-version refusal gate. TDD 0011
+    # §"Schema-version policy" mandates that a resuming runner against
+    # `schema != 1` refuses with the exact spec'd message and exits
+    # before any further state mutation. Additive changes (new field,
+    # new enum value) stay at schema 1; breaking changes bump to 2 and
+    # force a fresh-start.
+    local _resume_schema
+    _resume_schema="$(sed -n 's/.*"schema":\([0-9]*\).*/\1/p' "$STATE_DIR/run.json" | head -1)"
+    if [ -n "$_resume_schema" ] && [ "$_resume_schema" != "1" ]; then
+      echo "paused-run schema $_resume_schema not compatible with this plugin version; resume not possible (see docs/tdd/0011)" | tee -a "$REPORT" >&2
+      exit 1
+    fi
     STATE_STARTED_AT="$(sed -n 's/.*"started_at":\([0-9]*\).*/\1/p' "$STATE_DIR/run.json" | head -1)"
     STATE_MODE="$(sed -n 's/.*"mode":"\([^"]*\)".*/\1/p' "$STATE_DIR/run.json" | head -1)"
     [ -z "$STATE_STARTED_AT" ] && STATE_STARTED_AT=$(date +%s)
@@ -598,6 +659,19 @@ _retry_in_gate() {
   local gate_fn="$1" gate_name="$2" slug="$3" log="$4"; shift 4
   local max_retries="${THROUGHLINE_GATE_RETRIES:-3}"
   local backoff_base="${THROUGHLINE_GATE_BACKOFF_BASE:-30}"
+  # TDD 0011 / iter-3 MAJOR-3: validate env-var inputs are purely numeric
+  # BEFORE they reach bash arithmetic. `$(( $max_retries ))` with an
+  # attacker-controlled non-numeric value triggers bash's well-known
+  # arithmetic-injection vector (the inner string is evaluated as a bash
+  # expression, allowing `a[$(cmd)]`-style command substitution). Fall
+  # back to defaults on invalid input + warn so misconfiguration is
+  # visible.
+  case "$max_retries" in
+    ''|*[!0-9]*) echo "warning: THROUGHLINE_GATE_RETRIES='$max_retries' not numeric; falling back to 3" >&2; max_retries=3 ;;
+  esac
+  case "$backoff_base" in
+    ''|*[!0-9]*) echo "warning: THROUGHLINE_GATE_BACKOFF_BASE='$backoff_base' not numeric; falling back to 30" >&2; backoff_base=30 ;;
+  esac
   local attempt cause rc backoff
   for (( attempt=1; attempt<=max_retries; attempt++ )); do
     "$gate_fn" "$@"
@@ -605,12 +679,16 @@ _retry_in_gate() {
     if [ "$rc" -eq 0 ]; then return 0; fi
     cause="$(_classify_cause "$log" "$rc")"
     if [ "$cause" = "fatal" ]; then return 1; fi
-    # Recoverable. Record this retry attempt into the fragment's retries[]
-    # audit before sleeping; backoff_s is the *upcoming* sleep, which is 0
-    # on the final iteration since we are about to promote to paused.
-    if [ "$attempt" -ge "$max_retries" ]; then backoff=0
-    else backoff=$(( backoff_base * (4 ** (attempt - 1)) )); fi
+    # TDD 0011 / iter-3 MAJOR-1: backoff schedule MUST match the TDD's
+    # documented sequence BASE * 4^(attempt-1) on EVERY failed attempt,
+    # including the final one before promoting to paused. Previously the
+    # last sleep was forced to 0, which meant a rate-limit clearing in
+    # under 8 minutes (after the third attempt) produced a spurious
+    # paused state. The audit record now reflects the actual upcoming
+    # sleep — including the final one — for honesty.
+    backoff=$(( backoff_base * (4 ** (attempt - 1)) ))
     _append_retry "$slug" "$gate_name" "$attempt" "$backoff"
+    [ "$backoff" -gt 0 ] && sleep "$backoff"
     if [ "$attempt" -ge "$max_retries" ]; then
       # TDD 0011 / MA-2: propagate _enter_paused failure. If we can't
       # record paused state, return FAIL (1) instead of paused (2) so
@@ -620,10 +698,11 @@ _retry_in_gate() {
       fi
       return 2
     fi
-    [ "$backoff" -gt 0 ] && sleep "$backoff"
   done
   # Defensive: loop should always return inside; if we get here, treat as
-  # paused (NFR-4 — never silently lose state).
+  # paused (NFR-4 — never silently lose state). Reached when max_retries
+  # is 0 (the loop body never runs); `cause` is unset in that case so
+  # fall back to a literal label for the audit.
   if ! _enter_paused "$slug" "${cause:-transient}" "$gate_name" "$log"; then
     return 1
   fi
@@ -1163,7 +1242,7 @@ state_init
 
 # --- drivers -------------------------------------------------------------------
 if [ "$PARALLEL" -eq 1 ]; then
-  pids=(); declare -A SKIPPED=()
+  pids=(); declare -A SKIPPED=() BRANCH_MISSING=()
   for tdd in "${TDDS[@]}"; do
     slug="$(basename "$tdd" .md)"; log="$LOGDIR/$slug.log"; wt="../$(basename "$PWD")-wt-$slug"
     built="$(built_branch "$tdd")"
@@ -1183,15 +1262,37 @@ if [ "$PARALLEL" -eq 1 ]; then
     #       resume-blocked-branch-missing; do NOT spawn a subshell.
     #   (c) Fresh build → existing path (create branch + worktree).
     if [ "$RESUME" -eq 1 ] && git show-ref --verify --quiet "refs/heads/feat/$slug"; then
-      if ! git worktree add "$wt" "feat/$slug" >>"$log" 2>&1; then
-        echo "worktree-resume failed for $slug" >>"$log"
-        set_tdd_state "$slug" failed "" "worktree resume failed"
-        continue
+      # TDD 0011 / iter-3 BLOCKER-3: a paused run typically leaves the
+      # worktree on disk (only the subshell exited; the parent's `git
+      # worktree add` was never removed). An unconditional `git worktree
+      # add` here fails with "<wt> already exists" and the TDD is
+      # permanently marked failed. Detect a pre-registered worktree
+      # pointing at feat/$slug and reuse it instead of re-creating.
+      _wt_existing=""
+      if git worktree list --porcelain 2>/dev/null | awk -v p="$wt" '
+        /^worktree / { w=substr($0,10) }
+        /^branch / { if (w==p) { print substr($0,8); exit } }
+      ' | grep -qE "(^|/)feat/$slug\$"; then
+        _wt_existing="$wt"
+      fi
+      if [ -n "$_wt_existing" ]; then
+        echo "worktree-resume: reusing existing worktree at $wt for feat/$slug" >>"$log"
+      else
+        if ! git worktree add "$wt" "feat/$slug" >>"$log" 2>&1; then
+          echo "worktree-resume failed for $slug" >>"$log"
+          set_tdd_state "$slug" failed "" "worktree resume failed"
+          continue
+        fi
       fi
     elif [ "$RESUME" -eq 1 ]; then
       # Branch is gone between pause and resume → documented paused_cause.
       echo "- $slug — PAUSED (branch feat/$slug missing; resume-blocked-branch-missing)" >>"$REPORT"
-      _update_paused_cause "$slug" "resume-blocked-branch-missing" || true
+      _update_paused_cause "$slug" "resume-blocked-branch-missing" \
+        || echo "warning: could not update paused_cause for $slug" >&2
+      # TDD 0011 / iter-3 MAJOR-6: track branch-missing slugs so the
+      # second reporting loop skips them (otherwise an UNKNOWN line is
+      # appended duplicating the PAUSED line).
+      BRANCH_MISSING[$slug]=1
       continue
     else
       # TDD 0011 / MAJOR-9: detect orphan feat/<slug> branches from a prior
@@ -1254,6 +1355,10 @@ if [ "$PARALLEL" -eq 1 ]; then
   for tdd in "${TDDS[@]}"; do slug="$(basename "$tdd" .md)"; log="$LOGDIR/$slug.log"
     if [ -n "${SKIPPED[$slug]:-}" ]; then
       echo "- $slug — already built on ${SKIPPED[$slug]} (awaiting your merge); skipped" >>"$REPORT"; continue; fi
+    # TDD 0011 / iter-3 MAJOR-6: branch-missing slugs already wrote their
+    # own PAUSED line in the first loop; skip them here so we don't append
+    # a duplicate UNKNOWN line (no subshell ran, so no PARSTATUS exists).
+    [ -n "${BRANCH_MISSING[$slug]:-}" ] && continue
     st="$(sed -n 's/^PARSTATUS:://p' "$log" 2>/dev/null | tail -1)"
     echo "- $slug — ${st:-UNKNOWN (see log)} (branch feat/$slug, log: $log)" >>"$REPORT"; done
   { echo; echo "Parallel: one PR per feat/* (if gh+remote). Review & merge each, then 'git worktree remove'."; } >>"$REPORT"
@@ -1324,7 +1429,13 @@ else
         *) blocked=1 ;;
       esac
     done
-    if [ "$blocked" -eq 0 ] && [ "$HASGH" -eq 1 ]; then
+    # TDD 0011 / iter-3 BLOCKER-2: paused runs MUST NOT push or open a PR.
+    # A paused TDD means the combined branch is half-built; pushing it
+    # would expose an incomplete change to reviewers and (worse) tempt
+    # someone to merge it. NFR-4 verdict honesty: paused ≠ done.
+    if [ "${paused_halt:-0}" -eq 1 ]; then
+      echo "Combined run paused (≥1 TDD halted at a recoverable gate). NOT pushing and NOT opening a PR; resume with /implement." >>"$REPORT"
+    elif [ "$blocked" -eq 0 ] && [ "$HASGH" -eq 1 ]; then
       if git push -u origin "$CHANGE" >>"$REPORT" 2>&1; then
         prurl="$(gh pr create --base "$BASE" --head "$CHANGE" --fill 2>>"$REPORT")"
         if [ -n "$prurl" ]; then
@@ -1365,7 +1476,11 @@ else
           # status so the user can decide fresh-start vs investigate, rather
           # than misclassifying as a generic failure.
           echo "- $slug — PAUSED (branch $branch missing; resume-blocked-branch-missing)" >>"$REPORT"
-          _update_paused_cause "$slug" "resume-blocked-branch-missing"
+          # TDD 0011 / iter-3 MAJOR-7: diagnose a swallowed update failure
+          # (e.g. missing fragment) so status.sh's "wrong cause" doesn't
+          # appear unexplained in the snapshot.
+          _update_paused_cause "$slug" "resume-blocked-branch-missing" \
+            || echo "warning: could not update paused_cause for $slug" >&2
           paused_halt=1; continue
         else
           echo "- $slug — FAIL (could not branch off $prev; log: $log)" >>"$REPORT"

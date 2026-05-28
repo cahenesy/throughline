@@ -37,15 +37,32 @@ that asks.
    - If output names a paused run, output is one line per paused TDD in
      the format `slug=<slug> gate=<gate> cause=<cause>`. Use the FIRST
      line (the run's resume-point per FR-40's per-TDD queue order).
-2. Surface the interrupted run via `AskUserQuestion`. Options:
+2. **Lock-alive race guard (TDD 0011 / iter-3 MAJOR-2).** A paused
+   fragment can briefly coexist with a live lock — the runner's atomic
+   `mv` lands the fragment a moment before the EXIT trap removes
+   `.run.lock`. Don't show the resume prompt during that window: it
+   would tell the user to resume while the prior runner is still alive,
+   and the next launch would be rejected by the single-run lock.
+
+   - Read the lock PID: `LOCKPID="$(cat docs/tdd/.implement-logs/.run.lock 2>/dev/null)"`.
+   - If `LOCKPID` is set and `kill -0 "$LOCKPID" 2>/dev/null` succeeds
+     (lock alive) AND `--check-paused` still reports a paused fragment,
+     wait 2 seconds and re-check. Cap at 3 iterations (total 6 seconds).
+   - On cap, surface "run state inconsistent — investigate
+     state.d/ manually" via `AskUserQuestion` instead of offering
+     Resume; exit the skill flow.
+   - If lock dies during the polling window, proceed to step 3.
+3. Surface the interrupted run via `AskUserQuestion`. Options:
    - **Resume from `<gate>` on `<slug>`** — re-launch the runner with
      `--resume` so gates already completed are not re-run.
    - **Start fresh (discard paused state)** — delete `state.d/*.json`
-     under the prior run's logdir (preserving the rest of the run dir for
-     forensic value), then launch normally.
+     under the prior run's logdir (preserving the rest of the run dir
+     for forensic value) AND remove the `latest` symlink so a stray
+     `--resume` later doesn't reach a half-cleaned target (TDD 0011 /
+     iter-3 MAJOR-8). Then launch normally.
    - **Cancel** — exit without launching.
-3. On Resume, the launch line below MUST carry `--resume`. On Start fresh,
-   it does not.
+4. On Resume, the launch line below MUST carry `--resume`. On Start
+   fresh, it does not.
 
 The non-paused interactive flow continues at "Prepare" below.
 
