@@ -116,6 +116,118 @@ the git facts and writes them as a structured block into the review
 prompt's interpolation context. This keeps the reviewer's check
 grounded in artifacts (ADR 0006) rather than the author's prose alone.
 
+### 3b. File-checklist review (addresses issue #35)
+
+Issue #35's diagnosis of multi-round review convergence: the reviewer's
+attention is bounded; on a large diff (1500+ LOC) it clusters on
+whichever file it looked at first and misses rough edges in other files
+that the diff touched. The fix: force attention to spread evenly across
+the diff's file surface by requiring an explicit per-file disposition
+before the verdict.
+
+The review prompt's "Scope of this pass" section (added by TDD 0020 §3)
+is extended with a closing instruction:
+
+> **Per-file disposition (REQUIRED before REVIEW_RESULT).** Compute
+> `git diff --name-only <base>..<head>` for this pass's scope. For
+> EACH file in that list, before declaring `REVIEW_RESULT: PASS`,
+> emit either:
+>
+> - ≥ 1 `FINDING_BEGIN..FINDING_END` block whose `region` field cites
+>   that file, OR
+> - the literal line `FILE_REVIEWED_NO_FINDINGS: <file>`.
+>
+> Emit one of these for each file in the diff range — no implicit
+> "I looked but didn't comment" allowed. This is not an invitation to
+> manufacture findings; emit `FILE_REVIEWED_NO_FINDINGS` when the
+> file is genuinely clean. The mechanical pre-pass in §3c below
+> validates the coverage before accepting the verdict.
+
+### 3c. Per-file coverage check — `scripts/lib/gates.sh`
+
+A small mechanical check, run after the reviewer's stream ends but
+before the runner accepts the `REVIEW_RESULT: PASS` verdict:
+
+1. Compute the set of files in the pass's scope:
+   `git diff --name-only <base>..<head>`.
+2. Compute the set of files cited by the reviewer:
+   - each `FINDING_BEGIN..FINDING_END` block's `region` field's filename
+   - each `FILE_REVIEWED_NO_FINDINGS:` line's filename
+3. If the diff-file set minus the cited-file set is non-empty AND the
+   verdict is `REVIEW_RESULT: PASS`, the runner emits a synthetic
+   `major` finding `incomplete-file-coverage` listing the un-cited
+   files, records it on the fragment with `source: "runner-check"`,
+   and treats the pass as BLOCKING. Routing through TDD 0019 is
+   specified in the next paragraph — `runner-check` findings do NOT
+   enter `_rework_one`.
+
+### Routing through TDD 0019 — `runner-check` findings bypass `_rework_one`
+
+TDD 0019's `_review_one_gated` (per §5 of that TDD) currently classifies
+every halting finding as fixable-or-structural and either calls
+`_rework_one` or routes to BLOCKED. `runner-check` findings need a third
+branch because there is no author-side code edit that addresses them —
+the directive is "the prior review pass skipped files; re-run review
+with explicit attention to: <file list>", not "fix the code."
+
+The branch added by THIS TDD into TDD 0019's classification flow:
+
+```
+on halting finding F from a review pass:
+  if F.source == "runner-check":
+    # Re-review branch. No code-edit subprocess; no _rework_one call.
+    next_review_directive ← F.summary  # "attention to files: <list>"
+    spawn fresh review pass on the same <base..head> diff range,
+      with F.summary inserted into the review prompt's "Scope of this
+      pass" section as an explicit attention directive.
+    DO NOT increment rework_attempts[gate:step].
+    instead, increment a separate counter re_review_attempts[gate:step]
+      (new fragment field this TDD adds; see §6).
+    if re_review_attempts[gate:step] > THROUGHLINE_RE_REVIEW_MAX
+      (new env var, default 2):
+        halt with cause `rework-budget-exhausted` (existing TDD 0018
+        enum value); record finding F as the trigger; BLOCKERS.md
+        entry naming the gate-step pair and the un-cited file list.
+  elif F.structural is True or _rework_pre_pass would tag (a)/(b):
+    [existing TDD 0019 §1 structural-finding routing]
+  else:
+    [existing TDD 0019 §1 fixable routing via _rework_one]
+```
+
+Three distinct counters now exist per (gate, step):
+
+- `rework_attempts[gate:step]` (TDD 0019) — code-edit fixable findings;
+  cap `THROUGHLINE_REWORK_MAX` (default 3).
+- `re_review_attempts[gate:step]` (this TDD) — `runner-check` findings
+  routed back to a fresh review pass; cap `THROUGHLINE_RE_REVIEW_MAX`
+  (default 2 — the issue #35 collapse expectation is "round 1 may miss
+  files; round 2 forced by coverage sweeps them," so 2 is the tight cap).
+- Structural findings (TDD 0019 §1 (a)/(b)/(c)) — no counter; BLOCKED
+  immediately.
+
+The cap defaults differ deliberately: code-edit rework needs more
+attempts (the author may not nail the fix first try); coverage-driven
+re-review needs fewer (the directive is mechanical, not creative).
+
+This branch's wiring lives in TDD 0019's `_review_one_gated` and reads
+the `runner-check` value from §6's enum (now extended; see §6 below).
+
+### Re-review counter — new fragment field in §6
+
+The per-TDD fragment gains:
+
+- `re_review_attempts` (object, keyed by `"<gate>:<step>"` → int) —
+  parallel to TDD 0019's `rework_attempts` but counting
+  `runner-check` re-review attempts.
+
+The `run.json` configuration snapshot gains `re_review_config`
+(parallel to TDD 0019's `rework_config`) with the
+`THROUGHLINE_RE_REVIEW_MAX` value in effect at run start.
+
+This collapses the #35 "Sisyphus" loop from N multi-round passes to ≤ 2:
+round 1 may legitimately miss files; round 2 forced by per-file
+coverage sweeps them.
+
 ### 4. FR-70 grounding instruction — review prompt
 
 The review prompt gains a top-level grounding clause ahead of any
@@ -173,22 +285,91 @@ versus before (measurable from `run.json`'s rolled-up finding counts).
 Model: same as the build (cheapest variant); the user has chosen to
 revisit if outcomes lag.
 
+### 5b. Build prompt additions for unattended-mode safety (issues #28A + #28B)
+
+The build prompt (`scripts/build-prompt.md`) is extended with two
+small new instruction blocks while we are editing it for §5. Both
+land in the same file; they are independent of the SELF_REVIEW block
+but share the surface.
+
+**(a) Prohibition on `AskUserQuestion` in the build (issue #28A).** A
+new instruction inserted near the existing BATCH_RESULT guidance:
+
+> **Never call `AskUserQuestion` in this build.** The build runs
+> unattended as a `claude -p` subprocess; nobody is on the other end
+> of a question. A call to `AskUserQuestion` will either return an
+> "unavailable tool" error (TDD 0020 §Invocation now passes
+> `--disallowed-tools AskUserQuestion`, so the call cannot succeed) or,
+> if the restriction is somehow bypassed, hang the subprocess
+> indefinitely with no diagnostic. If you cannot proceed without
+> human guidance, emit `BATCH_RESULT: BLOCKED <reason>` instead —
+> that routes via the FR-17 / TDD 0019 BLOCKERS.md path with a
+> diagnostic the user will read. The runner also enforces an
+> overall watchdog (`THROUGHLINE_BUILD_TIMEOUT`, default 2h) and an
+> inter-event timeout (600s) per TDD 0020; a hang at
+> `AskUserQuestion` would trip them, but the BLOCKED path gives
+> better diagnostics, so prefer it.
+
+This is the prompt-level half of the belt-and-suspenders defense;
+TDD 0020 §Invocation's `--disallowed-tools` is the runner-level half.
+
+**(b) Pre-commit-hook escape for `test(failing):` commits (issue #28B).**
+A new instruction inserted in the build prompt's commit-discipline
+section, alongside the existing red-then-green guidance:
+
+> **Pre-commit hooks that reject `test(failing):` commits.** Some
+> repos run the test suite as part of a pre-commit hook (e.g., via
+> `git config core.hooksPath = scripts/git-hooks` with a pytest
+> step). When you create a `test(failing): <behavior>` commit, the
+> failing test will fail the pre-commit hook, which will reject the
+> commit — blocking the failing-test-first discipline this build
+> prompt requires. The escape: use `git commit --no-verify` for the
+> `test(failing):` commit specifically. The runner's `verify.sh`
+> gate (gate 2) re-runs lint + tests + typecheck on the build branch
+> before flipping `implemented`, and the runtime-verify gate (gate
+> 3) drives the BUILT artifact — so bypassing the local hook for
+> one failing-test commit does NOT bypass overall verification;
+> the four-gate system catches anything the hook would have
+> caught.
+
+The two additions are independent and short; either can be omitted
+if the implementer judges them unnecessary at build time, but both
+are recorded here so the design rationale is durable.
+
 ### 6. Per-TDD fragment schema extension — `scripts/lib/state.sh`
 
 Two new fragment fields:
 
 - `findings` (array of finding objects, populated by the runner from
-  parsed review output and the BATCH_RESULT's `SELF_REVIEW` block):
+  parsed review output, the BATCH_RESULT's `SELF_REVIEW` block, and
+  runner-side mechanical checks):
   ```
-  { source: "review" | "self-review", pass_id: <string>,
+  { source: "review" | "self-review" | "runner-check",
+    pass_id: <string>,
     severity: <enum from §1>, structural: <bool>,
     region: <string>, region_lines: <int>,
     pattern_tags: <[string]>, summary: <string>,
     evidence: <string>, addressed_at: <epoch | null>,
     addressed_by_sha: <sha | null> }
   ```
+  The `source` field is a closed three-value enum:
+  - `"review"` — emitted by an independent review-gate pass (TDD 0020
+    per-step or final consolidated).
+  - `"self-review"` — emitted by the build's `SELF_REVIEW` block (§5).
+  - `"runner-check"` — synthesized by a runner-side mechanical check
+    (currently: §3c's `_per_file_coverage_check`; future mechanical
+    checks reuse the same value). The routing semantics for
+    `runner-check` findings are specified in §3c's "Routing through
+    TDD 0019" paragraph.
 - `self_review_count` (int): number of self-review findings emitted
   across the build's lifetime, for FR-60 outcome-acceptance telemetry.
+- `re_review_attempts` (object): per-(gate, step) counter for
+  `runner-check`-triggered fresh review passes (parallel to TDD 0019's
+  `rework_attempts`). See §3c's "Re-review counter" paragraph for
+  semantics and the `THROUGHLINE_RE_REVIEW_MAX` cap (default 2).
+
+The `run.json` configuration snapshot also gains `re_review_config`
+(parallel to TDD 0019's `rework_config`).
 
 Schema-version bumped by one from TDD 0020's value.
 
@@ -210,10 +391,18 @@ concern.
    to read `FINDING_BEGIN..FINDING_END` blocks; record each on the
    fragment's `findings` array; drive the halt decision from the
    `{blocker, major}` subset per §2.
-5. **Extend the build prompt** in `skills/implement/SKILL.md` and the
-   build prompt template with §5's `SELF_REVIEW_BEGIN..END` block and
+5. **Extend the build prompt** in `skills/implement/SKILL.md` and
+   `scripts/build-prompt.md` with §5's `SELF_REVIEW_BEGIN..END` block,
    the "address halting self-review findings before BATCH_RESULT"
-   instruction.
+   instruction, and the §5b additions: (a) `AskUserQuestion` prohibition
+   for unattended mode (issue #28A); (b) `git commit --no-verify`
+   escape for pre-commit-hook-blocked `test(failing):` commits
+   (issue #28B).
+5b. **Extend the review prompt** with §3b's per-file disposition
+   requirement (issue #35) and implement §3c's
+   `_per_file_coverage_check` helper in `scripts/lib/gates.sh`. Wire
+   the check between the reviewer's stream end and the runner's
+   verdict acceptance.
 6. **Extend the runner's BATCH_RESULT parser** to extract the
    `SELF_REVIEW` block; record its findings onto the fragment with
    `source: "self-review"`; increment `self_review_count`. **Multi-turn
@@ -303,6 +492,50 @@ concern.
    is structural — the SELF_REVIEW block is parsed and stored, the
    `self_review_count` field is populated, and the consolidated review
    pass detects `self-review-ignored` per §5.
+8. **Per-file coverage check rejects incomplete review + re-review
+   routing (issue #35).** Fixture: review pass on a 5-file diff emits
+   findings citing only 3 files and emits `REVIEW_RESULT: PASS`.
+   Expect: runner's `_per_file_coverage_check` synthesizes a `major`
+   `incomplete-file-coverage` finding listing the 2 un-cited files,
+   `source: "runner-check"`; the verdict is converted to BLOCK. The
+   re-review branch (§3c "Routing through TDD 0019") fires: NO
+   `_rework_one` invocation; a fresh review pass is spawned on the
+   same `<base..head>` range with the un-cited file list inserted
+   into the review prompt's "Scope of this pass" section as an
+   attention directive. The fragment's `rework_attempts` counter
+   does NOT tick; `re_review_attempts["review:<step>"]` increments
+   to 1. A second review pass that emits `FILE_REVIEWED_NO_FINDINGS:`
+   for each of the 5 files clears.
+8b. **Re-review budget exhaustion (issue #35).** Fixture: review pass
+    emits incomplete coverage; runner spawns fresh pass; second pass
+    also emits incomplete coverage. With
+    `THROUGHLINE_RE_REVIEW_MAX=2`: `re_review_attempts == 2` after the
+    second pass; on the third halting `runner-check` finding the TDD
+    is BLOCKED with `halt_cause: rework-budget-exhausted` (existing
+    TDD 0018 enum) and a BLOCKERS.md entry naming the gate-step pair
+    and un-cited file list. The `rework_attempts` counter remains 0
+    (unrelated branch).
+9. **`FILE_REVIEWED_NO_FINDINGS:` accepted without findings (issue #35).**
+   Fixture: review pass on a 3-file diff emits zero
+   `FINDING_BEGIN..END` blocks but emits one
+   `FILE_REVIEWED_NO_FINDINGS: <file>` line for each file and
+   `REVIEW_RESULT: PASS`. Expect: coverage check passes; verdict is
+   accepted as clear; no synthetic findings emitted.
+10. **Build prompt's `AskUserQuestion` prohibition (issue #28A).**
+    Fixture: a build prompt that attempts `AskUserQuestion` despite the
+    §5b(a) prohibition. Expect: tool call fails at the runner layer
+    per TDD 0020 §Invocation's `--disallowed-tools` enforcement; the
+    build subprocess receives the failure and either falls back to
+    `BATCH_RESULT: BLOCKED <reason>` or hits TDD 0020's watchdog. The
+    process never hangs on the question.
+11. **`--no-verify` escape works around pre-commit-hook (issue #28B).**
+    Fixture: a repo with a pre-commit hook running pytest, plus a
+    failing test for the build to satisfy. Expect: the build's
+    `test(failing):` commit uses `git commit --no-verify` per §5b(b);
+    the commit lands; the subsequent green-test commit goes through
+    the hook normally; `verify.sh` (gate 2) and runtime-verify
+    (gate 3) re-run the full suite against the build branch and
+    confirm correctness; final `BATCH_RESULT: OK`.
 
 **Expected observations (PASS):** observation points §1–§6 yield the
 cited result on initial implementation. §7 is observable telemetry that
@@ -317,8 +550,9 @@ acceptance is structural (the surface is in place).
 | FR-60 (author self-review before independent review) | §5 build prompt addition + §6 telemetry; outcome-based acceptance recorded for revisit if findings-per-build does not decrease |
 | FR-70 (gate decisions grounded in verifiable artifacts only) | §4 grounding clause in the review prompt + §6 `findings[*].evidence` field carrying the artifact quote; meta-finding `evidence-not-grounded` is the self-applied check |
 | FR-71 (honest report: diff-vs-narrative discrepancy as `major`) | §3 dedicated check step in the review prompt + `_diff_vs_narrative_facts` helper grounding the comparison in artifacts; verification §3 falsifies the precise behavior |
-
-No gaps.
+| Issue #35 (multi-round review convergence on large diffs) | §3b per-file disposition requirement in the review prompt + §3c mechanical `_per_file_coverage_check` in `scripts/lib/gates.sh`; collapses N-round Sisyphus to ≤ 2 rounds by forcing reviewer attention across the diff's file surface. Not a new FR; this is scope tightening within FR-56 / FR-58 |
+| Issue #28A (build hangs in `AskUserQuestion`) | §5b(a) prompt-level prohibition + cross-reference to TDD 0020 §Invocation's `--disallowed-tools AskUserQuestion` and `THROUGHLINE_BUILD_TIMEOUT` watchdog. Not a new FR; this is scope tightening within FR-37 |
+| Issue #28B (pre-commit-hook rejects `test(failing):` commits) | §5b(b) `git commit --no-verify` escape in the build prompt's commit-discipline section. Not a new FR; this is scope tightening within FR-15(a) |
 
 ## Dependencies considered
 
@@ -364,7 +598,18 @@ This TDD's doc body is over the 350-line default
 `THROUGHLINE_TDD_MAX_LINES` cap established by TDD 0014. Justification:
 the four in-scope FRs (FR-58 severity, FR-60 self-review, FR-70
 grounding, FR-71 honesty) share one substrate (the review prompt + build
-prompt) and one telemetry surface (the `findings` array). Splitting
+prompt) and one telemetry surface (the `findings` array). A follow-up
+revision added three small co-located surfaces on the same substrate:
+§3b + §3c per-file disposition / coverage check (issue #35) + the
+`runner-check` re-review routing branch through TDD 0019 (resolved a
+design-critique BLOCKER on the §3c → TDD 0019 interface; adds a
+distinct counter `re_review_attempts` and a separate
+`THROUGHLINE_RE_REVIEW_MAX` cap), §5b(a) `AskUserQuestion` build-prompt
+prohibition (issue #28A), §5b(b) `--no-verify` pre-commit-hook escape
+(issue #28B). All three live on
+the same review-prompt + build-prompt surface this TDD already owns;
+homing them elsewhere would either duplicate this TDD's substrate
+description or create cross-TDD prompt-file edit conflicts. Splitting
 across multiple TDDs would either edit the same prompt files from
 multiple TDDs in the same design pass (a merge-conflict surface and a
 coherence loss for the reviewer's checklist) or fragment the finding
@@ -376,27 +621,31 @@ length; trimming would harm specificity.
 
 ## Touched files
 
-- `scripts/review-prompt.md` — §1, §3, §4 extensions
+- `scripts/review-prompt.md` — §1, §3, §3b, §4 extensions
 - `scripts/lib/gates.sh` (post-TDD-0017, post-TDD-0019, post-TDD-0020)
   — `_diff_vs_narrative_facts`, finding-block parser, halt-boundary
-  logic from §2
+  logic from §2, `_per_file_coverage_check` from §3c
 - `scripts/lib/state.sh` (post-TDD-0015, post-TDD-0018, post-TDD-0019,
   post-TDD-0020) — `findings` + `self_review_count` schema + setters,
   schema-version bump
-- `skills/implement/SKILL.md` — §5 self-review block instruction
-- `scripts/build-prompt.md` — §5 self-review block insertion
+- `skills/implement/SKILL.md` — §5 self-review block instruction +
+  cross-reference to the §5b prompt additions
+- `scripts/build-prompt.md` — §5 self-review block insertion + §5b(a)
+  AskUserQuestion prohibition + §5b(b) `--no-verify` escape
 
 Total: 5 files touched.
 
 ## Expected diff size
 
-- `scripts/review-prompt.md` — ~80 lines added (severity
-  taxonomy, grounding clause, diff-vs-narrative check)
-- `scripts/lib/gates.sh` — ~140 lines added (helper + parser + halt
-  logic)
+- `scripts/review-prompt.md` — ~110 lines added (severity taxonomy,
+  grounding clause, diff-vs-narrative check, per-file disposition
+  requirement from §3b)
+- `scripts/lib/gates.sh` — ~170 lines added (helper + parser + halt
+  logic + `_per_file_coverage_check` from §3c)
 - `scripts/lib/state.sh` — ~60 lines added
 - `skills/implement/SKILL.md` — ~30 lines added
-- build prompt template — ~50 lines added
+- `scripts/build-prompt.md` — ~80 lines added (self-review block +
+  AskUserQuestion prohibition + `--no-verify` escape)
 
-Total expected diff: ~360 lines across 5 files. No exceptions needed
-per-file (each under 300).
+Total expected diff: ~450 lines across 5 files. No per-file exceptions
+needed (each under the 300-line default).

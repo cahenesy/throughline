@@ -70,6 +70,7 @@ The TDD fragment shape (defined by TDD 0008 + extended by TDD 0011) gains:
 | `halt_cause` | `string \| null` | One of the enum above when `status` is a halt state (`paused`, `blocked`, `failed`); `null` for active or `done` TDDs. |
 | `halt_triggering_finding_ref` | `string \| null` | When `halt_cause` is finding-driven (`structural-finding`, `rework-budget-exhausted`, `rework-scope-exceeded`), a stable reference to the review finding that triggered the halt: `<review-pass-id>:<finding-index>`. `null` for non-finding causes. |
 | `halt_next_actions` | `string[]` | Deterministic list of available next-action labels, computed from `halt_cause`. See §3 below. |
+| `halt_cause_detail` | `string \| null` | Optional free-form sub-classification of the halt cause for triage, when the enum value alone is too coarse. Examples: `build-overall-timeout` (TDD 0020 watchdog), `build-inter-event-timeout` (TDD 0020 read-t 600). `null` when the enum value is sufficient. Renderers display it under the cause label when present. |
 
 `paused_cause` continues to be written when `status==paused` for backward
 compatibility with the TDD 0008/0011 renderer; its value matches
@@ -120,12 +121,44 @@ finding-summary text and TDD slugs at column boundaries with `...` rather
 than wrapping. When the cause's next-action list does not include "resume",
 the trailing `Resume:` line is omitted.
 
+### 4b. `--follow` watch-loop hardening — `scripts/status.sh` (addresses issue #30)
+
+While `scripts/status.sh` is open for the §4 rewrite, fix the long-standing
+issue #30: the `--follow` mode's `trap 'exit 0' INT TERM` is a no-op when
+status.sh is launched as a non-interactive `&` background job (POSIX-1-2017
+§2.11 — signals that were ignored on entry to a non-interactive shell cannot
+be re-trapped). Two-part fix in the same file:
+
+1. **Widen the trap signal set** from `INT TERM` to `INT TERM HUP QUIT`. HUP
+   and QUIT are not inherited as ignored on async fork, so at least one of
+   them is always trappable regardless of how status.sh was launched. SIGTERM
+   already works; this preserves it.
+2. **Add a `--max-seconds N` cap** to the `--follow` loop's argument parser.
+   When set, the loop's wall-clock duration is bounded; the loop exits 0 when
+   the cap is reached. Optional (default unlimited); intended for CI smoke
+   tests and any future scripted use of `--follow`.
+
+The header-comment block of `scripts/status.sh` gains a one-paragraph note
+documenting the limitation: "When `--follow` is launched as a background
+`&` job from a non-interactive shell, SIGINT is inherited as SIG_IGN and is
+silently un-trappable per POSIX-1-2017 §2.11. Use SIGTERM (or SIGHUP/SIGQUIT)
+to stop a background `--follow` watch; SIGINT works correctly in the
+foreground." The skill's user-facing description in `skills/implement-status/SKILL.md`
+gains the same caveat (one sentence) as part of §5.
+
+This sub-section is a small co-located fix; it does NOT modify the halted-run
+rendering from §4 and does not interact with the closed halt-cause enum.
+
 ### 5. Skill prompt change — `skills/implement-status/SKILL.md`
 
 The skill's user-facing description gains one line documenting the
 one-screen contract: "Halted-run rendering fits 24×80 by default. To see
-full logs use `cat docs/tdd/.implement-logs/<runid>/REPORT`." No model-
-prompted reasoning is added — the renderer is mechanical.
+full logs use `cat docs/tdd/.implement-logs/<runid>/REPORT`." And a second
+line on the §4b watch-mode caveat: "`--follow` watch mode in a non-interactive
+background job: use `kill -TERM` (or `-HUP`/`-QUIT`), not `kill -INT`;
+SIGINT is silently un-trappable in that launch mode per POSIX. SIGINT
+still works correctly in the foreground." No model-prompted reasoning is
+added — the renderer is mechanical.
 
 ### 6. Setter functions (in `scripts/lib/state.sh`)
 
@@ -165,6 +198,8 @@ new fallback rules.
 2. **Update `scripts/status.sh`** — rewrite the halted-run rendering
    branch to read `halt_cause` / `halt_triggering_finding_ref` /
    `halt_next_actions` and produce the one-screen output specified in §4.
+   In the same file: widen the `--follow` loop's trap to `INT TERM HUP QUIT`
+   and add the optional `--max-seconds N` cap per §4b (addresses issue #30).
 3. **Update `skills/implement-status/SKILL.md`** — add the one-line
    contract documentation from §5.
 4. **Migrate one existing 0011 cause emission** — change one of TDD 0011's
@@ -237,6 +272,16 @@ when run against a halted-run fixture.
 7. **Setter rejects unknown cause.** Call `set_halt_cause foo
    not-in-enum`. Expect: exit code 1, stderr contains a message naming
    the invalid value.
+8. **`status.sh --follow` background SIGINT footgun closed (issue #30).**
+   Reproducer from issue #30: launch `bash scripts/status.sh --logdir
+   <fixture> --follow 1 >/dev/null 2>&1 &`, capture `$!`, send
+   `kill -INT $PID`. Pre-fix: process stays alive. Post-fix: process
+   still stays alive (SIGINT genuinely is un-trappable in this launch
+   mode per POSIX), but `kill -HUP $PID` or `kill -QUIT $PID` now exits
+   the loop within 1 second (the watch sleep interval). Additionally,
+   `bash scripts/status.sh --logdir <fixture> --follow 1 --max-seconds 2
+   >/dev/null 2>&1; echo $?` exits 0 within 2 seconds without any
+   external signal.
 
 **Expected observations (PASS):** every numbered observation point above
 yields the cited result.
@@ -247,6 +292,7 @@ yields the cited result.
 |---|---|
 | FR-63 (closed enum of human-needed halt causes) | §1 enum + §6 `set_halt_cause` enforcement (validates against the closed set; rejects unknown values) |
 | FR-64 (one-screen halt context with cause, triggering finding, next actions) | §4 renderer rewrite + §3 deterministic next-actions mapping + §2 schema fields backing the renderer |
+| FR-29 (TDD 0008 watch-loop UX; issue #30 hardening) | §4b `--follow` trap widening (`INT TERM HUP QUIT`) + `--max-seconds N` optional cap; not a new FR, this is a co-located robustness fix on the same file §4 already opens |
 | Supersession of TDD 0011's halt taxonomy | §1 enum subsumes TDD 0011's `paused_cause` enum; §6 setter is the new authoritative writer; backward-compat shim (`paused_cause` dual-write + reader fallback) preserves existing renderers during the transition |
 
 No gaps. FR-65/66/67 (rework-budget, scope, structural escalation) are
@@ -296,6 +342,19 @@ disposition.
   disposition that binds all future gates; the TDDs implement it.
   Confidence: HIGH (per the design plan).
 
+## Scope override
+
+This TDD's doc body sits 15 lines over the 350-line default
+`THROUGHLINE_TDD_MAX_LINES` cap after a follow-up revision added §4b
+(`scripts/status.sh --follow` trap widening + `--max-seconds` cap;
+addresses issue #30). The pre-revision body was 319 lines (under cap);
+the §4b addition + verification §8 + traceability + sequencing + touched-
+files updates added the deciding ~46 lines. The §4b fix is co-located
+with §4 (both touch `scripts/status.sh`); splitting it to a separate
+TDD would either fragment the file's edit set across two design PRs or
+duplicate the touched-file declaration. The override is recorded per
+FR-53's escape clause.
+
 ## Touched files
 
 - `scripts/lib/state.sh` (delivered by TDD 0015) — additions per §1, §2, §6
@@ -310,8 +369,9 @@ Total: 4 files touched.
 
 - `scripts/lib/state.sh` — ~120 lines added (enum array, two new setter
   functions, dual-write logic, schema-version bump)
-- `scripts/status.sh` — ~80 lines changed (rewritten halted-run branch;
-  net ~+40 lines)
+- `scripts/status.sh` — ~95 lines changed (rewritten halted-run branch
+  per §4 + trap widening + `--max-seconds N` parser + header-comment
+  documentation block per §4b; net ~+55 lines)
 - `scripts/lib/pause-retry.sh` — ~10 lines changed (one call-site migration)
 - `skills/implement-status/SKILL.md` — ~3 lines added
 

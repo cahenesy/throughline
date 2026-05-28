@@ -181,8 +181,20 @@ claude -p "$prompt" \
   --input-format stream-json \
   --output-format stream-json \
   --model "${THROUGHLINE_BUILD_MODEL:-opus}" \
+  --disallowed-tools AskUserQuestion \
   [...existing flags from build_one...]
 ```
+
+`--disallowed-tools AskUserQuestion` addresses issue #28A: the build
+subprocess runs unattended (no user on the other end of
+`AskUserQuestion`), and a hang there leaves no diagnostic. Stripping
+the tool at the runner level is the belt-and-suspenders for the
+prompt-level prohibition TDD 0021 §5 adds to the build prompt; even a
+misbehaving prompt cannot hang the process on a question that nobody
+will answer. The build's documented escapes — `BATCH_RESULT: BLOCKED
+<reason>` (which routes via the FR-17 / TDD 0019 BLOCKERS.md path) or
+`STEP_COMMIT:` with the runner-supplied STEP_REVIEW reply — remain the
+only ways to surface a mid-build snag.
 
 Stream-JSON mode emits one JSON event per line on stdout (message
 deltas, tool calls, turn boundaries, errors) and consumes one JSON
@@ -190,6 +202,42 @@ event per line on stdin (new user-turn messages). The runner does NOT
 parse the model's reasoning text; it greps the same `STEP_COMMIT:` /
 `BATCH_RESULT:` / `SELF_REVIEW_BEGIN..END` sentinels out of the
 content events.
+
+### Watchdog: `THROUGHLINE_BUILD_TIMEOUT` (overall build cap; issue #28A)
+
+The `read -t 600` inter-event timeout in §"Bash subprocess management"
+catches a hung subprocess between events. An additional **overall**
+watchdog catches the case where a subprocess streams events steadily
+but never reaches `BATCH_RESULT:` (e.g., a model that loops indefinitely
+in a state where it keeps emitting tool calls but never converges to a
+verdict):
+
+- `THROUGHLINE_BUILD_TIMEOUT` (env var, default **7200** seconds = 2h).
+  The coprocess invocation is wrapped in `timeout
+  "$THROUGHLINE_BUILD_TIMEOUT"`, so the subprocess is killed at the
+  wall-clock cap regardless of inter-event activity.
+- On overall-timeout fire: runner records a halt event with cause
+  `transient` (existing TDD-0011 vocabulary) and a `halt_cause_detail:
+  build-overall-timeout` note. The build branch retains its commits
+  (so a re-run can resume from the existing state via TDD 0011); no
+  `BATCH_RESULT` is fabricated.
+- Set to `0` or `unlimited` to disable (escape hatch for legitimately
+  long-running builds; user must opt in).
+
+The wrapped invocation skeleton:
+
+```bash
+coproc BUILD { timeout "${THROUGHLINE_BUILD_TIMEOUT:-7200}" \
+               claude -p "$prompt" --input-format stream-json \
+                      --output-format stream-json \
+                      --model "${THROUGHLINE_BUILD_MODEL:-opus}" \
+                      --disallowed-tools AskUserQuestion \
+                      2>>"$LOGDIR/build.err"; }
+```
+
+This composes cleanly with the existing `read -t 600` inter-event
+timeout: both can fire; whichever fires first wins; both record their
+specific cause for triage.
 
 ### Bash subprocess management — coprocess + fd-redirect pattern
 
@@ -367,6 +415,21 @@ exchange), and the review log files.
    line of garbage JSON between two valid events. Expect: `WARNING:
    malformed stream-json event` appears in the log; the next valid
    event is processed normally; the run completes successfully.
+10. **AskUserQuestion runner-side block (issue #28A).** Fixture: a
+    build prompt that — despite the prompt-level prohibition from
+    TDD 0021 §5 — attempts to call `AskUserQuestion`. Expect: the tool
+    call fails at the `claude -p` layer with an "unavailable tool"
+    response visible in the stream-json events; the build either
+    recovers (re-attempts via `BATCH_RESULT: BLOCKED <reason>`) or
+    hits the overall watchdog. The process never hangs indefinitely
+    on a question that nobody will answer.
+11. **Overall build watchdog (issue #28A).** Fixture: a build process
+    that streams events steadily but never emits `BATCH_RESULT:`
+    (mock loops emitting tool calls). With
+    `THROUGHLINE_BUILD_TIMEOUT=60`, expect: the subprocess is killed
+    at 60 seconds wall-clock; halt recorded with cause `transient`
+    and `halt_cause_detail: build-overall-timeout`; build branch
+    retains its commits; no fabricated `BATCH_RESULT`.
 
 **Expected observations (PASS):** every numbered point above yields the
 cited result.
@@ -424,10 +487,16 @@ the design-critique gate (TDD 0019 first pass) raised the "Build
 subprocess protocol" subsection as a BLOCKER without which the
 multi-turn stdio pattern would be too underspecified to implement
 without guessing — the concrete bash coprocess + stream-json invocation
-spec (~90 lines) is load-bearing for FR-56's mechanism. Trimming would
-recreate the BLOCKER. Per FR-53's escape clause: legitimately-wide
-design where one subsection (the subprocess protocol) carries
-implementation-mandatory specificity.
+spec (~90 lines) is load-bearing for FR-56's mechanism. A follow-up
+revision added `--disallowed-tools AskUserQuestion` to the invocation
+block and a `THROUGHLINE_BUILD_TIMEOUT` watchdog sub-section (~60
+lines; addresses issue #28A) — both co-located with the existing
+subprocess-protocol surface and grouped with the existing failure-path
+discussion. Trimming would recreate the BLOCKER or fragment the
+unattended-mode safety surface. Per FR-53's escape clause:
+legitimately-wide design where two subsections (the subprocess
+protocol + the watchdog) carry implementation-mandatory specificity
+on one cohesive surface.
 
 ## Touched files
 
