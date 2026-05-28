@@ -167,7 +167,17 @@ else
   LOGDIR="$MAINREPO/docs/tdd/.implement-logs/$(date +%Y%m%d-%H%M%S)"
   mkdir -p "$LOGDIR"
 fi
-REPORT="$LOGDIR/report.md"; { echo "# Implement report — $(date)"; echo; } > "$REPORT"
+REPORT="$LOGDIR/report.md"
+# TDD 0011 / iter-7 MAJOR-1: on --resume the prior run's report.md
+# carries the human-readable summary of every TDD that ran before the
+# pause. Truncating it with `>` silently erases that history and
+# violates the TDD's "reuse logdir for continuity" contract. Append a
+# Resume header instead so the timeline is auditable end-to-end.
+if [ "$RESUME" -eq 1 ] && [ -f "$REPORT" ]; then
+  { echo; echo "# Resume — $(date)"; echo; } >> "$REPORT"
+else
+  { echo "# Implement report — $(date)"; echo; } > "$REPORT"
+fi
 
 # Single-run lock: a second /implement on the same repo would double-build, so refuse
 # to start while another run is live. This is what lets you keep authoring PRDs/TDDs
