@@ -239,7 +239,7 @@ echo "[4.a] _resume_from populates RESUME_GATES_DONE_<slug> from gates_completed
   # so the build-history source-of-truth says gate 1 is done.
   REPO_T="$D/repo"
   mkdir -p "$REPO_T" && cd "$REPO_T"
-  git init -q; git config user.email t@t.t; git config user.name t
+  git init -q -b master; git config user.email t@t.t; git config user.name t
   printf 'base\n' > base.txt; git add -A; git commit -qm base
   git checkout -q -b feat/0007-x
   printf 'test\n' > test.txt; git add -A; git commit -qm "test(failing): 0007-x"
@@ -276,7 +276,7 @@ echo "[4.a] _resume_from populates RESUME_GATES_DONE_<slug> from gates_completed
 echo "[4.b] _resume_from refuses to resume when build branch HEAD diverges -> paused_cause=resume-blocked-branch-divergence"
 ( D="$ROOT/4b"; mkdir -p "$D/state.d"
   REPO_T="$D/repo"; mkdir -p "$REPO_T" && cd "$REPO_T"
-  git init -q; git config user.email t@t.t; git config user.name t
+  git init -q -b master; git config user.email t@t.t; git config user.name t
   printf 'base\n' > base.txt; git add -A; git commit -qm base
   git checkout -q -b feat/0007-x
   printf 'test\n' > test.txt; git add -A; git commit -qm "test(failing): 0007-x"
@@ -302,7 +302,7 @@ echo "[4.b] _resume_from refuses to resume when build branch HEAD diverges -> pa
 echo "[4.c] _resume_from refuses when build branch has no test(failing): commit"
 ( D="$ROOT/4c"; mkdir -p "$D/state.d"
   REPO_T="$D/repo"; mkdir -p "$REPO_T" && cd "$REPO_T"
-  git init -q; git config user.email t@t.t; git config user.name t
+  git init -q -b master; git config user.email t@t.t; git config user.name t
   printf 'base\n' > base.txt; git add -A; git commit -qm base
   # No build branch / no test(failing): commit anywhere
   BRANCH_HEAD="$(git rev-parse HEAD)"
@@ -383,7 +383,7 @@ EOF
 echo "[4.d] _resume_from in combined mode skips gate-1 done-list (force re-run)"
 ( D="$ROOT/4d"; mkdir -p "$D/state.d"
   REPO_T="$D/repo"; mkdir -p "$REPO_T" && cd "$REPO_T"
-  git init -q; git config user.email t@t.t; git config user.name t
+  git init -q -b master; git config user.email t@t.t; git config user.name t
   printf 'base\n' > base.txt; git add -A; git commit -qm base
   # In combined mode, ALL TDDs share the same $CHANGE branch — but no
   # per-TDD test(failing): commits are required for resume to succeed.

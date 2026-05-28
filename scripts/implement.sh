@@ -1768,7 +1768,17 @@ if [ -d "$STATE_DIR" ]; then
     fi
   done
 fi
-if [ "$_any_paused" -eq 1 ]; then set_run_state paused
-else                              set_run_state done; fi
+# TDD 0011 / iter-8 M-1: guard the terminal run-state writes. On disk-full
+# at run-end, an unchecked failure would leave run.json at `running`
+# forever; status.sh would show a stale in-progress run. The recovery
+# path (--check-paused reads per-TDD fragments directly) is unaffected,
+# but the display state is persistently wrong.
+if [ "$_any_paused" -eq 1 ]; then
+  set_run_state paused \
+    || echo "warning: could not write final run.json (state=paused)" | tee -a "$REPORT" >&2
+else
+  set_run_state done \
+    || echo "warning: could not write final run.json (state=done)" | tee -a "$REPORT" >&2
+fi
 
 echo; echo "=== Done. Report: $REPORT ==="; cat "$REPORT"
