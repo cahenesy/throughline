@@ -1,6 +1,6 @@
 # TDD 0016: Theme D refactor (2/3) — extract pause/retry classification into `scripts/lib/pause-retry.sh`
 
-Status: draft
+Status: implemented
 PRD refs: FR-69 (slice 2/3)
 PRD-rev: a961955
 ADR constraints: 0003, 0004, 0005

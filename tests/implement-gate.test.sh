@@ -346,4 +346,16 @@ if [ -f "$SMS" ]; then
   bash "$SMS" || SMS_FAIL=1
 fi
 
-[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ] && [ "$SMS_FAIL" -eq 0 ]
+# Run the pause-retry-module-sourceability eval (TDD 0016 / FR-69) as part of the
+# same suite. Pins the contract of the extracted scripts/lib/pause-retry.sh: it
+# must source in isolation (after state.sh), and a missing or unreadable module
+# must cause implement.sh to FAIL FAST rather than proceed silently with every
+# pause/retry-classification function undefined.
+PRM="$(dirname "$0")/pause-retry-module-sourceability.test.sh"
+PRM_FAIL=0
+if [ -f "$PRM" ]; then
+  echo
+  bash "$PRM" || PRM_FAIL=1
+fi
+
+[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ] && [ "$SMS_FAIL" -eq 0 ] && [ "$PRM_FAIL" -eq 0 ]
