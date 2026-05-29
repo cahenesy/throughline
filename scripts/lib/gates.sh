@@ -354,3 +354,42 @@ _rework_pre_pass() {  # <slug> <tdd> <new-head> <cleared-sha> <build-start-sha> 
 
   return "$fail"
 }
+
+# _rework_one <tdd> <log> <finding-ref> <finding-text> <cap>
+# Spawn ONE bounded rework attempt on the rework model (Sonnet by default —
+# cheaper and less prone to opportunistic refactoring than Opus; §Approach /
+# NFR-3). Substitutes the finding, the declared touched-file set, and the
+# computed scope cap into the rework prompt template, runs `claude -p` to make
+# and commit the fix, records the FR-36 session pointer, and echoes the new HEAD
+# SHA so the caller can run _rework_pre_pass against the commit. cwd is the build
+# worktree. The rework `claude` is responsible for committing its edit with a
+# `rework:` message (per the template); _rework_one does not commit on its
+# behalf — an empty diff is detected by the caller's pre-pass.
+_rework_one() {  # <tdd> <log> <finding-ref> <finding-text> <cap>
+  local tdd="$1" log="$2" finding_ref="$3" finding_text="$4" cap="$5"
+  local rm="${THROUGHLINE_REWORK_MODEL:-sonnet}"
+  # Resolve the template: $RWTMPL on a normal run; else relative to this
+  # module (gates.sh lives in scripts/lib/, rework-prompt.md in scripts/) so
+  # the SOURCE_ONLY test path resolves it without the implement.sh setup block.
+  local tmpl="${RWTMPL:-}"
+  [ -z "$tmpl" ] && tmpl="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/rework-prompt.md"
+  if [ ! -f "$tmpl" ]; then
+    echo "error: _rework_one: rework prompt template not found ($tmpl)" >&2
+    return 1
+  fi
+  local touched_block prompt
+  touched_block="$(_rework_touched_files "$tdd" | sed 's/^/  - /')"
+  # Literal placeholder substitution via bash parameter expansion (safe for the
+  # finding text's `/`, `#`, and newlines, which would break sed delimiters).
+  prompt="$(cat "$tmpl")"
+  prompt="${prompt//\{\{TDD\}\}/$tdd}"
+  prompt="${prompt//\{\{FINDING\}\}/[$finding_ref] $finding_text}"
+  prompt="${prompt//\{\{CAP\}\}/$cap}"
+  prompt="${prompt//\{\{TOUCHED_FILES\}\}/$touched_block}"
+  local args=(-p "$prompt" --permission-mode auto)
+  [ -n "$rm" ] && args+=(--model "$rm")
+  local start; start=$(date +%s)
+  claude "${args[@]}" >>"$log" 2>&1
+  record_session_pointer "$log" "$start"
+  git rev-parse HEAD 2>/dev/null
+}

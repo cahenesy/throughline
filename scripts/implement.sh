@@ -117,8 +117,8 @@ command -v claude >/dev/null 2>&1 || { echo "claude CLI not found on PATH"; exit
 HASGH=0; command -v gh >/dev/null 2>&1 && HASGH=1
 SDIR="$(cd "$(dirname "$0")" && pwd)"
 TMPL="$SDIR/build-prompt.md"; RTMPL="$SDIR/review-prompt.md"; CI_CHECKS="$SDIR/ci-checks.sh"
-RVMTPL="$SDIR/verify-runtime-prompt.md"
-for f in "$TMPL" "$RTMPL" "$RVMTPL" "$CI_CHECKS"; do [ -f "$f" ] || { echo "missing $f"; exit 1; }; done
+RVMTPL="$SDIR/verify-runtime-prompt.md"; RWTMPL="$SDIR/rework-prompt.md"
+for f in "$TMPL" "$RTMPL" "$RVMTPL" "$RWTMPL" "$CI_CHECKS"; do [ -f "$f" ] || { echo "missing $f"; exit 1; }; done
 [ -x "$CI_CHECKS" ] || chmod +x "$CI_CHECKS" 2>/dev/null || true
 MAINREPO="$PWD"
 
