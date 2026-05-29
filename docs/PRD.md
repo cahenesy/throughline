@@ -666,6 +666,43 @@ of progress; not asked to drive between findings and convergence."
   per-TDD scope metrics reflect the git-derived ground truth (not
   the narrative).
 
+### Build-phase learning capture
+
+throughline runs build after build, accumulating evidence in review logs and
+run-state records, but that evidence is currently discarded at run-end: the
+same categorical review-finding patterns can recur across TDDs because there is
+no feedback path from build artifacts back to the design phase. BLOCKERS.md
+captures structural infeasibilities (FR-17) but not recurring quality patterns
+that the design phase could have anticipated. These requirements close that gap
+by surfacing recurring patterns to the human for review, and persisting the
+approved subset as forward context for future design sessions.
+
+- **FR-72 Candidate-learning surface after run.** After an `/implement` run
+  completes (all in-scope TDDs in a terminal state), the run surfaces any
+  recurring patterns detected across the run's artifacts — review findings,
+  rework outcomes, structural escalations — as candidate learnings for human
+  review. A pattern is surfaced when it appeared in the same categorical class
+  across more than one TDD or build step in the run. The human reviews the
+  candidates and marks each as accepted or discarded; discarded candidates are
+  not persisted. — Acceptance: after any `/implement` run whose review and
+  rework records show the same categorical finding class across two or more
+  TDDs, the run surfaces a candidate-learnings report naming those patterns, the
+  TDDs each appeared in, and a prompt for the human to accept or discard each
+  candidate; completing that review persists exactly the accepted subset and
+  discards the rest; a run whose records contain no such recurring patterns
+  produces no candidate-learnings report.
+- **FR-73 Accepted learnings inform future `/tdd-author` sessions.** Accepted
+  learnings are persisted to the project. When `/tdd-author` runs for a
+  subsequent PRD update, it surfaces persisted learnings relevant to the TDD
+  scope under design as advisory context — a signal that this class of issue has
+  recurred in this project's prior builds. The author decides what (if anything)
+  to adjust; learnings are advisory and do not block design authoring or open
+  any new gate. — Acceptance: a `/tdd-author` session that runs after an
+  accepted learning is persisted surfaces that learning (or an explicit
+  reference to it) when the current TDD's scope overlaps the learning's subject
+  area; the session does not block on the learning; a `/tdd-author` session with
+  no overlapping persisted learnings proceeds without surfacing any.
+
 ### Quality hook & delegation
 - **FR-21 Format + lint hook.** A `format-and-lint` PostToolUse hook formats then
   lints edited files when a linter is configured (no-op otherwise), debounced, for
@@ -745,6 +782,10 @@ of progress; not asked to drive between findings and convergence."
 - **Recovering uncommitted edits in a build worktree** — committed history on
   the build branch is the source of truth across a resume (FR-40); any
   uncommitted edits left by an unclean shutdown are discarded.
+- **Automated incorporation of build learnings into designs** — persisted
+  learnings (FR-72, FR-73) are advisory context for the TDD author; the plugin
+  does not automatically modify TDD scope, design decisions, or acceptance
+  criteria based on past learnings.
 - **Hard per-attempt token caps on rework (FR-68).** Token spend on rework
   is held to "meaningfully less than original build" via observable
   telemetry, not via a runtime cap that aborts a mid-rework gate. A hard
@@ -859,6 +900,16 @@ of progress; not asked to drive between findings and convergence."
   compliant base. Whether the Theme D refactor should be split into
   per-file refactor TDDs (one per non-compliant shipped file) or
   bundled is open.
+- **Recurring-pattern threshold (FR-72).** FR-72 surfaces a pattern when it
+  appears across more than one TDD or step, but the precise threshold —
+  whether two occurrences suffice, whether severity affects the threshold,
+  whether the threshold should be configurable per project — is deferred to
+  the TDD. Initial calibration should be compared against actual run data.
+- **Subject-area overlap for learning surface (FR-73).** How `/tdd-author`
+  determines whether a persisted learning's subject area overlaps the current
+  TDD's scope is a matching question deferred to the TDD. The PRD requires
+  the learning be surfaced when overlap exists; the mechanism (keyword match,
+  file-set intersection, model judgment) is not specified here.
 - **Discrepancy detection mechanism (FR-71).** FR-71 requires the
   per-build report and run-state record to reflect the actual diff,
   with narrative-vs-ground-truth discrepancies surfaced as `major`
