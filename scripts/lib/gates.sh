@@ -347,11 +347,28 @@ _rework_pre_pass() {  # <slug> <tdd> <new-head> <cleared-sha> <build-start-sha> 
   local slug="$1" tdd="$2" new_head="$3" cleared="$4" build_start="$5" region="$6"
   local base="$cleared"; [ -z "$base" ] && base="$build_start"
   local fail=0 file
+  # ADR 0006 / FR-70: every PRECHECK_FAIL must rest on a verifiable artifact.
+  # Pre-fix the four `git diff … 2>/dev/null` invocations below dropped both
+  # the stderr AND the exit code, so a real git failure (corrupt ref, bad
+  # working tree, unreadable .git, etc.) returned empty output — `awk` printed
+  # `0` and the process-substitution loops never executed, all three checks
+  # silently passed and the rework was reported as scope-clear without git
+  # ever computing a diff (TDD 0019 review-rerun-2 MAJOR). Now: capture each
+  # diff's stdout AND rc into a local; on rc != 0 emit a PRECHECK_FAIL naming
+  # the failed sub-check and set fail=1 so the caller routes the rework
+  # exactly as it would for a real scope/structural violation. The downstream
+  # `_rework_loop` then resets HEAD and escalates with a non-silent diagnostic.
 
   # FR-66 scope cap.
-  local cap span
+  local cap span numstat_out numstat_rc
   cap="$(_rework_scope_cap "$region")"
-  span="$(git diff --numstat "$base..$new_head" 2>/dev/null | awk '{a+=$1; d+=$2} END{print a+d+0}')"
+  numstat_out="$(git diff --numstat "$base..$new_head" 2>/dev/null)"; numstat_rc=$?
+  if [ "$numstat_rc" -ne 0 ]; then
+    printf 'PRECHECK_FAIL: git-diff-failed (FR-66 scope, rc=%s, base=%s, head=%s)\n' \
+      "$numstat_rc" "$base" "$new_head"
+    fail=1
+  fi
+  span="$(printf '%s\n' "$numstat_out" | awk '{a+=$1; d+=$2} END{print a+d+0}')"
   [ -z "$span" ] && span=0
   if [ "$span" -gt "$cap" ] 2>/dev/null; then
     printf 'PRECHECK_FAIL: rework-scope-exceeded %s > %s\n' "$span" "$cap"
@@ -359,18 +376,30 @@ _rework_pre_pass() {  # <slug> <tdd> <new-head> <cleared-sha> <build-start-sha> 
   fi
 
   # FR-67(a) touched-file scope.
-  local set_list
+  local set_list names_a_out names_a_rc
   set_list="$(_rework_touched_files "$tdd")"
+  names_a_out="$(git diff --name-only "$base..$new_head" 2>/dev/null)"; names_a_rc=$?
+  if [ "$names_a_rc" -ne 0 ]; then
+    printf 'PRECHECK_FAIL: git-diff-failed (FR-67(a) membership, rc=%s, base=%s, head=%s)\n' \
+      "$names_a_rc" "$base" "$new_head"
+    fail=1
+  fi
   while IFS= read -r file; do
     [ -z "$file" ] && continue
     if ! printf '%s\n' "$set_list" | grep -qxF "$file"; then
       printf 'PRECHECK_FAIL: structural-finding(a) %s\n' "$file"
       fail=1
     fi
-  done < <(git diff --name-only "$base..$new_head" 2>/dev/null)
+  done <<< "$names_a_out"
 
   # FR-67(b) per-file bound — cumulative since the build start (per §1).
-  local decl num exc actual
+  local decl num exc actual names_b_out names_b_rc per_file_out per_file_rc
+  names_b_out="$(git diff --name-only "$base..$new_head" 2>/dev/null)"; names_b_rc=$?
+  if [ "$names_b_rc" -ne 0 ]; then
+    printf 'PRECHECK_FAIL: git-diff-failed (FR-67(b) per-file iteration, rc=%s, base=%s, head=%s)\n' \
+      "$names_b_rc" "$base" "$new_head"
+    fail=1
+  fi
   while IFS= read -r file; do
     [ -z "$file" ] && continue
     decl="$(_rework_file_declared_bound "$tdd" "$file")"
@@ -378,13 +407,19 @@ _rework_pre_pass() {  # <slug> <tdd> <new-head> <cleared-sha> <build-start-sha> 
     num="${decl%% *}"; exc="${decl##* }"
     [ "$exc" = "1" ] && continue        # declared exception → bound not enforced
     [ "$num" -lt 0 ] 2>/dev/null && continue   # unparseable estimate → skip (b)
-    actual="$(git diff --numstat "$build_start..$new_head" -- "$file" 2>/dev/null | awk '{a+=$1; d+=$2} END{print a+d+0}')"
+    per_file_out="$(git diff --numstat "$build_start..$new_head" -- "$file" 2>/dev/null)"; per_file_rc=$?
+    if [ "$per_file_rc" -ne 0 ]; then
+      printf 'PRECHECK_FAIL: git-diff-failed (FR-67(b) per-file bound for %s, rc=%s)\n' "$file" "$per_file_rc"
+      fail=1
+      continue
+    fi
+    actual="$(printf '%s\n' "$per_file_out" | awk '{a+=$1; d+=$2} END{print a+d+0}')"
     [ -z "$actual" ] && actual=0
     if [ "$actual" -gt "$num" ] 2>/dev/null; then
       printf 'PRECHECK_FAIL: structural-finding(b) %s %s > %s\n' "$file" "$actual" "$num"
       fail=1
     fi
-  done < <(git diff --name-only "$base..$new_head" 2>/dev/null)
+  done <<< "$names_b_out"
 
   return "$fail"
 }
@@ -446,25 +481,42 @@ _rework_one() {  # <tdd> <log> <finding-ref> <finding-text> <cap>
   git rev-parse HEAD 2>/dev/null
 }
 
-# _rework_extract_finding <review-log>  — set RWK_STRUCTURAL / RWK_REGION /
-# RWK_REF / RWK_TEXT for the FIRST halting finding in the review output. TDD 0021
-# adds a structured `REVIEW_FINDING: severity=… structural=… region_lines=… ref=…
-# | <text>` line per finding; this consumes it. Pre-TDD-0021 the review prompt
-# emits no such marker, so the loop degrades safely: structural=0 (no predictive
-# (c) escalation), region empty (cap collapses to the floor), ref `review:1`,
-# and the BLOCK reason as the finding text — the retrospective (a)/(b) checks and
-# the attempt budget still apply in full.
-_rework_extract_finding() {  # <review-log>
-  local log="$1" line r
+# _rework_extract_finding <review-log> [<pre-log-size>]  — set RWK_STRUCTURAL /
+# RWK_REGION / RWK_REF / RWK_TEXT for the FIRST halting finding in the review
+# output. TDD 0021 adds a structured `REVIEW_FINDING: severity=… structural=…
+# region_lines=… ref=… | <text>` line per finding; this consumes it.
+# Pre-TDD-0021 the review prompt emits no such marker, so the loop degrades
+# safely: structural=0 (no predictive (c) escalation), region empty (cap
+# collapses to the floor), ref `review:1`, and the BLOCK reason as the finding
+# text — the retrospective (a)/(b) checks and the attempt budget still apply in
+# full.
+#
+# The optional second arg is the log size BEFORE the current review pass ran
+# (taken by _rework_loop). When supplied, only the newly-appended slice is
+# scanned — so a current pass that emits only `REVIEW_RESULT: BLOCK` (no
+# structured `REVIEW_FINDING:`) cannot pick up a stale `REVIEW_FINDING:` from a
+# PRIOR iteration's appended slice and falsely route as e.g. structural-(c).
+# This was the TDD 0019 review-rerun-2 MAJOR for line 460; the matching
+# pre_log_size logic in _rework_loop already used this technique for the
+# REVIEW_RESULT verdict, but not for the structured finding line.
+_rework_extract_finding() {  # <review-log> [<pre-log-size>]
+  local log="$1" pre="${2:-0}" line r log_content
   RWK_STRUCTURAL=0; RWK_REGION=""; RWK_REF="review:1"; RWK_TEXT=""
-  line="$(grep -aE '^REVIEW_FINDING:' "$log" 2>/dev/null | grep -aiE 'severity=(blocker|major)' | tail -1)"
+  # Slice the log starting just after pre_log_size if provided; else fall back
+  # to the whole log (legacy callers / SOURCE_ONLY tests with no snapshot).
+  if [ "$pre" -gt 0 ] 2>/dev/null; then
+    log_content="$(tail -c +"$((pre + 1))" "$log" 2>/dev/null)"
+  else
+    log_content="$(cat "$log" 2>/dev/null)"
+  fi
+  line="$(printf '%s\n' "$log_content" | grep -aE '^REVIEW_FINDING:' | grep -aiE 'severity=(blocker|major)' | tail -1)"
   if [ -n "$line" ]; then
     case "$line" in *structural=true*) RWK_STRUCTURAL=1 ;; esac
     RWK_REGION="$(printf '%s' "$line" | sed -n 's/.*region_lines=\([0-9]*\).*/\1/p')"
     r="$(printf '%s' "$line" | sed -n 's/.*ref=\([^ ]*\).*/\1/p')"; [ -n "$r" ] && RWK_REF="$r"
     case "$line" in *'| '*) RWK_TEXT="${line#*| }" ;; *) RWK_TEXT="$line" ;; esac
   else
-    RWK_TEXT="$(grep -aoE 'REVIEW_RESULT: BLOCK.*' "$log" 2>/dev/null | tail -1 | sed 's/REVIEW_RESULT: BLOCK *//')"
+    RWK_TEXT="$(printf '%s\n' "$log_content" | grep -aoE 'REVIEW_RESULT: BLOCK.*' | tail -1 | sed 's/REVIEW_RESULT: BLOCK *//')"
     [ -z "$RWK_TEXT" ] && RWK_TEXT="review-blocking finding (no structured detail)"
   fi
 }
@@ -557,8 +609,13 @@ _rework_loop() {  # <slug> <tdd> <rbase> <log>
       *) _terminal_state "$slug" failed "" "review: no REVIEW_RESULT line"; return 1 ;;
     esac
 
-    # A halting finding (FR-58 blocker/major) → classify and act.
-    _rework_extract_finding "$log"
+    # A halting finding (FR-58 blocker/major) → classify and act. Pass
+    # pre_log_size so the extractor scans only the current pass's slice; a
+    # stale `REVIEW_FINDING:` from a prior iteration in the cumulative log
+    # cannot otherwise be told apart from a fresh one and would route the
+    # current rework against the wrong finding (TDD 0019 review-rerun-2
+    # MAJOR — companion fix to the verdict_in_new technique above).
+    _rework_extract_finding "$log" "$pre_log_size"
     # FR-67(c): reviewer explicitly tagged it structural → no rework.
     if [ "${RWK_STRUCTURAL:-0}" = "1" ]; then
       _rework_escalate "$slug" "$tdd" "$gate" "$step" structural-finding "$RWK_REF" "(c)" "$RWK_TEXT"
@@ -574,7 +631,24 @@ _rework_loop() {  # <slug> <tdd> <rbase> <log>
     fi
 
     # One bounded rework attempt (FR-62).
-    attempts="$(_rework_attempt_count "$slug" "$gate" "$step")"
+    # Capture the persisted counter's rc separately from its stdout. Pre-fix
+    # this was `attempts="$(_rework_attempt_count …)"`, which discarded the
+    # function's exit code; on persist failure (disk full, JSON corruption,
+    # unwritable fragment), the inner function echoed nothing and `attempts`
+    # became "". The budget guard `[ "" -ge "$max" ]` then exits with rc=2
+    # (bash: integer expected), NOT 0 — the `if`-body skips, the cap is
+    # permanently bypassed, and the loop would spawn unbounded `claude -p`
+    # rework invocations until the process is externally killed (TDD 0019
+    # review-rerun-2 BLOCKER). Now: capture rc, fail the gate loudly on
+    # persist failure instead of silently uncapping the loop.
+    local _new_attempts
+    if ! _new_attempts="$(_rework_attempt_count "$slug" "$gate" "$step")"; then
+      printf 'error: _rework_loop: _rework_attempt_count failed for %s at %s:%s (counter persist failed; aborting before the cap is bypassed)\n' \
+        "$slug" "$gate" "$step" | tee -a "$log" >&2
+      _terminal_state "$slug" failed "" "rework counter persist failed at $gate:$step"
+      return 1
+    fi
+    attempts="$_new_attempts"
     local cap _start _fin new_head spend rwrc
     cap="$(_rework_scope_cap "$RWK_REGION")"
     cleared="$(git rev-parse HEAD 2>/dev/null || echo "$cleared")"
