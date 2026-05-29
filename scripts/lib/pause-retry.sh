@@ -122,6 +122,16 @@ _enter_paused() {
     echo "error: _enter_paused: could not write per-TDD fragment for $slug; not promoting to paused" >&2
     return 1
   fi
+  # TDD 0018 §Sequencing step 4: record the unified halt_cause via the
+  # authoritative setter. The fragment is already durably paused (status +
+  # paused_cause written above); set_halt_cause now adds halt_cause +
+  # halt_next_actions and re-affirms the IDENTICAL paused_cause for the
+  # paused-state cause, proving the dual-write shim before TDD 0019's gate
+  # writers adopt set_halt_cause. A setter failure here does not un-pause the
+  # TDD (the pause is already recorded) — warn and continue. This is the one
+  # migrated TDD-0011 paused_cause write site called for in the TDD.
+  set_halt_cause "$slug" "$cause" \
+    || echo "warning: _enter_paused: set_halt_cause failed for $slug (cause=$cause); halt_cause not recorded" >&2
   # TDD 0011 / iter-4 MAJOR-2: warn on run.json write failure. The
   # rollup is re-derivable from per-TDD fragments so this is not
   # fatal, but a stale run.json.state misleads any direct consumer.
@@ -241,6 +251,7 @@ _append_retry() {
   [ -n "$STATE_DIR" ] && [ -f "$f" ] || return 0
   local n qp path status stage sta upd branch pr_url log_f note
   local paused_cause gates_csv retries_json branch_head
+  local halt_cause halt_finding halt_actions_csv halt_detail
   n="$(sed -n 's/.*"n":\([0-9]*\).*/\1/p'            "$f" | head -1)"
   qp="$(sed -n 's/.*"queue_pos":\([0-9]*\).*/\1/p'   "$f" | head -1)"
   path="$(sed -n 's/.*"path":"\([^"]*\)".*/\1/p'     "$f" | head -1)"
@@ -257,6 +268,12 @@ _append_retry() {
   gates_csv="$(_read_fragment_array_csv "$f" gates_completed)"
   retries_json="$(_read_fragment_raw_array "$f" retries)"
   branch_head="$(_read_fragment_field "$f" branch_head_at_pause)"
+  # TDD 0018: carry any halt metadata forward (a retry audit append must not
+  # wipe halt_cause / next-actions if one was already recorded).
+  halt_cause="$(_read_fragment_field "$f" halt_cause)"
+  halt_finding="$(_read_fragment_field "$f" halt_triggering_finding_ref)"
+  halt_actions_csv="$(_read_fragment_array_csv "$f" halt_next_actions)"
+  halt_detail="$(_read_fragment_field "$f" halt_cause_detail)"
   local entry new
   entry="{\"gate\":\"$(json_escape "$gate_name")\",\"count\":$count,\"backoff_s\":$backoff}"
   # TDD 0011 / BL-5: validate that retries_json is well-formed before
@@ -284,7 +301,8 @@ _append_retry() {
   # audit append doesn't silently disappear into a stale fragment.
   if ! _write_tdd_fragment "$slug" "${n:-0}" "$path" "${qp:-0}" "$status" "$stage" \
     "${sta:-$(date +%s)}" "$(date +%s)" "$branch" "$pr_url" "$log_f" "$note" \
-    "$paused_cause" "$gates_csv" "$new" "$branch_head"; then
+    "$paused_cause" "$gates_csv" "$new" "$branch_head" \
+    "$halt_cause" "$halt_finding" "$halt_actions_csv" "$halt_detail"; then
     echo "error: _append_retry: could not write $slug fragment (retry audit lost)" >&2
     return 1
   fi

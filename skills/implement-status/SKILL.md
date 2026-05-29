@@ -33,6 +33,20 @@ If no `/implement` run is active, the skill says so plainly and (if a previous
 run exists) summarizes the last run's final state. It never reports false
 progress.
 
+## Halted runs
+
+When the most recent run is halted (state `paused`, `blocked`, or `failed`), the
+snapshot switches to a one-screen halt context (FR-64): the halt cause from the
+closed enum, the triggering finding reference, and the deterministic next-action
+options, each on its own numbered line. Halted-run rendering fits 24×80 by
+default; to see full logs use `cat docs/tdd/.implement-logs/<runid>/REPORT`. The
+`Resume: /implement --resume <runid>` line appears only when the cause is a
+recoverable (paused-state) one.
+
+`--follow` watch mode in a non-interactive background job: use `kill -TERM` (or
+`-HUP`/`-QUIT`), not `kill -INT` — SIGINT is silently un-trappable in that launch
+mode per POSIX. SIGINT still works correctly in the foreground.
+
 ## Run it
 
 For the on-demand snapshot, run the renderer once via a single Bash call and

@@ -358,25 +358,32 @@ EOF
     || bad "--check-paused should print nothing for a done run (got: '$out')"
 ) || true
 
-echo "[5.c] status.sh snapshot shows paused column + cause + resume hint"
+# TDD 0018 / FR-64: a paused run is a halt state, so the snapshot now renders
+# the one-screen halt context (cause + triggering finding + next actions +
+# Resume: line) instead of the TDD-0011 table-plus-trailer. FR-45 semantics are
+# preserved — the output still names "paused", the recoverable cause, and an
+# instruction to resume — but the exact strings changed (superseded format).
+echo "[5.c] status.sh snapshot shows the one-screen paused halt context (FR-45 via FR-64)"
 ( D="$ROOT/5c"; mkdir -p "$D/state.d"
   cat > "$D/state.d/run.json" <<EOF
 {"schema":1,"started_at":1,"updated_at":2,"pid":1,"integration_branch":"main","mode":"sequential","change":"ci","logdir":"$D","total":1,"completed":0,"failed":0,"blocked":0,"skipped":0,"state":"paused","pause_started_at":3}
 EOF
+  # Post-0018 paused fragment: _enter_paused now also records halt_cause +
+  # halt_next_actions via set_halt_cause, so a live paused run carries them.
   cat > "$D/state.d/0007-x.json" <<EOF
-{"n":7,"slug":"0007-x","path":"docs/tdd/0007-x.md","queue_pos":1,"status":"paused","stage":"verify-runtime","started_at":1,"updated_at":2,"branch":"feat/0007-x","pr_url":"","log":"","note":"","paused_cause":"ratelimit","gates_completed":["test-first","verify"],"retries":[],"branch_head_at_pause":null}
+{"n":7,"slug":"0007-x","path":"docs/tdd/0007-x.md","queue_pos":1,"status":"paused","stage":"verify-runtime","started_at":1,"updated_at":2,"branch":"feat/0007-x","pr_url":"","log":"","note":"","paused_cause":"ratelimit","gates_completed":["test-first","verify"],"retries":[],"branch_head_at_pause":null,"halt_cause":"ratelimit","halt_triggering_finding_ref":null,"halt_next_actions":["resume now (retries the gate)","wait and resume later"],"halt_cause_detail":null}
 EOF
   out="$(bash "$STATUS" --logdir "$D" 2>&1)"
   printf '%s\n' "$out" | grep -qE 'paused' \
     && ok "snapshot prints 'paused'" || bad "snapshot should print paused"
   printf '%s\n' "$out" | grep -qE 'ratelimit' \
     && ok "snapshot names the cause" || bad "snapshot should name the cause"
-  printf '%s\n' "$out" | grep -qE 'Run /implement to resume from verify-runtime on 0007-x' \
-    && ok "snapshot prints the resume instruction" \
-    || bad "snapshot should print 'Run /implement to resume from <gate> on <slug>'"
-  printf '%s\n' "$out" | grep -qE 'paused=1' \
-    && ok "summary line includes paused=N counter" \
-    || bad "summary line should include paused=1"
+  printf '%s\n' "$out" | grep -qE 'Resume: /implement --resume' \
+    && ok "snapshot prints the resume instruction (one-screen halt context)" \
+    || bad "snapshot should print 'Resume: /implement --resume <runid>'"
+  printf '%s\n' "$out" | grep -qE 'resume now \(retries the gate\)' \
+    && ok "snapshot lists the paused-cause next actions" \
+    || bad "snapshot should list the ratelimit next-action options"
 ) || true
 
 # --- iter-4 BLOCKER-1: combined-mode resume re-runs gate 1 -------------------

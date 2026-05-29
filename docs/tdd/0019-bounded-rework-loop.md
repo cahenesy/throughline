@@ -365,6 +365,45 @@ deployment justifies it.
   TDD's behavior is the operational expression of ADR 0007's
   disposition. Promotion confirmed by the design plan; high confidence.
 
+## Carry-over findings from TDD 0017 review (folded into scope)
+
+The independent review of TDD 0017 (PR #48) surfaced four MAJOR findings
+in code moved verbatim from the pre-extraction `implement.sh`. Per that
+TDD's "verbatim move" contract they were not fixed inline. Since this
+TDD already touches `scripts/lib/gates.sh` and the rework loop interacts
+directly with the affected sites (a flip after rework needs honest exit
+codes; the structural-escalation path relies on `record_blocker`), the
+fixes fold here. All four are fail-loud / propagate-exit-code patches —
+no behavioral semantics change.
+
+1. **`flip_status` swallows git failures (`gates.sh:152-156`).** `git
+   add` / `git commit` redirected to log with no exit-code check; a
+   failed commit produces a false `OK (verified + reviewed)`. Fix:
+   propagate non-zero through `flip_status` → `gate_one` flip site, so
+   a flip failure halts honestly rather than appearing as success.
+2. **`install_deps` swallows total-failure (`gates.sh:184-187`).**
+   When BOTH the frozen-lockfile install AND the plain install fail,
+   the final `echo` returns 0 (the echo's exit). Fix: track the
+   attempts' exit codes and `return 1` after the diagnostic; callers
+   in `implement.sh` already check rc.
+3. **`record_blocker` writes to the wrong tree (`gates.sh:158-163`).**
+   `${MAINREPO:-$PWD}` falls back to the worktree's `$PWD` in parallel
+   mode; blockers land in the worktree's `BLOCKERS.md` (deleted with
+   it) instead of the main repo. Fix: drop the fallback and fail-loud
+   FATAL if `MAINREPO` is empty (its setting is unconditional in
+   `implement.sh` startup).
+4. **`STATE_DIR` unset → silent state corruption (`resume.sh:252, :286,
+   :339`).** `${STATE_DIR:-}/$slug.json` expands to `/$slug.json` when
+   unset; the MA-4 guard at :252 short-circuits on the same condition
+   rather than firing. Fix: drop the `:-` fallbacks at all three sites
+   and fail-loud FATAL at the resume entry; `STATE_DIR` is set
+   unconditionally by `state_init`.
+
+Verification: extend the existing `state-module-sourceability` and
+`run-recovery` suites with one fixture per finding (total-install-fail,
+flip-fail, MAINREPO-unset, STATE_DIR-unset) confirming the runner halts
+non-zero with the expected diagnostic rather than silently passing.
+
 ## Scope override
 
 This TDD's doc body is over the 350-line default `THROUGHLINE_TDD_MAX_LINES`
@@ -381,7 +420,10 @@ dogfooding the mechanism.
 ## Touched files
 
 - `scripts/lib/gates.sh` (post-TDD-0017) — `_rework_one`, `_rework_pre_pass`,
-  wiring into `_review_one_gated`, token-spend extraction
+  wiring into `_review_one_gated`, token-spend extraction; plus carry-over
+  fixes 1-3 to `flip_status` / `install_deps` / `record_blocker`
+- `scripts/lib/resume.sh` (post-TDD-0017) — carry-over fix 4: drop
+  `${STATE_DIR:-}` fallbacks at the three resume call sites
 - `scripts/lib/state.sh` (post-TDD-0015) — fragment field additions for
   `rework_log` / `rework_attempts` / `build_attempt.token_spend`, plus
   schema-version bump
@@ -391,20 +433,28 @@ dogfooding the mechanism.
 - `skills/implement/SKILL.md` — one paragraph documenting the rework loop's
   user-visible contract (no user prompt during fixable rework; halt only
   on FR-67 / FR-65 exhaustion)
+- `tests/run-recovery.test.sh` + `tests/state-module-sourceability.test.sh`
+  — one fixture per carry-over finding (total-install-fail, flip-fail,
+  MAINREPO-unset, STATE_DIR-unset)
 
-Total: 5 files touched.
+Total: 7 files touched.
 
 ## Expected diff size
 
 - `scripts/lib/gates.sh` — ~250 lines added (`_rework_one`,
-  `_rework_pre_pass`, wiring, helpers) (exception: this file is being
-  delivered by TDD 0017 at ~250 lines; the additions push it to ~500 —
-  declared wide-but-shallow code addition for cohesion: the rework loop
-  belongs alongside the other gate executors, splitting it would
-  fragment the gate-executor cluster)
+  `_rework_pre_pass`, wiring, helpers) + ~20 lines for carry-over
+  fixes 1-3 (`flip_status` / `install_deps` / `record_blocker`)
+  (exception: this file is being delivered by TDD 0017 at ~250
+  lines; the additions push it to ~520 — declared wide-but-shallow
+  code addition for cohesion: the rework loop belongs alongside the
+  other gate executors, splitting it would fragment the
+  gate-executor cluster)
+- `scripts/lib/resume.sh` — ~10 lines for carry-over fix 4
 - `scripts/lib/state.sh` — ~80 lines added
 - `scripts/implement.sh` — ~15 lines added (`rework_config` snapshot)
 - `scripts/rework-prompt.md` — ~50 lines (new file)
 - `skills/implement/SKILL.md` — ~20 lines added
+- `tests/run-recovery.test.sh` + `tests/state-module-sourceability.test.sh`
+  — ~40 lines added (4 carry-over fixtures)
 
-Total expected diff: ~415 lines across 5 files.
+Total expected diff: ~485 lines across 7 files.

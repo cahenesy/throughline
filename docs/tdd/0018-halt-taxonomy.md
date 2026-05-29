@@ -1,6 +1,6 @@
 # TDD 0018: Halt taxonomy — closed human-needed cause enum, run-state schema extension, one-screen halt context
 
-Status: draft
+Status: implemented
 PRD refs: FR-63, FR-64
 PRD-rev: a961955
 ADR constraints: 0003, 0004, 0005, 0007

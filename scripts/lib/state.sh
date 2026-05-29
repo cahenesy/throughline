@@ -46,7 +46,17 @@ _read_fragment_field() {  # <file> <field-name>  -> echoes the value (no quotes)
   local f="$1" k="$2"
   _validate_field_name "$k" || { echo "error: _read_fragment_field rejected unsafe field name '$k'" >&2; return 1; }
   if grep -q "\"$k\":null" "$f" 2>/dev/null; then printf ''; return 0; fi
-  sed -n "s/.*\"$k\":\"\\([^\"]*\\)\".*/\\1/p" "$f" | head -1
+  local v
+  v="$(sed -n "s/.*\"$k\":\"\\([^\"]*\\)\".*/\\1/p" "$f" | head -1)"
+  # TDD 0018 backward-compat shim (§Data): a TDD-0008/0011-shape fragment has no
+  # halt_cause field at all. When a new reader asks for halt_cause on such a
+  # fragment, fall back to paused_cause so the unified taxonomy still surfaces
+  # the carried cause. Only applies when halt_cause is genuinely ABSENT (an
+  # explicit halt_cause:null is honored as empty, matching the early return).
+  if [ -z "$v" ] && [ "$k" = "halt_cause" ] && ! grep -q '"halt_cause":' "$f" 2>/dev/null; then
+    v="$(sed -n 's/.*"paused_cause":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+  fi
+  printf '%s' "$v"
 }
 # Read a JSON string-array field (e.g. gates_completed) as a comma-separated list
 # of its members. Empty when the array is `[]` or absent.
@@ -84,26 +94,41 @@ json_escape() {
 # _write_tdd_fragment <slug> <n> <path> <qp> <status> <stage> <started> <updated>
 #                     <branch> <pr_url> <log> <note>
 #                     [<paused_cause> <gates_completed_csv> <retries_json> <branch_head>]
+#                     [<halt_cause> <halt_finding_ref> <halt_next_actions_csv> <halt_detail>]
 # stage="" → JSON `null` literal; non-empty → quoted string (matches the TDD's
 # `stage ∈ {build, test-first, verify, verify-runtime, review, flip, null}`).
-# The four trailing params (TDD 0011 / FR-39..FR-45) are additive and optional:
+# The four params 13..16 (TDD 0011 / FR-39..FR-45) are additive and optional:
 #   paused_cause       free-text (or empty → JSON null)
 #   gates_completed    comma-separated list (or empty → [])
 #   retries_json       a complete JSON array literal (or empty → [])
 #   branch_head_at_pause   commit SHA at pause time (or empty → JSON null)
-# Callers that do not need them omit them; the existing twelve-param call sites
-# continue to work unchanged.
+# The four params 17..20 (TDD 0018 / FR-63..FR-64) are likewise additive:
+#   halt_cause          one of the closed enum (or empty → JSON null)
+#   halt_finding_ref    <review-pass-id>:<finding-index> (or empty → JSON null)
+#   halt_next_actions   comma-separated label list (or empty → []); labels never
+#                       contain commas, so CSV round-trips losslessly
+#   halt_cause_detail   free-text sub-classification (or empty → JSON null)
+# Callers that do not need them omit them; the existing twelve- and sixteen-param
+# call sites continue to work unchanged (the new fields default to null/[]).
 _write_tdd_fragment() {
   local slug="$1" n="$2" path="$3" qp="$4" status="$5" stage="$6" sta="$7" upd="$8"
   local branch="$9" pr_url="${10}" log="${11}" note="${12}"
   local paused_cause="${13:-}" gates_csv="${14:-}" retries_json="${15:-}" branch_head="${16:-}"
+  local halt_cause="${17:-}" halt_finding="${18:-}" halt_actions_csv="${19:-}" halt_detail="${20:-}"
   local stage_lit cause_lit head_lit gates_lit retries_lit
+  local halt_cause_lit halt_finding_lit halt_actions_lit halt_detail_lit
   if [ -z "$stage" ]; then stage_lit='null'
   else stage_lit="\"$(json_escape "$stage")\""; fi
   if [ -z "$paused_cause" ]; then cause_lit='null'
   else cause_lit="\"$(json_escape "$paused_cause")\""; fi
   if [ -z "$branch_head" ]; then head_lit='null'
   else head_lit="\"$(json_escape "$branch_head")\""; fi
+  if [ -z "$halt_cause" ]; then halt_cause_lit='null'
+  else halt_cause_lit="\"$(json_escape "$halt_cause")\""; fi
+  if [ -z "$halt_finding" ]; then halt_finding_lit='null'
+  else halt_finding_lit="\"$(json_escape "$halt_finding")\""; fi
+  if [ -z "$halt_detail" ]; then halt_detail_lit='null'
+  else halt_detail_lit="\"$(json_escape "$halt_detail")\""; fi
   if [ -z "$gates_csv" ]; then
     gates_lit='[]'
   else
@@ -118,6 +143,22 @@ _write_tdd_fragment() {
       fi
     done
     gates_lit+=']'
+  fi
+  if [ -z "$halt_actions_csv" ]; then
+    halt_actions_lit='[]'
+  else
+    # Same CSV→array split as gates_completed. Next-action labels are comma-free
+    # by construction (see _next_actions_for_cause), so the split is unambiguous.
+    local a aentry afirst=1
+    halt_actions_lit='['
+    local IFS=','; for a in $halt_actions_csv; do
+      if [ -n "$a" ]; then
+        aentry="\"$(json_escape "$a")\""
+        if [ "$afirst" -eq 1 ]; then halt_actions_lit+="$aentry"; afirst=0
+        else halt_actions_lit+=",$aentry"; fi
+      fi
+    done
+    halt_actions_lit+=']'
   fi
   if [ -z "$retries_json" ]; then retries_lit='[]'
   else retries_lit="$retries_json"; fi
@@ -134,13 +175,14 @@ _write_tdd_fragment() {
   # fragment with a corrupted/empty one, and subsequent reads would
   # round-trip empty values back. Bail loudly instead so the run is
   # halted while data is still recoverable.
-  if ! printf '{"n":%d,"slug":"%s","path":"%s","queue_pos":%d,"status":"%s","stage":%s,"started_at":%d,"updated_at":%d,"branch":"%s","pr_url":"%s","log":"%s","note":"%s","paused_cause":%s,"gates_completed":%s,"retries":%s,"branch_head_at_pause":%s}\n' \
+  if ! printf '{"n":%d,"slug":"%s","path":"%s","queue_pos":%d,"status":"%s","stage":%s,"started_at":%d,"updated_at":%d,"branch":"%s","pr_url":"%s","log":"%s","note":"%s","paused_cause":%s,"gates_completed":%s,"retries":%s,"branch_head_at_pause":%s,"halt_cause":%s,"halt_triggering_finding_ref":%s,"halt_next_actions":%s,"halt_cause_detail":%s}\n' \
     "$n" "$(json_escape "$slug")" "$(json_escape "$path")" "$qp" \
     "$(json_escape "$status")" "$stage_lit" \
     "$sta" "$upd" \
     "$(json_escape "$branch")" "$(json_escape "$pr_url")" "$(json_escape "$log")" \
     "$(json_escape "$note")" \
     "$cause_lit" "$gates_lit" "$retries_lit" "$head_lit" \
+    "$halt_cause_lit" "$halt_finding_lit" "$halt_actions_lit" "$halt_detail_lit" \
     > "$tmp"; then
     echo "error: _write_tdd_fragment printf failed for $slug (disk full? perm?); fragment NOT updated" >&2
     rm -f "$tmp" 2>/dev/null || true
@@ -230,6 +272,18 @@ state_init() {
     # before any further state mutation. Additive changes (new field,
     # new enum value) stay at schema 1; breaking changes bump to 2 and
     # force a fresh-start.
+    #
+    # TDD 0018 (halt taxonomy) note: the new halt_cause / halt_*_finding_ref /
+    # halt_next_actions / halt_cause_detail fields are ADDITIVE (old fragments
+    # read fine; halt_cause falls back to paused_cause — see _read_fragment_field)
+    # and the resume aspect of TDD 0011 "carries forward unchanged" (0018 §scope).
+    # Per the policy above, an additive change stays at schema 1, so this gate is
+    # left at `== 1`. (TDD 0018 §Data's "bump the schema-version constant" reads
+    # as in tension with both its own "additive" framing and 0011's policy;
+    # bumping under this refusal gate would make every pre-0018 paused run
+    # un-resumable, contradicting the dual-write/fallback backward-compat the TDD
+    # exists to provide. The additive-compatible, resume-preserving resolution is
+    # to NOT bump.)
     local _resume_schema
     _resume_schema="$(sed -n 's/.*"schema":\([0-9]*\).*/\1/p' "$STATE_DIR/run.json" | head -1)"
     # TDD 0011 / iter-6 MAJOR-3: an absent/empty schema field is NOT
@@ -338,7 +392,24 @@ state_init() {
 }
 
 # set_run_state <state>  — rewrite run.json (refresh updated_at + rollup counts).
-set_run_state() { _write_run_fragment "$1"; }
+# TDD 0018 §Failure modes: `blocked` dominates `paused` in the run-level rollup.
+# If any per-TDD fragment is `blocked`, the run is `blocked` regardless of the
+# requested state (a blocked TDD needs human design action; a co-queued paused
+# TDD's recoverable pause does not override that). Only-paused runs stay paused
+# (the caller passes "paused" in that case). This keeps the existing run-end
+# call sites (set_run_state "paused" / "done") correct without their needing to
+# know about blocked.
+set_run_state() {
+  local derived="$1" f
+  if [ -n "${STATE_DIR:-}" ] && [ -d "$STATE_DIR" ]; then
+    for f in "$STATE_DIR"/*.json; do
+      [ -f "$f" ] || continue
+      [ "$(basename "$f")" = "run.json" ] && continue
+      if grep -q '"status":"blocked"' "$f" 2>/dev/null; then derived="blocked"; break; fi
+    done
+  fi
+  _write_run_fragment "$derived"
+}
 
 # _terminal_state <slug> <status> [stage] [note]
 # TDD 0011 / iter-10 M-1+M-2: wrapper around set_tdd_state that surfaces
@@ -372,6 +443,7 @@ set_tdd_state() {
   [ -n "$STATE_DIR" ] && [ -f "$f" ] || return 0
   local n qp path sta branch pr_url log now
   local paused_cause gates_csv retries_json branch_head
+  local halt_cause halt_finding halt_actions_csv halt_detail
   n="$(sed -n 's/.*"n":\([0-9]*\).*/\1/p'            "$f" | head -1)"
   qp="$(sed -n 's/.*"queue_pos":\([0-9]*\).*/\1/p'   "$f" | head -1)"
   path="$(sed -n 's/.*"path":"\([^"]*\)".*/\1/p'     "$f" | head -1)"
@@ -383,6 +455,13 @@ set_tdd_state() {
   gates_csv="$(_read_fragment_array_csv "$f" gates_completed)"
   retries_json="$(_read_fragment_raw_array "$f" retries)"
   branch_head="$(_read_fragment_field "$f" branch_head_at_pause)"
+  # TDD 0018: carry the halt metadata forward. Reading halt_cause via
+  # _read_fragment_field also upgrades a TDD-0011-shape fragment (no halt_cause)
+  # by deriving it from paused_cause, so a resume rewrite does not lose the cause.
+  halt_cause="$(_read_fragment_field "$f" halt_cause)"
+  halt_finding="$(_read_fragment_field "$f" halt_triggering_finding_ref)"
+  halt_actions_csv="$(_read_fragment_array_csv "$f" halt_next_actions)"
+  halt_detail="$(_read_fragment_field "$f" halt_cause_detail)"
   if [ -n "$gate_done" ]; then
     case ",$gates_csv," in
       *",$gate_done,"*) : ;;  # already recorded; idempotent
@@ -394,12 +473,21 @@ set_tdd_state() {
   # Otherwise a fragment that goes paused → building → done retains a stale
   # paused_cause label, confusing any forensic consumer.
   if [ "$status" != "paused" ]; then paused_cause=""; fi
+  # TDD 0018: clear halt metadata when the TDD leaves ALL halt states. A halt
+  # is only meaningful while the TDD sits in paused/blocked/failed; a resume
+  # that moves it back to building/done must not retain a stale halt_cause,
+  # finding ref, or next-action list.
+  case "$status" in
+    paused|blocked|failed) : ;;
+    *) halt_cause=""; halt_finding=""; halt_actions_csv=""; halt_detail="" ;;
+  esac
   now=$(date +%s)
   # TDD 0011 / iter-5 MAJOR-1: propagate _write_tdd_fragment failures so
   # the runner doesn't silently continue with a stale fragment.
   if ! _write_tdd_fragment "$slug" "${n:-0}" "$path" "${qp:-0}" "$status" "$stage" \
     "${sta:-$now}" "$now" "$branch" "$pr_url" "$log" "$note" \
-    "$paused_cause" "$gates_csv" "$retries_json" "$branch_head"; then
+    "$paused_cause" "$gates_csv" "$retries_json" "$branch_head" \
+    "$halt_cause" "$halt_finding" "$halt_actions_csv" "$halt_detail"; then
     echo "error: set_tdd_state: could not write $slug fragment (status=$status)" >&2
     return 1
   fi
@@ -415,6 +503,7 @@ set_tdd_meta() {
   [ -n "$STATE_DIR" ] && [ -f "$f" ] || return 0
   local n qp path status stage sta branch pr_url log note kv now
   local paused_cause gates_csv retries_json branch_head
+  local halt_cause halt_finding halt_actions_csv halt_detail
   n="$(sed -n 's/.*"n":\([0-9]*\).*/\1/p'            "$f" | head -1)"
   qp="$(sed -n 's/.*"queue_pos":\([0-9]*\).*/\1/p'   "$f" | head -1)"
   path="$(sed -n 's/.*"path":"\([^"]*\)".*/\1/p'     "$f" | head -1)"
@@ -430,6 +519,15 @@ set_tdd_meta() {
   gates_csv="$(_read_fragment_array_csv "$f" gates_completed)"
   retries_json="$(_read_fragment_raw_array "$f" retries)"
   branch_head="$(_read_fragment_field "$f" branch_head_at_pause)"
+  # TDD 0018: carry halt metadata forward unchanged (set_tdd_meta never alters
+  # status, so a halt that was set stays set). Read halt_cause raw (no fallback
+  # synthesis) to avoid upgrading a clean fragment that has no cause at all —
+  # _read_fragment_field only falls back when the field is absent, which is the
+  # intended migration behavior here too.
+  halt_cause="$(_read_fragment_field "$f" halt_cause)"
+  halt_finding="$(_read_fragment_field "$f" halt_triggering_finding_ref)"
+  halt_actions_csv="$(_read_fragment_array_csv "$f" halt_next_actions)"
+  halt_detail="$(_read_fragment_field "$f" halt_cause_detail)"
   for kv in "$@"; do case "$kv" in
     branch=*) branch="${kv#branch=}" ;;
     pr_url=*) pr_url="${kv#pr_url=}" ;;
@@ -440,8 +538,105 @@ set_tdd_meta() {
   # TDD 0011 / iter-5 MAJOR-1: propagate write failures.
   if ! _write_tdd_fragment "$slug" "${n:-0}" "$path" "${qp:-0}" "$status" "$stage" \
     "${sta:-$now}" "$now" "$branch" "$pr_url" "$log" "$note" \
-    "$paused_cause" "$gates_csv" "$retries_json" "$branch_head"; then
+    "$paused_cause" "$gates_csv" "$retries_json" "$branch_head" \
+    "$halt_cause" "$halt_finding" "$halt_actions_csv" "$halt_detail"; then
     echo "error: set_tdd_meta: could not write $slug fragment" >&2
+    return 1
+  fi
+}
+
+# --- Halt-cause taxonomy (TDD 0018 / FR-63, FR-64; ADR 0007) ------------------
+# The closed enum of human-needed halt causes, the deterministic cause→next-
+# actions mapping, and the writer (set_halt_cause) that enforces both. This is
+# the single authoritative writer of halt_cause; TDD 0019's gate writers call
+# set_halt_cause rather than editing fragments directly.
+
+# _next_actions_for_cause <cause>  — echo the CSV next-action labels for a cause,
+# or return 1 for an unknown value. Doubles as the closed-enum membership test
+# (every legal cause has a non-empty mapping; no other value does). The labels
+# are deliberately comma-free so the CSV round-trips through _write_tdd_fragment's
+# array split and _read_fragment_array_csv without loss. Mapping per TDD 0018 §3.
+_next_actions_for_cause() {
+  case "$1" in
+    ratelimit|usage-limit|transient)
+      echo "resume now (retries the gate),wait and resume later" ;;
+    resume-blocked-build-state-missing)
+      echo "abandon paused run,manual investigation: docs/tdd/.implement-logs/<runid>/" ;;
+    resume-blocked-branch-missing)
+      echo "abandon paused run,restore branch and resume" ;;
+    resume-blocked-branch-divergence)
+      echo "abandon paused run,rebase build branch and resume" ;;
+    rework-budget-exhausted)
+      echo "revise TDD via /tdd-author,fresh /implement after revision" ;;
+    rework-scope-exceeded)
+      echo "resume (retries with stricter scope),revise TDD bounds via /tdd-author" ;;
+    structural-finding)
+      echo "revise TDD via /tdd-author,see docs/tdd/BLOCKERS.md" ;;
+    design-escalation)
+      echo "revise TDD via /tdd-author,/adr-new if a constraint is being challenged" ;;
+    external-blocker)
+      echo "resolve external dependency,see docs/tdd/BLOCKERS.md" ;;
+    *) return 1 ;;
+  esac
+}
+
+# _is_paused_cause <cause>  — return 0 if <cause> produces the `paused`
+# (recoverable, auto-resumable) runtime state; 1 otherwise. Drives the
+# paused_cause dual-write and the renderer's Resume: line.
+_is_paused_cause() {
+  case "$1" in
+    ratelimit|usage-limit|transient) return 0 ;;
+    resume-blocked-build-state-missing|resume-blocked-branch-missing|resume-blocked-branch-divergence) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# set_halt_cause <slug> <cause> [triggering-finding-ref] [detail]
+# The authoritative halt-event writer (TDD 0018 §6). Validates <cause> against
+# the closed enum (returns 1 on an unknown value, naming it on stderr), looks up
+# the deterministic next-action list, and writes halt_cause /
+# halt_triggering_finding_ref / halt_next_actions / halt_cause_detail onto the
+# TDD fragment atomically, preserving every other field. For a paused-state
+# cause it also dual-writes paused_cause so the TDD 0008/0011 renderer keeps
+# working during the migration window; for a blocked-state cause paused_cause is
+# left null (verdict honesty: a blocked halt is not a recoverable pause).
+set_halt_cause() {
+  local slug="$1" cause="$2" finding="${3:-}" detail="${4:-}"
+  local actions_csv
+  if ! actions_csv="$(_next_actions_for_cause "$cause")"; then
+    echo "error: set_halt_cause: unknown halt cause '$cause' (not in the closed FR-63 enum); fragment $slug NOT updated" >&2
+    return 1
+  fi
+  local f="${STATE_DIR:-}/$slug.json"
+  if [ -z "${STATE_DIR:-}" ] || [ ! -f "$f" ]; then
+    echo "error: set_halt_cause: no state fragment for $slug ($f); cannot record halt" >&2
+    return 1
+  fi
+  # Carry every existing field forward; only the halt fields (+ paused_cause for
+  # paused-state causes) change.
+  local n qp path status stage sta branch pr_url log note now
+  local gates_csv retries_json branch_head paused_cause
+  n="$(sed -n 's/.*"n":\([0-9]*\).*/\1/p'            "$f" | head -1)"
+  qp="$(sed -n 's/.*"queue_pos":\([0-9]*\).*/\1/p'   "$f" | head -1)"
+  path="$(sed -n 's/.*"path":"\([^"]*\)".*/\1/p'     "$f" | head -1)"
+  status="$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+  if grep -q '"stage":null' "$f" 2>/dev/null; then stage=""
+  else stage="$(sed -n 's/.*"stage":"\([^"]*\)".*/\1/p' "$f" | head -1)"; fi
+  sta="$(sed -n 's/.*"started_at":\([0-9]*\).*/\1/p' "$f" | head -1)"
+  branch="$(sed -n 's/.*"branch":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+  pr_url="$(sed -n 's/.*"pr_url":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+  log="$(sed -n 's/.*"log":"\([^"]*\)".*/\1/p'       "$f" | head -1)"
+  note="$(sed -n 's/.*"note":"\([^"]*\)".*/\1/p'     "$f" | head -1)"
+  gates_csv="$(_read_fragment_array_csv "$f" gates_completed)"
+  retries_json="$(_read_fragment_raw_array "$f" retries)"
+  branch_head="$(_read_fragment_field "$f" branch_head_at_pause)"
+  if _is_paused_cause "$cause"; then paused_cause="$cause"; else paused_cause=""; fi
+  now=$(date +%s)
+  if ! _write_tdd_fragment "$slug" "${n:-0}" "$path" "${qp:-0}" "$status" "$stage" \
+    "${sta:-$now}" "$now" "$branch" "$pr_url" "$log" "$note" \
+    "$paused_cause" "$gates_csv" "$retries_json" "$branch_head" \
+    "$cause" "$finding" "$actions_csv" "$detail"; then
+    echo "error: set_halt_cause: could not write $slug fragment (cause=$cause)" >&2
     return 1
   fi
 }
