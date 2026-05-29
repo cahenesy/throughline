@@ -1,11 +1,8 @@
 #!/usr/bin/env bash
-# implement.sh — build TDDs unattended, behind real gates. Run detached
-# (nohup/tmux) so it survives the session closing and keeps context clean.
-#
-# Every mode builds in a DEDICATED git worktree (sequential/combined share one;
-# parallel uses one per feature), so the detached runner never mutates the
-# working tree your interactive session is using. Build branches/commits persist
-# in the shared repo after the worktree is removed.
+# implement.sh — orchestrate detached TDD builds behind real gates.
+# Behavior contract (modes, gates 1-4, re-run safety, failure handling) lives
+# in skills/implement/SKILL.md; this file is the runner. Keep it terse — read
+# the skill for the rationale.
 #
 #   ./scripts/implement.sh                    # every TDD merged to integration, stacked PRs
 #   ./scripts/implement.sh docs/tdd/0003-x.md # just one TDD
@@ -13,74 +10,17 @@
 #   ./scripts/implement.sh --combined         # one shared branch + ONE PR
 #   ./scripts/implement.sh --rebuild          # rebuild even already-built TDDs
 #
-# What gets built: a TDD becomes buildable when its design PR MERGES — i.e. when
-# it lands on the integration branch (origin's default / main / master; override
-# with THROUGHLINE_INTEGRATION_BRANCH) at status draft|ready and not yet
-# implemented. There is no manual `Status: ready` step; an un-merged draft on a
-# design branch is not on integration, so the PR stays the gate.
-#
-# Re-run safety (the done-signal lives on the build branch, not your base, until
-# you merge): a TDD already `implemented` on an existing un-merged branch is
-# treated as done-but-awaiting-your-merge and SKIPPED, not rebuilt — so a re-run
-# before you merge does not duplicate work or open duplicate PRs. A merged TDD is
-# `implemented` on the integration branch and never queued; an abandoned/deleted
-# branch rebuilds. --rebuild forces a fresh build regardless.
-#
-# Each TDD is built in a FRESH `claude -p` process (clean context per feature),
-# pinned by default to the best model (opus). A build's own `BATCH_RESULT: OK` is
-# NOT trusted as done. Before a TDD is flipped to `Status: implemented`, the
-# runner enforces four independent gates:
-#   1. test-first      — the build must show failing-test-first discipline: a
-#                        dedicated `test(failing): ...` commit BEFORE the impl,
-#                        unless it emits `TEST_FIRST: SKIPPED` for a no-new-
-#                        behavior change.
-#   2. ci-checks.sh       — re-runs tests + typecheck + lint mechanically (this is
-#                        CI's job — running tests, not verification).
-#   3. runtime-verify  — a SEPARATE `claude -p` process drives the BUILT artifact
-#                        to the TDD's verification observation points and confirms
-#                        the expected observations hold (PASS/SKIP), keeping
-#                        PASS/FAIL/BLOCKED/SKIP distinct (NFR-4). Runs on a model
-#                        the runner tiers based on the verification plan's
-#                        complexity (mechanical observations → sonnet; nontrivial
-#                        → the build model); override via
-#                        `THROUGHLINE_RUNTIME_VERIFY_MODEL` (TDD 0013 / FR-52).
-#                        The verification mechanism is the project's — delegated
-#                        to `superpowers:verification-before-completion` /
-#                        `/verify`, never a bundled harness (FR-26 / ADR 0004).
-#   4. review          — a SEPARATE `claude -p` process on a DIFFERENT model
-#                        (default sonnet vs an opus build) for genuine reviewer
-#                        diversity (not a subagent of the author) that must end
-#                        `REVIEW_RESULT: PASS`.
-# Only after all pass does the runner flip the TDD and (if gh+remote) open a PR.
-# It never merges — merging is your gate.
-#
-# Failure handling (the key safety property):
-#   sequential → TDDs are stacked, so a failure HALTS the run and marks every
-#                downstream TDD BLOCKED rather than building on a broken base.
-#   parallel   → TDDs are independent; a failure affects only that feature.
-# A build that ends `BATCH_RESULT: BLOCKED <reason>` is a DESIGN blocker: it is
-# appended to docs/tdd/BLOCKERS.md and surfaced for /tdd-author to revise.
+# Gate 3 (runtime-verify) tiers the model by the plan's complexity (mechanical →
+# sonnet; nontrivial → the build model); override via THROUGHLINE_RUNTIME_VERIFY_MODEL
+# (TDD 0013 / FR-52).
 set -uo pipefail
 
-# Sourced library modules (TDD 0015 + 0016 + 0017 / Theme D). state.sh holds the
-# atomic run-state / per-TDD fragment I/O cluster; pause-retry.sh holds the
-# recoverable-failure classification + paused/retry state-transition cluster;
-# gates.sh holds the build / review / runtime-verify gate executors + ci-checks.sh
-# + result-sentinel parsers + install_deps + gated retry wrappers; resume.sh holds
-# the resume orchestration (_resume_from, gate_one, branch-resolution helpers).
-# Order is load-bearing: pause-retry.sh is sourced AFTER state.sh (every function
-# in it calls a state.sh helper), gates.sh AFTER both (it calls state.sh +
-# pause-retry.sh helpers), and resume.sh AFTER all three (gate_one lives in
-# gates.sh and the resume helpers call all of the above).
-# The source directives live OUTSIDE the THROUGHLINE_SOURCE_ONLY guard below on
-# purpose: the test suite sources this script (in SOURCE_ONLY mode) to call those
-# helpers in isolation, so they must be defined on every source path, not only on
-# a normal run. $SCRIPT_DIR is computed from BASH_SOURCE (not $0) so it resolves
-# correctly when sourced. Fail fast on a missing/unreadable module: under
-# `set -uo pipefail` (no -e), a bare `.` would return non-zero without aborting,
-# leaving every state-tracking / pause-retry / gate / resume helper undefined and
-# the whole run silently no-op. pwd -P normalizes symlinks so a wrapper-invoked
-# SCRIPT_DIR still resolves to the real lib/ dir.
+# Sourced library modules (TDD 0015 + 0016 + 0017 / Theme D). Load order is
+# load-bearing: state → pause-retry (uses state) → gates (uses both) → resume
+# (uses gate_one). Sourced OUTSIDE the THROUGHLINE_SOURCE_ONLY guard so the test
+# suite can call helpers when sourcing this script. Under `set -uo pipefail`
+# (no -e), bare `.` failures don't abort; fail explicitly so a partial install
+# can't leave the run silently no-op. pwd -P normalizes symlinks.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)" || {
   echo "FATAL: cannot resolve scripts directory from ${BASH_SOURCE[0]}" >&2
   exit 1
@@ -122,13 +62,9 @@ fi
   exit 1
 }
 
-# THROUGHLINE_SOURCE_ONLY=1 lets the test suite `source` this script to call
-# individual helpers in isolation (per the TDD 0011 sequencing plan): the
-# helpers all live in the lib/ modules sourced above and are defined
-# unconditionally on every source path, but every runtime side effect (arg
-# parsing, lock acquisition, state.d/ init, the drivers, the trailing report) is
-# bracketed by `if [ "${THROUGHLINE_SOURCE_ONLY:-0}" != "1" ]`. The guard is a
-# no-op when launched normally (the env var is unset).
+# THROUGHLINE_SOURCE_ONLY=1 lets the test suite source this script to call
+# helpers in isolation. Runtime side effects (arg parsing, lock, drivers,
+# report) live below the guard; helpers are defined unconditionally above.
 
 if [ "${THROUGHLINE_SOURCE_ONLY:-0}" != "1" ]; then
 PARALLEL=0; COMBINED=0; REBUILD=0; MODEL=""; REVIEW_MODEL=""; CHANGE=""; ONE=""
