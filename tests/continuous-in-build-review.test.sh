@@ -302,6 +302,264 @@ echo "[A7] cleared_step_log stays well-formed JSON across appends + carry-forwar
   fi
 ) || true
 
+# --- §2 / Build subprocess protocol: _per_step_review_loop coprocess + handshake
+echo "[C0] _extract_event_text pulls content text from a JSON event, raw line otherwise"
+( D="$ROOT/C0"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  if command -v jq >/dev/null 2>&1; then
+    t="$(_extract_event_text '{"type":"assistant","message":{"content":[{"type":"text","text":"STEP_COMMIT: 1 abc"}]}}')"
+    case "$t" in *"STEP_COMMIT: 1 abc"*) ok "extracts STEP_COMMIT from JSON content text" ;; *) bad "should extract content text (got '$t')" ;; esac
+    t2="$(_extract_event_text '{"type":"system","subtype":"init"}')"
+    [ -z "$t2" ] && ok "non-message JSON event yields empty text" || bad "non-message event should be empty (got '$t2')"
+  fi
+  t3="$(_extract_event_text 'STEP_COMMIT: 2 def')"
+  case "$t3" in *"STEP_COMMIT: 2 def"*) ok "plain (non-JSON) line returned raw" ;; *) bad "plain line should be returned raw (got '$t3')" ;; esac
+) || true
+
+echo "[C0b] _user_turn_json wraps a STEP_REVIEW reply as a stream-json user turn"
+( D="$ROOT/C0b"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  out="$(_user_turn_json 'STEP_REVIEW: PASS')"
+  if command -v jq >/dev/null 2>&1; then
+    [ "$(printf '%s' "$out" | jq -r '.type')" = "user" ] && ok "user-turn JSON has type=user" || bad "should be a user turn (got '$out')"
+    [ "$(printf '%s' "$out" | jq -r '.message.content')" = "STEP_REVIEW: PASS" ] && ok "content carries the verdict" || bad "content should be the verdict"
+  else
+    case "$out" in *'"type":"user"'*'STEP_REVIEW: PASS'*) ok "user-turn JSON shape (no jq)" ;; *) bad "user-turn shape wrong (got '$out')" ;; esac
+  fi
+) || true
+
+# setup_step_repo <dir>: a git repo + scope-declaring TDD + a state fragment + a
+# stub `claude` that acts as BOTH the multi-turn build (emits STEP_COMMIT lines,
+# blocks on STEP_REVIEW stdin replies, per $CTL/build_plan) and the per-step
+# review (echoes $CTL/review.out). Leaves PWD in the repo. Mirrors the
+# bounded-rework-loop setup_loop_repo pattern.
+setup_step_repo() {  # <dir>
+  local d="$1"; mkdir -p "$d/ctl" "$d/bin"
+  cd "$d" || return 1
+  git init -q -b master; git config user.email t@t.t; git config user.name t
+  mkdir -p src docs/tdd
+  printf 'ctl/\nbin/\n' > .gitignore
+  printf 'orig\n' > src/a.txt
+  cat > docs/tdd/0020-fix.md <<'EOF'
+# TDD 0020: fixture
+Status: draft
+PRD refs: 1
+
+## Touched files
+- `src/a.txt` — the in-scope file
+EOF
+  git add -A; git commit -qm "build start" >/dev/null
+  # Stub claude: build path records its argv, then runs $CTL/build_plan (which
+  # emits STEP_COMMIT lines and reads STEP_REVIEW replies). Review path echoes
+  # $CTL/review.out (default PASS) and captures the review prompt per step.
+  cat > "$d/bin/claude" <<EOF
+#!/usr/bin/env bash
+prompt=""; argv="\$*"
+while [ \$# -gt 0 ]; do case "\$1" in -p) prompt="\$2"; shift 2;; *) shift;; esac; done
+if printf '%s' "\$prompt" | grep -q 'INDEPENDENT review gate'; then
+  # capture each review prompt for scope/prior-pattern assertions
+  n=\$(cat "$d/ctl/revcount" 2>/dev/null || echo 0); n=\$((n+1)); echo "\$n" > "$d/ctl/revcount"
+  printf '%s' "\$prompt" > "$d/ctl/review-prompt.\$n"
+  cat "$d/ctl/review.out" 2>/dev/null || echo "REVIEW_RESULT: PASS"
+  exit 0
+fi
+# build path
+printf '%s\n' "\$argv" > "$d/ctl/build-argv"
+bash "$d/ctl/build_plan"
+EOF
+  chmod +x "$d/bin/claude"
+  export PATH="$d/bin:$PATH"
+  export TMPL="$REPO/scripts/build-prompt.md" RTMPL="$REPO/scripts/review-prompt.md"
+  export MODEL="" REVIEW_MODEL="" MAINREPO="$d"
+  printf 'REVIEW_RESULT: PASS\n' > "$d/ctl/review.out"
+}
+
+echo "[C1] sentinel handshake: 3 STEP_COMMITs -> 3 STEP_REVIEW PASS -> 3 cleared steps in order"
+( D="$ROOT/C1"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  setup_step_repo "$D/repo" || { bad "setup failed"; exit 0; }
+  _write_tdd_fragment 0020-fix 20 docs/tdd/0020-fix.md 1 building build 1000 1000 "feat/0020-fix" "" log "" "" "" "" "" "" "" "" "" "" "" ""
+  cat > "$D/repo/ctl/build_plan" <<'EOF'
+for i in 1 2 3; do
+  echo "line $i" >> src/a.txt
+  git add -A >/dev/null 2>&1; git commit -q -m "step($i): work" >/dev/null 2>&1
+  echo "STEP_COMMIT: $i $(git rev-parse HEAD)"
+  IFS= read -r _reply || true
+done
+echo "BATCH_RESULT: OK"
+EOF
+  _per_step_review_loop 0020-fix docs/tdd/0020-fix.md "$D/c1.log"; rc=$?
+  F="$STATE_DIR/0020-fix.json"
+  [ "$rc" -eq 0 ] && ok "loop returns 0 on a clean handshake" || bad "loop should return 0 (rc=$rc)"
+  grep -q 'BATCH_RESULT: OK' "$D/c1.log" 2>/dev/null && ok "BATCH_RESULT mirrored to the log" || bad "log should mirror BATCH_RESULT"
+  if command -v jq >/dev/null 2>&1; then
+    n="$(jq '.cleared_step_log | length' "$F" 2>/dev/null)"
+    [ "$n" = "3" ] && ok "three cleared steps recorded" || bad "should record 3 cleared steps (got '$n')"
+    [ "$(jq -r '.cleared_step_log[0].step_id' "$F")" = "1" ] && [ "$(jq -r '.cleared_step_log[2].step_id' "$F")" = "3" ] \
+      && ok "cleared steps in order 1..3" || bad "cleared steps should be in order"
+    lc="$(jq -r '.last_cleared_review_sha' "$F")"
+    h3="$(jq -r '.cleared_step_log[2].head_sha' "$F")"
+    [ "$lc" = "$h3" ] && ok "last_cleared_review_sha matches the 3rd step head" || bad "last_cleared should match 3rd head ($lc vs $h3)"
+  fi
+) || true
+
+echo "[C2] scoped diff: step 2's review base = step 1's cleared head (not build start) — FR-57"
+( D="$ROOT/C2"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  setup_step_repo "$D/repo" || { bad "setup failed"; exit 0; }
+  _write_tdd_fragment 0020-fix 20 docs/tdd/0020-fix.md 1 building build 1000 1000 "feat/0020-fix" "" log "" "" "" "" "" "" "" "" "" "" "" ""
+  cat > "$D/repo/ctl/build_plan" <<'EOF'
+for i in 1 2; do
+  echo "line $i" >> src/a.txt
+  git add -A >/dev/null 2>&1; git commit -q -m "step($i): work" >/dev/null 2>&1
+  echo "$(git rev-parse HEAD)" >> ctl/heads
+  echo "STEP_COMMIT: $i $(git rev-parse HEAD)"
+  IFS= read -r _reply || true
+done
+echo "BATCH_RESULT: OK"
+EOF
+  _per_step_review_loop 0020-fix docs/tdd/0020-fix.md "$D/c2.log" >/dev/null 2>&1
+  step1_head="$(sed -n 1p "$D/repo/ctl/heads")"
+  # the SECOND review prompt should scope from step 1's head
+  grep -q "$step1_head" "$D/repo/ctl/review-prompt.2" 2>/dev/null \
+    && ok "step 2 review scopes from step 1's cleared head (FR-57)" || bad "step 2 review base should be step1 head ($step1_head)"
+) || true
+
+echo "[C3+C4] pattern tags recorded on clear; step 2 review prompt shows the prior pattern (FR-59)"
+( D="$ROOT/C3"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  setup_step_repo "$D/repo" || { bad "setup failed"; exit 0; }
+  _write_tdd_fragment 0020-fix 20 docs/tdd/0020-fix.md 1 building build 1000 1000 "feat/0020-fix" "" log "" "" "" "" "" "" "" "" "" "" "" ""
+  # step 1's review PASSes but emits a (minor) finding with a pattern tag.
+  printf 'minor: src/a.txt:1 nit\npattern_tags: [unchecked-fragment-write-return]\nREVIEW_RESULT: PASS\n' > "$D/repo/ctl/review.out"
+  cat > "$D/repo/ctl/build_plan" <<'EOF'
+for i in 1 2; do
+  echo "line $i" >> src/a.txt
+  git add -A >/dev/null 2>&1; git commit -q -m "step($i): work" >/dev/null 2>&1
+  echo "STEP_COMMIT: $i $(git rev-parse HEAD)"
+  IFS= read -r _reply || true
+done
+echo "BATCH_RESULT: OK"
+EOF
+  _per_step_review_loop 0020-fix docs/tdd/0020-fix.md "$D/c3.log" >/dev/null 2>&1
+  F="$STATE_DIR/0020-fix.json"
+  grep -q 'unchecked-fragment-write-return' "$F" 2>/dev/null \
+    && ok "pattern tag harvested into cleared_step_log[0] (FR-59 §3)" || bad "step 1's pattern tag should be recorded (got: $(_read_fragment_cleared_log "$F" 2>/dev/null))"
+  grep -q 'unchecked-fragment-write-return' "$D/repo/ctl/review-prompt.2" 2>/dev/null \
+    && ok "step 2 review prompt lists the prior addressed pattern (FR-59 §4)" || bad "step 2 review prompt should show the prior pattern"
+) || true
+
+echo "[C5] sentinel-less build degrades to end-of-build (no per-step reviews; cleared log stays [])"
+( D="$ROOT/C5"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  setup_step_repo "$D/repo" || { bad "setup failed"; exit 0; }
+  _write_tdd_fragment 0020-fix 20 docs/tdd/0020-fix.md 1 building build 1000 1000 "feat/0020-fix" "" log "" "" "" "" "" "" "" "" "" "" "" ""
+  # build emits NO STEP_COMMIT — just commits and ends (the legacy single-shot shape).
+  cat > "$D/repo/ctl/build_plan" <<'EOF'
+echo "work" >> src/a.txt
+git add -A >/dev/null 2>&1; git commit -q -m "build" >/dev/null 2>&1
+echo "BATCH_RESULT: OK"
+EOF
+  _per_step_review_loop 0020-fix docs/tdd/0020-fix.md "$D/c5.log"; rc=$?
+  F="$STATE_DIR/0020-fix.json"
+  [ "$rc" -eq 0 ] && ok "degraded build returns 0" || bad "degraded build should return 0 (rc=$rc)"
+  [ ! -f "$D/repo/ctl/review-prompt.1" ] && ok "no per-step review ran (no STEP_COMMIT)" || bad "no per-step review should run in degraded mode"
+  grep -q '"cleared_step_log":\[\]' "$F" 2>/dev/null && ok "cleared_step_log stays [] in degraded mode" || bad "cleared_step_log should stay [] (got: $(_read_fragment_cleared_log "$F"))"
+) || true
+
+echo "[C6] AskUserQuestion is stripped + stream-json invocation (issue #28A)"
+( D="$ROOT/C6"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  setup_step_repo "$D/repo" || { bad "setup failed"; exit 0; }
+  _write_tdd_fragment 0020-fix 20 docs/tdd/0020-fix.md 1 building build 1000 1000 "feat/0020-fix" "" log "" "" "" "" "" "" "" "" "" "" "" ""
+  printf 'echo "BATCH_RESULT: OK"\n' > "$D/repo/ctl/build_plan"
+  _per_step_review_loop 0020-fix docs/tdd/0020-fix.md "$D/c6.log" >/dev/null 2>&1
+  A="$D/repo/ctl/build-argv"
+  grep -q -- '--disallowed-tools AskUserQuestion' "$A" 2>/dev/null && ok "build invocation strips AskUserQuestion" || bad "build should pass --disallowed-tools AskUserQuestion (got: $(cat "$A" 2>/dev/null))"
+  grep -q -- '--input-format stream-json' "$A" 2>/dev/null && ok "build invocation uses --input-format stream-json" || bad "build should use --input-format stream-json"
+  grep -q -- '--output-format stream-json' "$A" 2>/dev/null && ok "build invocation uses --output-format stream-json" || bad "build should use --output-format stream-json"
+) || true
+
+echo "[C7] malformed stream-json events tolerated (§9): WARNING logged, run completes"
+( D="$ROOT/C7"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  setup_step_repo "$D/repo" || { bad "setup failed"; exit 0; }
+  _write_tdd_fragment 0020-fix 20 docs/tdd/0020-fix.md 1 building build 1000 1000 "feat/0020-fix" "" log "" "" "" "" "" "" "" "" "" "" "" ""
+  cat > "$D/repo/ctl/build_plan" <<'EOF'
+echo '{"type":"system","subtype":"init"}'
+echo '{this is }{ not valid json at all'
+echo "BATCH_RESULT: OK"
+EOF
+  _per_step_review_loop 0020-fix docs/tdd/0020-fix.md "$D/c7.log"; rc=$?
+  if command -v jq >/dev/null 2>&1; then
+    grep -q 'WARNING: malformed stream-json event' "$D/c7.log" 2>/dev/null && ok "malformed event logged a WARNING" || bad "malformed event should log a WARNING (jq present)"
+  else
+    ok "malformed-warning check skipped (no jq)"
+  fi
+  [ "$rc" -eq 0 ] && grep -q 'BATCH_RESULT: OK' "$D/c7.log" && ok "run completes after a malformed event" || bad "run should complete past the malformed event (rc=$rc)"
+) || true
+
+echo "[C8] deadlock recovery (§8): STEP_COMMIT then stdin ignored -> inter-event timeout kills + transient"
+( D="$ROOT/C8"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  export THROUGHLINE_BUILD_INTER_EVENT_TIMEOUT=2
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  setup_step_repo "$D/repo" || { bad "setup failed"; exit 0; }
+  _write_tdd_fragment 0020-fix 20 docs/tdd/0020-fix.md 1 building build 1000 1000 "feat/0020-fix" "" log "" "" "" "" "" "" "" "" "" "" "" ""
+  cat > "$D/repo/ctl/build_plan" <<'EOF'
+echo "work" >> src/a.txt
+git add -A >/dev/null 2>&1; git commit -q -m "step(1): work" >/dev/null 2>&1
+echo "STEP_COMMIT: 1 $(git rev-parse HEAD)"
+sleep 60   # never read the STEP_REVIEW reply, never emit another event
+EOF
+  t0=$(date +%s)
+  _per_step_review_loop 0020-fix docs/tdd/0020-fix.md "$D/c8.log"; rc=$?
+  t1=$(date +%s)
+  [ "$rc" -ne 0 ] && ok "deadlocked build returns non-zero" || bad "deadlock should return non-zero (rc=$rc)"
+  [ $((t1 - t0)) -lt 30 ] && ok "loop gave up promptly (inter-event timeout, not a 60s hang)" || bad "loop should not hang for the full sleep"
+  # cause must classify as transient (signal 143 from the kill, or a 'timed out' log marker)
+  { [ "$rc" = "143" ] || grep -qiE 'timed out|hang' "$D/c8.log"; } && ok "deadlock classifies as transient (NFR-4)" || bad "deadlock should be transient-classifiable (rc=$rc)"
+) || true
+
+echo "[C9] overall watchdog (§11): steady events but no BATCH_RESULT -> killed at cap, build-overall-timeout"
+( D="$ROOT/C9"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  export THROUGHLINE_BUILD_TIMEOUT=2 THROUGHLINE_BUILD_INTER_EVENT_TIMEOUT=30
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  setup_step_repo "$D/repo" || { bad "setup failed"; exit 0; }
+  _write_tdd_fragment 0020-fix 20 docs/tdd/0020-fix.md 1 building build 1000 1000 "feat/0020-fix" "" log "" "" "" "" "" "" "" "" "" "" "" ""
+  cat > "$D/repo/ctl/build_plan" <<'EOF'
+while true; do echo '{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}'; sleep 0.3; done
+EOF
+  t0=$(date +%s)
+  _per_step_review_loop 0020-fix docs/tdd/0020-fix.md "$D/c9.log"; rc=$?
+  t1=$(date +%s)
+  [ "$rc" -ne 0 ] && ok "watchdog-killed build returns non-zero" || bad "overall-timeout should return non-zero (rc=$rc)"
+  [ $((t1 - t0)) -lt 20 ] && ok "killed near the 2s cap, not left running" || bad "build should be killed at the overall cap"
+  grep -q 'build-overall-timeout' "$D/c9.log" 2>/dev/null && ok "log records build-overall-timeout" || bad "log should note build-overall-timeout (got tail: $(tail -2 "$D/c9.log" 2>/dev/null))"
+  ! grep -q 'BATCH_RESULT' "$D/c9.log" 2>/dev/null && ok "no BATCH_RESULT fabricated" || bad "must not fabricate a BATCH_RESULT"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
