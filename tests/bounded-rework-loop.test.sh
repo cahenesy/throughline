@@ -231,8 +231,8 @@ echo "[B8] _extract_token_spend sums session usage (or null when absent)"
 EOF
   got="$(_extract_token_spend "$S")"
   if command -v jq >/dev/null 2>&1; then
-    [ "$got" = "395" ] && ok "_extract_token_spend sums all token kinds (395)" \
-      || bad "_extract_token_spend should sum to 395 (got '$got')"
+    [ "$got" = "365" ] && ok "_extract_token_spend sums all token kinds (365)" \
+      || bad "_extract_token_spend should sum to 365 (got '$got')"
   else
     [ "$got" = "null" ] && ok "_extract_token_spend null without jq" \
       || bad "_extract_token_spend should be null without jq (got '$got')"

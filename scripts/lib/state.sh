@@ -77,6 +77,16 @@ _read_fragment_raw_array() {  # <file> <field-name>
   # array's elements are flat objects, so a single-level bracket match works.
   sed -n "s/.*\"$k\":\\(\\[[^]]*\\]\\).*/\\1/p" "$f" | head -1
 }
+# Read a raw JSON object literal (TDD 0019: rework_attempts + build_attempt).
+# A single-level `{…}` match — the rework_attempts map's values are integers and
+# build_attempt's only field is an int|null, so neither nests an object. A
+# `"<field>":null` (or absent field) reads as empty, matching the callers' "no
+# value yet" default.
+_read_fragment_raw_object() {  # <file> <field-name>
+  local f="$1" k="$2"
+  _validate_field_name "$k" || { echo "error: _read_fragment_raw_object rejected unsafe field name '$k'" >&2; return 1; }
+  sed -n "s/.*\"$k\":\\({[^}]*}\\).*/\\1/p" "$f" | head -1
+}
 
 # Escape a string for safe inclusion as a JSON string value. Free-text fields
 # (note/branch/pr_url/log) ride through this; structural fields are integers or
@@ -108,15 +118,26 @@ json_escape() {
 #   halt_next_actions   comma-separated label list (or empty → []); labels never
 #                       contain commas, so CSV round-trips losslessly
 #   halt_cause_detail   free-text sub-classification (or empty → JSON null)
-# Callers that do not need them omit them; the existing twelve- and sixteen-param
-# call sites continue to work unchanged (the new fields default to null/[]).
+# The three params 21..23 (TDD 0019 / FR-65, FR-68) are likewise additive:
+#   rework_attempts   a complete JSON object literal (or empty → {}); keyed by
+#                     "<gate>:<step>" → int attempt count
+#   rework_log        a complete JSON array literal (or empty → []); per-attempt
+#                     telemetry objects (attempt/gate/step/model/token_spend/…)
+#   build_attempt     a complete JSON object literal (or empty → null); holds
+#                     the original build attempt's token_spend for the FR-68
+#                     rework-vs-original comparison
+# Callers that do not need them omit them; the existing twelve-, sixteen-, and
+# twenty-param call sites continue to work unchanged (the new fields default to
+# null/[]/{}).
 _write_tdd_fragment() {
   local slug="$1" n="$2" path="$3" qp="$4" status="$5" stage="$6" sta="$7" upd="$8"
   local branch="$9" pr_url="${10}" log="${11}" note="${12}"
   local paused_cause="${13:-}" gates_csv="${14:-}" retries_json="${15:-}" branch_head="${16:-}"
   local halt_cause="${17:-}" halt_finding="${18:-}" halt_actions_csv="${19:-}" halt_detail="${20:-}"
+  local rework_attempts="${21:-}" rework_log="${22:-}" build_attempt="${23:-}"
   local stage_lit cause_lit head_lit gates_lit retries_lit
   local halt_cause_lit halt_finding_lit halt_actions_lit halt_detail_lit
+  local rework_attempts_lit rework_log_lit build_attempt_lit
   if [ -z "$stage" ]; then stage_lit='null'
   else stage_lit="\"$(json_escape "$stage")\""; fi
   if [ -z "$paused_cause" ]; then cause_lit='null'
@@ -162,6 +183,14 @@ _write_tdd_fragment() {
   fi
   if [ -z "$retries_json" ]; then retries_lit='[]'
   else retries_lit="$retries_json"; fi
+  # TDD 0019 rework telemetry literals: object → {} default, array → [] default,
+  # build_attempt object → null default. Callers pass complete JSON literals.
+  if [ -z "$rework_attempts" ]; then rework_attempts_lit='{}'
+  else rework_attempts_lit="$rework_attempts"; fi
+  if [ -z "$rework_log" ]; then rework_log_lit='[]'
+  else rework_log_lit="$rework_log"; fi
+  if [ -z "$build_attempt" ]; then build_attempt_lit='null'
+  else build_attempt_lit="$build_attempt"; fi
   # Split the `local` declaration: under bash 5.3 `set -u`, a single
   # `local f="..." tmp="$f..."` raises 'f: unbound variable' because the
   # `tmp` initializer references `$f` before the local declaration has bound
@@ -175,7 +204,7 @@ _write_tdd_fragment() {
   # fragment with a corrupted/empty one, and subsequent reads would
   # round-trip empty values back. Bail loudly instead so the run is
   # halted while data is still recoverable.
-  if ! printf '{"n":%d,"slug":"%s","path":"%s","queue_pos":%d,"status":"%s","stage":%s,"started_at":%d,"updated_at":%d,"branch":"%s","pr_url":"%s","log":"%s","note":"%s","paused_cause":%s,"gates_completed":%s,"retries":%s,"branch_head_at_pause":%s,"halt_cause":%s,"halt_triggering_finding_ref":%s,"halt_next_actions":%s,"halt_cause_detail":%s}\n' \
+  if ! printf '{"n":%d,"slug":"%s","path":"%s","queue_pos":%d,"status":"%s","stage":%s,"started_at":%d,"updated_at":%d,"branch":"%s","pr_url":"%s","log":"%s","note":"%s","paused_cause":%s,"gates_completed":%s,"retries":%s,"branch_head_at_pause":%s,"halt_cause":%s,"halt_triggering_finding_ref":%s,"halt_next_actions":%s,"halt_cause_detail":%s,"rework_attempts":%s,"rework_log":%s,"build_attempt":%s}\n' \
     "$n" "$(json_escape "$slug")" "$(json_escape "$path")" "$qp" \
     "$(json_escape "$status")" "$stage_lit" \
     "$sta" "$upd" \
@@ -183,6 +212,7 @@ _write_tdd_fragment() {
     "$(json_escape "$note")" \
     "$cause_lit" "$gates_lit" "$retries_lit" "$head_lit" \
     "$halt_cause_lit" "$halt_finding_lit" "$halt_actions_lit" "$halt_detail_lit" \
+    "$rework_attempts_lit" "$rework_log_lit" "$build_attempt_lit" \
     > "$tmp"; then
     echo "error: _write_tdd_fragment printf failed for $slug (disk full? perm?); fragment NOT updated" >&2
     rm -f "$tmp" 2>/dev/null || true
@@ -489,6 +519,14 @@ set_tdd_state() {
   halt_finding="$(_read_fragment_field "$f" halt_triggering_finding_ref)"
   halt_actions_csv="$(_read_fragment_array_csv "$f" halt_next_actions)"
   halt_detail="$(_read_fragment_field "$f" halt_cause_detail)"
+  # TDD 0019: rework telemetry is cumulative across the whole TDD lifecycle
+  # (FR-68 compares rework vs build spend at the end), so it is ALWAYS carried
+  # forward and NEVER cleared — unlike halt metadata, a state transition does
+  # not reset it.
+  local rework_attempts rework_log build_attempt
+  rework_attempts="$(_read_fragment_raw_object "$f" rework_attempts)"
+  rework_log="$(_read_fragment_raw_array "$f" rework_log)"
+  build_attempt="$(_read_fragment_raw_object "$f" build_attempt)"
   if [ -n "$gate_done" ]; then
     case ",$gates_csv," in
       *",$gate_done,"*) : ;;  # already recorded; idempotent
@@ -514,7 +552,8 @@ set_tdd_state() {
   if ! _write_tdd_fragment "$slug" "${n:-0}" "$path" "${qp:-0}" "$status" "$stage" \
     "${sta:-$now}" "$now" "$branch" "$pr_url" "$log" "$note" \
     "$paused_cause" "$gates_csv" "$retries_json" "$branch_head" \
-    "$halt_cause" "$halt_finding" "$halt_actions_csv" "$halt_detail"; then
+    "$halt_cause" "$halt_finding" "$halt_actions_csv" "$halt_detail" \
+    "$rework_attempts" "$rework_log" "$build_attempt"; then
     echo "error: set_tdd_state: could not write $slug fragment (status=$status)" >&2
     return 1
   fi
@@ -555,6 +594,11 @@ set_tdd_meta() {
   halt_finding="$(_read_fragment_field "$f" halt_triggering_finding_ref)"
   halt_actions_csv="$(_read_fragment_array_csv "$f" halt_next_actions)"
   halt_detail="$(_read_fragment_field "$f" halt_cause_detail)"
+  # TDD 0019: carry rework telemetry forward (set_tdd_meta never touches it).
+  local rework_attempts rework_log build_attempt
+  rework_attempts="$(_read_fragment_raw_object "$f" rework_attempts)"
+  rework_log="$(_read_fragment_raw_array "$f" rework_log)"
+  build_attempt="$(_read_fragment_raw_object "$f" build_attempt)"
   for kv in "$@"; do case "$kv" in
     branch=*) branch="${kv#branch=}" ;;
     pr_url=*) pr_url="${kv#pr_url=}" ;;
@@ -566,7 +610,8 @@ set_tdd_meta() {
   if ! _write_tdd_fragment "$slug" "${n:-0}" "$path" "${qp:-0}" "$status" "$stage" \
     "${sta:-$now}" "$now" "$branch" "$pr_url" "$log" "$note" \
     "$paused_cause" "$gates_csv" "$retries_json" "$branch_head" \
-    "$halt_cause" "$halt_finding" "$halt_actions_csv" "$halt_detail"; then
+    "$halt_cause" "$halt_finding" "$halt_actions_csv" "$halt_detail" \
+    "$rework_attempts" "$rework_log" "$build_attempt"; then
     echo "error: set_tdd_meta: could not write $slug fragment" >&2
     return 1
   fi
@@ -657,13 +702,183 @@ set_halt_cause() {
   gates_csv="$(_read_fragment_array_csv "$f" gates_completed)"
   retries_json="$(_read_fragment_raw_array "$f" retries)"
   branch_head="$(_read_fragment_field "$f" branch_head_at_pause)"
+  # TDD 0019: a halt write (rework-budget-exhausted, structural-finding,
+  # rework-scope-exceeded) must NOT wipe the rework telemetry it cites — the
+  # FR-68 comparison and the BLOCKERS triage both read rework_log post-halt.
+  local rework_attempts rework_log build_attempt
+  rework_attempts="$(_read_fragment_raw_object "$f" rework_attempts)"
+  rework_log="$(_read_fragment_raw_array "$f" rework_log)"
+  build_attempt="$(_read_fragment_raw_object "$f" build_attempt)"
   if _is_paused_cause "$cause"; then paused_cause="$cause"; else paused_cause=""; fi
   now=$(date +%s)
   if ! _write_tdd_fragment "$slug" "${n:-0}" "$path" "${qp:-0}" "$status" "$stage" \
     "${sta:-$now}" "$now" "$branch" "$pr_url" "$log" "$note" \
     "$paused_cause" "$gates_csv" "$retries_json" "$branch_head" \
-    "$cause" "$finding" "$actions_csv" "$detail"; then
+    "$cause" "$finding" "$actions_csv" "$detail" \
+    "$rework_attempts" "$rework_log" "$build_attempt"; then
     echo "error: set_halt_cause: could not write $slug fragment (cause=$cause)" >&2
     return 1
   fi
+}
+
+# --- Rework telemetry + budget (TDD 0019 / FR-65, FR-68) ----------------------
+# These three writers mutate ONLY the rework fields; every other field is read
+# from the existing fragment and round-tripped unchanged. _rewrite_fragment_rework
+# is the shared read-all/write-with-new-rework-literals core (the same pattern
+# _append_retry uses for retries[]), so the three public mutators stay small.
+
+# _rewrite_fragment_rework <slug> <rework_attempts_lit> <rework_log_lit> <build_attempt_lit>
+# Carry every non-rework field forward; overwrite the three rework literals.
+_rewrite_fragment_rework() {
+  local slug="$1" ra_lit="$2" rl_lit="$3" ba_lit="$4"
+  local f="${STATE_DIR:-}/$slug.json"
+  [ -n "$STATE_DIR" ] && [ -f "$f" ] || return 0
+  local n qp path status stage sta branch pr_url log note now
+  local paused_cause gates_csv retries_json branch_head
+  local halt_cause halt_finding halt_actions_csv halt_detail
+  n="$(sed -n 's/.*"n":\([0-9]*\).*/\1/p'            "$f" | head -1)"
+  qp="$(sed -n 's/.*"queue_pos":\([0-9]*\).*/\1/p'   "$f" | head -1)"
+  path="$(sed -n 's/.*"path":"\([^"]*\)".*/\1/p'     "$f" | head -1)"
+  status="$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+  if grep -q '"stage":null' "$f" 2>/dev/null; then stage=""
+  else stage="$(sed -n 's/.*"stage":"\([^"]*\)".*/\1/p' "$f" | head -1)"; fi
+  sta="$(sed -n 's/.*"started_at":\([0-9]*\).*/\1/p' "$f" | head -1)"
+  branch="$(sed -n 's/.*"branch":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+  pr_url="$(sed -n 's/.*"pr_url":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+  log="$(sed -n 's/.*"log":"\([^"]*\)".*/\1/p'       "$f" | head -1)"
+  note="$(sed -n 's/.*"note":"\([^"]*\)".*/\1/p'     "$f" | head -1)"
+  paused_cause="$(_read_fragment_field "$f" paused_cause)"
+  gates_csv="$(_read_fragment_array_csv "$f" gates_completed)"
+  retries_json="$(_read_fragment_raw_array "$f" retries)"
+  branch_head="$(_read_fragment_field "$f" branch_head_at_pause)"
+  halt_cause="$(_read_fragment_field "$f" halt_cause)"
+  halt_finding="$(_read_fragment_field "$f" halt_triggering_finding_ref)"
+  halt_actions_csv="$(_read_fragment_array_csv "$f" halt_next_actions)"
+  halt_detail="$(_read_fragment_field "$f" halt_cause_detail)"
+  now=$(date +%s)
+  if ! _write_tdd_fragment "$slug" "${n:-0}" "$path" "${qp:-0}" "$status" "$stage" \
+    "${sta:-$now}" "$now" "$branch" "$pr_url" "$log" "$note" \
+    "$paused_cause" "$gates_csv" "$retries_json" "$branch_head" \
+    "$halt_cause" "$halt_finding" "$halt_actions_csv" "$halt_detail" \
+    "$ra_lit" "$rl_lit" "$ba_lit"; then
+    echo "error: _rewrite_fragment_rework: could not write $slug fragment" >&2
+    return 1
+  fi
+}
+
+# _extract_token_spend <session-json-path>  — echo the session's total token
+# spend (sum of input + output + cache-creation + cache-read tokens across every
+# assistant message), or the literal `null` when the file is missing, jq is
+# absent, or no usage is found. FR-68 is observability, not enforcement: `null`
+# is acceptable (the acceptance criterion compares numeric values only). Reads
+# the session JSONL the Claude Code SDK already writes (no new dependency).
+_extract_token_spend() {  # <session-json-path>
+  local s="${1:-}"
+  [ -n "$s" ] && [ -f "$s" ] || { printf 'null'; return 0; }
+  command -v jq >/dev/null 2>&1 || { printf 'null'; return 0; }
+  local total
+  total="$(jq -s '
+    [ .[]
+      | select(.type=="assistant")
+      | (.message.usage // {})
+      | ((.input_tokens//0)+(.output_tokens//0)+(.cache_creation_input_tokens//0)+(.cache_read_input_tokens//0))
+    ] | add // 0' "$s" 2>/dev/null)"
+  case "$total" in
+    ''|*[!0-9]*) printf 'null' ;;
+    0)           printf 'null' ;;   # no usage rows found → treat as unobserved
+    *)           printf '%s' "$total" ;;
+  esac
+}
+
+# _rework_attempt_count <slug> <gate> <step>  — increment the per-(gate,step)
+# attempt counter in rework_attempts and echo the NEW value. The key is
+# "<gate>:<step>". Used by the loop to enforce THROUGHLINE_REWORK_MAX (FR-65).
+_rework_attempt_count() {  # <slug> <gate> <step>
+  local slug="$1" gate="$2" step="$3"
+  local f="${STATE_DIR:-}/$slug.json"
+  if [ -z "${STATE_DIR:-}" ] || [ ! -f "$f" ]; then
+    echo "error: _rework_attempt_count: no state fragment for $slug ($f)" >&2
+    return 1
+  fi
+  local key="$gate:$step" obj cur new_obj
+  obj="$(_read_fragment_raw_object "$f" rework_attempts)"
+  [ -z "$obj" ] && obj='{}'
+  # Current count for this key (0 if absent). The key is well-formed
+  # (gate ∈ {review,…}, step is numeric) so the literal match is safe.
+  cur="$(printf '%s' "$obj" | sed -n "s/.*\"$key\":\\([0-9]*\\).*/\\1/p" | head -1)"
+  [ -z "$cur" ] && cur=0
+  new=$((cur + 1))
+  if [ "$obj" = '{}' ]; then
+    new_obj="{\"$key\":$new}"
+  elif printf '%s' "$obj" | grep -q "\"$key\":[0-9]"; then
+    new_obj="$(printf '%s' "$obj" | sed "s/\"$key\":[0-9]*/\"$key\":$new/")"
+  else
+    new_obj="${obj%\}},\"$key\":$new}"
+  fi
+  local rl ba
+  rl="$(_read_fragment_raw_array "$f" rework_log)"
+  ba="$(_read_fragment_raw_object "$f" build_attempt)"
+  if ! _rewrite_fragment_rework "$slug" "$new_obj" "$rl" "$ba"; then
+    echo "error: _rework_attempt_count: could not persist counter for $slug ($key)" >&2
+    return 1
+  fi
+  printf '%s' "$new"
+}
+
+# _record_rework_attempt <slug> <attempt> <gate> <step> <model> <token_spend>
+#                        <started_at> <finished_at> <finding_ref> <outcome>
+# Append one telemetry object to rework_log (FR-68). <token_spend> is an int or
+# the literal `null`; <finding_ref> / <outcome> are free text (JSON-escaped).
+_record_rework_attempt() {
+  local slug="$1" attempt="$2" gate="$3" step="$4" model="$5" spend="$6"
+  local started="$7" finished="$8" finding="$9" outcome="${10}"
+  local f="${STATE_DIR:-}/$slug.json"
+  if [ -z "${STATE_DIR:-}" ] || [ ! -f "$f" ]; then
+    echo "error: _record_rework_attempt: no state fragment for $slug ($f)" >&2
+    return 1
+  fi
+  # token_spend is numeric or null (FR-68: null is acceptable telemetry).
+  local spend_lit
+  case "$spend" in
+    ''|null) spend_lit='null' ;;
+    *[!0-9]*) spend_lit='null' ;;
+    *)       spend_lit="$spend" ;;
+  esac
+  local entry rl new
+  entry="{\"attempt\":${attempt:-0},\"gate\":\"$(json_escape "$gate")\",\"step\":${step:-0},\"model\":\"$(json_escape "$model")\",\"token_spend\":$spend_lit,\"started_at\":${started:-0},\"finished_at\":${finished:-0},\"finding_ref\":\"$(json_escape "$finding")\",\"outcome\":\"$(json_escape "$outcome")\"}"
+  rl="$(_read_fragment_raw_array "$f" rework_log)"
+  if [ -z "$rl" ] || [ "$rl" = "[]" ]; then
+    new="[$entry]"
+  elif [ "${rl: -1}" != ']' ]; then
+    echo "warning: rework_log for $slug was malformed (no closing ']'); resetting" >&2
+    new="[$entry]"
+  else
+    new="${rl%]},$entry]"
+  fi
+  local ra ba
+  ra="$(_read_fragment_raw_object "$f" rework_attempts)"; [ -z "$ra" ] && ra='{}'
+  ba="$(_read_fragment_raw_object "$f" build_attempt)"
+  if ! _rewrite_fragment_rework "$slug" "$ra" "$new" "$ba"; then
+    echo "error: _record_rework_attempt: could not append rework_log entry for $slug" >&2
+    return 1
+  fi
+}
+
+# _set_build_attempt_token_spend <slug> <value>  — record the original build
+# attempt's token spend so the FR-68 rework-vs-original comparison is derivable
+# from run-state alone. <value> is an int or the literal `null`.
+_set_build_attempt_token_spend() {  # <slug> <value>
+  local slug="$1" value="${2:-null}"
+  local f="${STATE_DIR:-}/$slug.json"
+  [ -n "$STATE_DIR" ] && [ -f "$f" ] || return 0
+  local val_lit
+  case "$value" in
+    ''|null)  val_lit='null' ;;
+    *[!0-9]*) val_lit='null' ;;
+    *)        val_lit="$value" ;;
+  esac
+  local ra rl
+  ra="$(_read_fragment_raw_object "$f" rework_attempts)"; [ -z "$ra" ] && ra='{}'
+  rl="$(_read_fragment_raw_array "$f" rework_log)"
+  _rewrite_fragment_rework "$slug" "$ra" "$rl" "{\"token_spend\":$val_lit}"
 }

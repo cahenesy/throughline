@@ -57,10 +57,24 @@ _update_paused_cause() {
   gates_csv="$(_read_fragment_array_csv "$f" gates_completed)"
   retries_json="$(_read_fragment_raw_array "$f" retries)"
   branch_head="$(_read_fragment_field "$f" branch_head_at_pause)"
+  # TDD 0019: carry the halt metadata and rework telemetry forward — a
+  # paused_cause mutation on a refuse-to-resume path must not wipe a recorded
+  # halt_cause/next-actions or the rework_log the FR-68 comparison reads.
+  local halt_cause halt_finding halt_actions_csv halt_detail
+  local rework_attempts rework_log build_attempt
+  halt_cause="$(_read_fragment_field "$f" halt_cause)"
+  halt_finding="$(_read_fragment_field "$f" halt_triggering_finding_ref)"
+  halt_actions_csv="$(_read_fragment_array_csv "$f" halt_next_actions)"
+  halt_detail="$(_read_fragment_field "$f" halt_cause_detail)"
+  rework_attempts="$(_read_fragment_raw_object "$f" rework_attempts)"
+  rework_log="$(_read_fragment_raw_array "$f" rework_log)"
+  build_attempt="$(_read_fragment_raw_object "$f" build_attempt)"
   # TDD 0011 / iter-5 MAJOR-1: propagate write failures.
   if ! _write_tdd_fragment "$slug" "${n:-0}" "$path" "${qp:-0}" "$status" "$stage" \
     "${sta:-$(date +%s)}" "$(date +%s)" "$branch" "$pr_url" "$log_f" "$note" \
-    "$new_cause" "$gates_csv" "$retries_json" "$branch_head"; then
+    "$new_cause" "$gates_csv" "$retries_json" "$branch_head" \
+    "$halt_cause" "$halt_finding" "$halt_actions_csv" "$halt_detail" \
+    "$rework_attempts" "$rework_log" "$build_attempt"; then
     echo "error: _update_paused_cause: could not write $slug fragment (cause=$new_cause)" >&2
     return 1
   fi
