@@ -1,6 +1,6 @@
 # TDD 0015: Theme D refactor (1/3) — extract state-fragment I/O into `scripts/lib/state.sh`
 
-Status: draft
+Status: implemented
 PRD refs: FR-69 (slice 1/3)
 PRD-rev: a961955
 ADR constraints: 0003, 0004, 0005
