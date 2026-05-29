@@ -419,42 +419,106 @@ dogfooding the mechanism.
 
 ## Touched files
 
-- `scripts/lib/gates.sh` (post-TDD-0017) — `_rework_one`, `_rework_pre_pass`,
-  wiring into `_review_one_gated`, token-spend extraction; plus carry-over
-  fixes 1-3 to `flip_status` / `install_deps` / `record_blocker`
-- `scripts/lib/resume.sh` (post-TDD-0017) — carry-over fix 4: drop
-  `${STATE_DIR:-}` fallbacks at the three resume call sites
-- `scripts/lib/state.sh` (post-TDD-0015) — fragment field additions for
-  `rework_log` / `rework_attempts` / `build_attempt.token_spend`, plus
-  schema-version bump
-- `scripts/implement.sh` (post-TDD-0017) — `state_init` extension to write
-  `rework_config` into `run.json`
-- `scripts/rework-prompt.md` — new file, §5 prompt content
-- `skills/implement/SKILL.md` — one paragraph documenting the rework loop's
-  user-visible contract (no user prompt during fixable rework; halt only
-  on FR-67 / FR-65 exhaustion)
-- `tests/run-recovery.test.sh` + `tests/state-module-sourceability.test.sh`
-  — one fixture per carry-over finding (total-install-fail, flip-fail,
-  MAINREPO-unset, STATE_DIR-unset)
+(Revised post-build / post-review to declare what actually landed, per the
+TDD 0019 review's MAJOR-1 finding. The original pre-build estimate
+under-declared three files and over-declared one; the corrected list below
+matches `git diff 954fbd9..HEAD --name-only` on the build branch.)
 
-Total: 7 files touched.
+- `scripts/lib/gates.sh` (post-TDD-0017) — `_rework_one`, `_rework_pre_pass`,
+  `_rework_loop`, `_rework_escalate`, `_rework_extract_finding`,
+  `_rework_scope_cap`, `_rework_touched_files`, wiring into the review gate,
+  token-spend extraction; plus carry-over fixes 1-3 (`flip_status` /
+  `install_deps` / `record_blocker`); plus post-review hardening (record_blocker
+  return-check, git-reset return-check, `_rework_one` return-check, REWORK_STEP
+  numeric guard, FINDING-last substitution order)
+- `scripts/lib/resume.sh` (post-TDD-0017) — carry-over fix 4: drop
+  `${STATE_DIR:-}` fallbacks at the three resume call sites + a fail-loud guard
+- `scripts/lib/state.sh` (post-TDD-0015) — fragment field additions for
+  `rework_log` / `rework_attempts` / `build_attempt`, `_rework_attempt_count`,
+  `_record_rework_attempt`, `_set_build_attempt_token_spend`,
+  `_extract_token_spend`, additive carry-forward plumbing across the six
+  fragment writers, plus the `_rework_config_json` snapshot helper
+- `scripts/lib/pause-retry.sh` — new `_last_session_path` helper for FR-68
+  token-spend extraction (lives next to `record_session_pointer`'s
+  session-path resolution it shares logic with)
+- `scripts/implement.sh` — `state_init` extension to write `rework_config`
+  into `run.json` (small)
+- `scripts/rework-prompt.md` — new file, §5 prompt content (carries FR-37
+  prohibitions with ADR-0005 rationale)
+- `skills/implement/SKILL.md` — one paragraph documenting the rework loop's
+  user-visible contract (no user prompt during fixable rework; halt only on
+  FR-67 / FR-65 exhaustion) + the four §6 config knobs
+- `tests/bounded-rework-loop.test.sh` — new file, primary acceptance suite
+  for FR-61/62/65/66/67/68 (the §Verification observation points)
+- `tests/run-recovery.test.sh` — carry-over fixtures (total-install-fail,
+  flip-fail, MAINREPO-unset, STATE_DIR-unset)
+- `tests/implement-gate.test.sh` — case [C] updated to assert the rework
+  loop's BLOCKED routing on a persistent review BLOCK (ADR 0007: the
+  review gate no longer flips on rejected reworks; the existing case
+  needed adjusting for that behavior change)
+- `.claude-plugin/plugin.json` — version bump to 3.10.0
+
+Total: 11 files touched.
+
+(Original pre-build draft listed 7 files and included
+`tests/state-module-sourceability.test.sh`; that file was not in fact
+modified in this build — its carry-over case was folded into
+`tests/run-recovery.test.sh` during build — and the four files above
+that the pre-build draft missed are now declared. The revision is part of
+the iteration after the TDD 0019 review's MAJOR-1 finding.)
 
 ## Expected diff size
 
-- `scripts/lib/gates.sh` — ~250 lines added (`_rework_one`,
-  `_rework_pre_pass`, wiring, helpers) + ~20 lines for carry-over
-  fixes 1-3 (`flip_status` / `install_deps` / `record_blocker`)
-  (exception: this file is being delivered by TDD 0017 at ~250
-  lines; the additions push it to ~520 — declared wide-but-shallow
-  code addition for cohesion: the rework loop belongs alongside the
-  other gate executors, splitting it would fragment the
-  gate-executor cluster)
-- `scripts/lib/resume.sh` — ~10 lines for carry-over fix 4
-- `scripts/lib/state.sh` — ~80 lines added
-- `scripts/implement.sh` — ~15 lines added (`rework_config` snapshot)
-- `scripts/rework-prompt.md` — ~50 lines (new file)
-- `skills/implement/SKILL.md` — ~20 lines added
-- `tests/run-recovery.test.sh` + `tests/state-module-sourceability.test.sh`
-  — ~40 lines added (4 carry-over fixtures)
+(Revised post-build to match `git diff 954fbd9..HEAD --stat`. Numbers
+reflect the actual landed implementation.)
 
-Total expected diff: ~485 lines across 7 files.
+- `scripts/lib/gates.sh` — **+338 lines** (`_rework_one`, `_rework_loop`,
+  `_rework_escalate`, `_rework_pre_pass`, `_rework_extract_finding`,
+  `_rework_scope_cap`, `_rework_touched_files`, review-gate wiring,
+  carry-over fixes, post-review hardening). **Scope override per FR-53:**
+  exceeds the 300-line per-file bound declared by TDD 0014. Justification:
+  the bounded rework loop and its escalation/scope-cap helpers belong with
+  the other gate executors (`build_one`, `verify_runtime_one`, `review_one`,
+  `_review_one_gated`) per ADR 0007's grouping. Splitting into a separate
+  `scripts/lib/rework.sh` would fragment the gate-executor cluster and
+  duplicate the `_retry_in_gate` / `_terminal_state` plumbing the loop relies
+  on. The added code is wide-but-shallow (a handful of small helpers, each
+  well under the per-function cap).
+- `scripts/lib/state.sh` — **+260 lines** (fragment field additions,
+  `_rework_attempt_count`, `_record_rework_attempt`,
+  `_set_build_attempt_token_spend`, `_extract_token_spend`,
+  `_rework_config_json`, plus additive-field carry-forward plumbing across
+  the six existing fragment writers — every writer must thread the three
+  new fields without dropping them). **Scope override per FR-53:** the
+  carry-forward plumbing is mechanical and inherent: schema additions to a
+  fragment with N writers require N call-site updates. Splitting state.sh
+  is out of scope and would compromise the single-source-of-truth posture
+  TDD 0015 established.
+- `scripts/lib/pause-retry.sh` — +38 lines (`_last_session_path` helper)
+- `scripts/lib/resume.sh` — +77 lines (carry-over fix 4 + supporting
+  guards; resume.sh's STATE_DIR contract tightened to fail-loud)
+- `scripts/implement.sh` — +4 lines (`rework_config` snapshot wiring;
+  the snapshot logic itself lives in `state.sh::_rework_config_json`)
+- `scripts/rework-prompt.md` — +54 lines (new file)
+- `skills/implement/SKILL.md` — +41 lines (contract paragraph + the four
+  §6 config knobs)
+- `tests/bounded-rework-loop.test.sh` — **+677 lines** (new file,
+  primary acceptance suite — 85 assertions across observation points
+  E1-E5, structural unit tests C1-C6, behavioral unit tests A1-A3 and
+  B1-B9 + D1 + F2 cross-references). **Scope override per FR-53:** an
+  acceptance test suite for six FRs with five observation points and
+  multiple structural/behavioral sub-assertions naturally exceeds the
+  300-line bound. The TDD 0014 bound is documented as primarily targeting
+  production code; test-suite files of this scope are routine.
+- `tests/run-recovery.test.sh` — +72 lines (4 carry-over fixtures)
+- `tests/implement-gate.test.sh` — +41 lines (case [C] adjustment for
+  the rework-loop's review-gate behavior)
+- `.claude-plugin/plugin.json` — +2 / -2 lines (version bump)
+
+Total actual diff: **~1,547 lines across 11 files** (vs. the original
+draft's pre-build estimate of ~485 lines across 7 files). The four files
+the original draft missed account for ~828 of the 1,062-line delta; the
+remaining delta is the additive-field plumbing in state.sh (~180 lines
+beyond the pre-build estimate) and the gate-executor cohesion in
+gates.sh (~88 lines beyond the per-file bound override that was already
+declared in the original draft).
