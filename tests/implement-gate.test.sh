@@ -334,4 +334,16 @@ if [ -f "$BTS" ]; then
   bash "$BTS" || BTS_FAIL=1
 fi
 
-[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ]
+# Run the state-module-sourceability eval (TDD 0015 / FR-69) as part of the same
+# suite. Pins the contract of the extracted scripts/lib/state.sh: it must source
+# in isolation, and a missing or unreadable module must cause implement.sh to
+# FAIL FAST rather than proceed silently with every state-tracking function
+# undefined.
+SMS="$(dirname "$0")/state-module-sourceability.test.sh"
+SMS_FAIL=0
+if [ -f "$SMS" ]; then
+  echo
+  bash "$SMS" || SMS_FAIL=1
+fi
+
+[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ] && [ "$SMS_FAIL" -eq 0 ]
