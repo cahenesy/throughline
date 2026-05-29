@@ -157,6 +157,125 @@ echo "[A6] set_halt_cause / _append_retry / _enter_paused carry the new fields f
     && ok "cleared_step_log survives _enter_paused" || bad "cleared_step_log must survive _enter_paused"
 ) || true
 
+# --- §3 / FR-57, FR-59: review-prompt scope + prior-patterns + pattern-tags ---
+echo "[B1] review-prompt.md carries the scope, prior-patterns, and pattern-tag sections"
+( cd "$REPO"
+  F="scripts/review-prompt.md"
+  grep -qi 'Scope of this pass'        "$F" && ok "has 'Scope of this pass' section" || bad "review prompt needs a Scope-of-this-pass section (FR-57)"
+  grep -q '{{SCOPE_BASE}}'             "$F" && ok "has {{SCOPE_BASE}} placeholder" || bad "review prompt needs {{SCOPE_BASE}}"
+  grep -q '{{SCOPE_HEAD}}'             "$F" && ok "has {{SCOPE_HEAD}} placeholder" || bad "review prompt needs {{SCOPE_HEAD}}"
+  grep -q '{{BRANCH}}'                 "$F" && ok "has {{BRANCH}} placeholder" || bad "review prompt needs {{BRANCH}}"
+  grep -qi 'Prior addressed patterns'  "$F" && ok "has 'Prior addressed patterns' section (FR-59)" || bad "review prompt needs a Prior-addressed-patterns section (FR-59)"
+  grep -q '{{PRIOR_PATTERNS}}'         "$F" && ok "has {{PRIOR_PATTERNS}} placeholder" || bad "review prompt needs {{PRIOR_PATTERNS}}"
+  grep -qi 'recurrent-pattern'         "$F" && ok "instructs the recurrent-pattern finding kind" || bad "review prompt needs the recurrent-pattern instruction"
+  grep -qi 'pattern_tags'              "$F" && ok "instructs per-finding pattern_tags emission" || bad "review prompt needs the pattern_tags emission instruction"
+) || true
+
+echo "[B2] _review_prior_patterns_csv flattens + dedups cleared_step_log[*].pattern_tags"
+( D="$ROOT/B2"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  F="$D/state.d/0020-x.json"
+  printf '{"slug":"0020-x","cleared_step_log":[{"step_id":1,"pattern_tags":["tag-a","tag-b"]},{"step_id":2,"pattern_tags":["tag-b","tag-c"]}]}\n' > "$F"
+  csv="$(_review_prior_patterns_csv 0020-x)"
+  # all three distinct tags present; tag-b not duplicated.
+  printf '%s' "$csv" | grep -q 'tag-a' && printf '%s' "$csv" | grep -q 'tag-c' \
+    && ok "extracts tags across all cleared steps" || bad "should extract tag-a..tag-c (got '$csv')"
+  [ "$(printf '%s' "$csv" | tr ',' '\n' | grep -c '^tag-b$')" = "1" ] \
+    && ok "dedups a tag that recurs across steps" || bad "tag-b should appear once (got '$csv')"
+  # No fragment / no tags → empty.
+  [ -z "$(_review_prior_patterns_csv 0000-none)" ] \
+    && ok "missing fragment yields empty CSV" || bad "missing fragment should yield empty CSV"
+) || true
+
+echo "[B3] _render_review_prompt substitutes scope + branch + prior-patterns placeholders"
+( D="$ROOT/B3"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D" RTMPL="$REPO/scripts/review-prompt.md"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  out="$(_render_review_prompt docs/tdd/0020-x.md base999 head888 "build/ci/0020-x" "tag-a,tag-b")"
+  printf '%s' "$out" | grep -q 'base999..head888' \
+    && ok "scope base..head substituted" || bad "scope range should be base999..head888 (got scope line: $(printf '%s' "$out" | grep -i scope))"
+  printf '%s' "$out" | grep -q 'build/ci/0020-x' \
+    && ok "branch substituted" || bad "branch should be substituted"
+  printf '%s' "$out" | grep -q 'tag-a, tag-b' \
+    && ok "prior patterns substituted (comma-space joined)" || bad "prior patterns should be substituted (got: $(printf '%s' "$out" | grep -i 'prior'))"
+  printf '%s' "$out" | grep -q '{{SCOPE_BASE}}' \
+    && bad "raw {{SCOPE_BASE}} placeholder leaked into rendered prompt" || ok "no raw placeholder leaks"
+) || true
+
+echo "[B4] _render_review_prompt renders 'none' for empty prior patterns and no leaks"
+( D="$ROOT/B4"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D" RTMPL="$REPO/scripts/review-prompt.md"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  out="$(_render_review_prompt docs/tdd/0020-x.md base000 HEAD "master" "")"
+  printf '%s' "$out" | grep -qi 'prior addressed patterns' \
+    && ok "section present even with no prior patterns" || bad "prior-patterns section should still render"
+  printf '%s' "$out" | grep -q '{{PRIOR_PATTERNS}}' \
+    && bad "raw {{PRIOR_PATTERNS}} leaked when empty" || ok "empty prior patterns leave no raw placeholder"
+) || true
+
+echo "[B5] _extract_pattern_tags pulls pattern_tags: lines from review output into a CSV"
+( D="$ROOT/B5"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  L="$D/review.log"
+  cat > "$L" <<'EOF'
+Finding 1: src/a.txt:10 unchecked return
+pattern_tags: [unchecked-fragment-write-return, missing-guard]
+Finding 2: src/b.txt:3 another
+pattern_tags: [unchecked-fragment-write-return]
+REVIEW_RESULT: PASS
+EOF
+  csv="$(_extract_pattern_tags "$L")"
+  printf '%s' "$csv" | grep -q 'unchecked-fragment-write-return' \
+    && ok "extracts a pattern tag" || bad "should extract unchecked-fragment-write-return (got '$csv')"
+  printf '%s' "$csv" | grep -q 'missing-guard' \
+    && ok "extracts a second tag from the same line" || bad "should extract missing-guard (got '$csv')"
+  [ "$(printf '%s' "$csv" | tr ',' '\n' | grep -c '^unchecked-fragment-write-return$')" = "1" ] \
+    && ok "dedups a tag emitted by two findings" || bad "duplicate tag should collapse (got '$csv')"
+  # No pattern_tags lines → empty CSV.
+  printf 'REVIEW_RESULT: PASS\n' > "$D/review2.log"
+  [ -z "$(_extract_pattern_tags "$D/review2.log")" ] \
+    && ok "no pattern_tags lines yields empty CSV" || bad "absent pattern_tags should yield empty"
+) || true
+
+echo "[B6] review_one renders a scoped prompt carrying base..HEAD, branch, and prior patterns"
+( D="$ROOT/B6"; mkdir -p "$D/state.d" "$D/bin"; cd "$D" || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D" RTMPL="$REPO/scripts/review-prompt.md" REVIEW_MODEL=""
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  git init -q -b master; git config user.email t@t.t; git config user.name t
+  mkdir -p docs/tdd
+  printf '# TDD 0020\nStatus: draft\n' > docs/tdd/0020-x.md
+  git add -A; git commit -qm base >/dev/null
+  # Fragment with a prior cleared step carrying a pattern tag.
+  printf '{"slug":"0020-x","cleared_step_log":[{"step_id":1,"pattern_tags":["prior-tag-x"]}]}\n' > "$D/state.d/0020-x.json"
+  cat > "$D/bin/claude" <<EOF
+#!/usr/bin/env bash
+prompt=""
+while [ \$# -gt 0 ]; do case "\$1" in -p) prompt="\$2"; shift 2;; *) shift;; esac; done
+printf '%s' "\$prompt" > "$D/captured"
+echo "REVIEW_RESULT: PASS"
+EOF
+  chmod +x "$D/bin/claude"; export PATH="$D/bin:$PATH"
+  review_one docs/tdd/0020-x.md "deadbeef" "$D/r.log" >/dev/null 2>&1
+  grep -q 'deadbeef..HEAD' "$D/captured" 2>/dev/null \
+    && ok "review_one scopes the prompt to <base>..HEAD" || bad "review_one prompt should scope deadbeef..HEAD"
+  grep -q 'prior-tag-x' "$D/captured" 2>/dev/null \
+    && ok "review_one interpolates the prior pattern tags (FR-59)" || bad "review_one should interpolate prior-tag-x"
+  grep -q 'REVIEW_RESULT: PASS' "$D/r.log" 2>/dev/null \
+    && ok "review verdict still parsed from the log" || bad "review_one should still log the verdict"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
