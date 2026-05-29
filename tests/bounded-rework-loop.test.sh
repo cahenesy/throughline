@@ -404,6 +404,66 @@ echo "[C8] _rework_pre_pass falls back to build-start SHA when no cleared SHA"
     && ok "fallback uses build-start SHA for the scope diff" || bad "should still emit scope-exceeded (got: $out)"
 ) || true
 
+# --- §5 / FR-61, FR-62: _rework_one spawns a bounded fix + commits -----------
+echo "[D1] _rework_one substitutes the template, runs the rework model, echoes the new HEAD"
+( D="$ROOT/D1"; mkdir -p "$D/state.d" "$D/bin"; cd "$D" || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  git init -q -b master; git config user.email t@t.t; git config user.name t
+  mkdir -p src docs/tdd
+  printf 'bug\n' > src/a.txt
+  cat > docs/tdd/0099-fix.md <<'EOF'
+# TDD 0099: fixture
+Status: draft
+
+## Touched files
+- `src/a.txt` — file
+
+## Expected diff size
+- `src/a.txt` — ~50 lines added
+EOF
+  git add -A; git commit -qm "build start" >/dev/null
+  pre="$(git rev-parse HEAD)"
+  # stub claude: capture the prompt, then act as the rework model (edit + commit).
+  cat > "$D/bin/claude" <<EOF
+#!/usr/bin/env bash
+prompt=""
+while [ \$# -gt 0 ]; do case "\$1" in -p) prompt="\$2"; shift 2;; *) shift;; esac; done
+printf '%s' "\$prompt" > "$D/captured-prompt"
+printf 'fixed\n' > src/a.txt
+git add -A >/dev/null 2>&1; git commit -q -m "rework: fix the cited finding" >/dev/null 2>&1
+echo done
+EOF
+  chmod +x "$D/bin/claude"
+  export PATH="$D/bin:$PATH"
+  new="$(_rework_one docs/tdd/0099-fix.md "$D/rw.log" "review-1:1" "src/a.txt:1 has a bug" 60)"
+  [ -n "$new" ] && [ "$new" != "$pre" ] && ok "_rework_one echoes the new HEAD SHA" \
+    || bad "_rework_one should echo the post-rework HEAD (pre=$pre new=$new)"
+  git log -1 --format='%s' "$new" 2>/dev/null | grep -q '^rework:' \
+    && ok "rework commit subject begins 'rework:'" || bad "rework commit should be a 'rework:' commit"
+  grep -q 'has a bug' "$D/captured-prompt" 2>/dev/null \
+    && ok "prompt carries the finding text" || bad "rework prompt should include the finding text"
+  grep -q '60' "$D/captured-prompt" 2>/dev/null \
+    && ok "prompt carries the scope cap" || bad "rework prompt should include the computed cap"
+  grep -q 'src/a.txt' "$D/captured-prompt" 2>/dev/null \
+    && ok "prompt carries the touched-file set" || bad "rework prompt should include the touched-file set"
+) || true
+
+echo "[D2] rework-prompt.md exists and carries the key bounded-fix instructions"
+( cd "$REPO"
+  F="scripts/rework-prompt.md"
+  [ -f "$F" ] && ok "scripts/rework-prompt.md exists" || { bad "scripts/rework-prompt.md should exist"; exit 0; }
+  grep -qi 'only the cited finding' "$F" && ok "instructs: fix only the cited finding" || bad "prompt should say fix only the cited finding"
+  grep -q '{{TDD}}'           "$F" && ok "has {{TDD}} placeholder" || bad "prompt needs {{TDD}}"
+  grep -q '{{FINDING}}'       "$F" && ok "has {{FINDING}} placeholder" || bad "prompt needs {{FINDING}}"
+  grep -q '{{CAP}}'           "$F" && ok "has {{CAP}} placeholder" || bad "prompt needs {{CAP}}"
+  grep -q '{{TOUCHED_FILES}}' "$F" && ok "has {{TOUCHED_FILES}} placeholder" || bad "prompt needs {{TOUCHED_FILES}}"
+  grep -qiE 'rework:' "$F" && ok "instructs the rework: commit message form" || bad "prompt should specify the rework: commit form"
+  grep -qiE 'do not modify tests|tests.*mask' "$F" && ok "warns against masking the bug via tests" || bad "prompt should warn against test-masking"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
