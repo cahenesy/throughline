@@ -41,6 +41,15 @@ extract_completion_block() {
   ' "$SKILL"
 }
 
+# Print the first fenced ```bash block that contains tl_repo_marker_read (Step 0).
+extract_step0_block() {
+  awk '
+    /^```bash$/ { inblk=1; buf=""; next }
+    /^```$/     { if (inblk) { if (buf ~ /tl_repo_marker_read/) { printf "%s", buf; exit } inblk=0; buf="" } next }
+    inblk       { buf = buf $0 "\n" }
+  ' "$SKILL"
+}
+
 # --- [A] the skill sources all three helpers ---------------------------------
 echo "[A] skill sources the three lib helpers"
 for lib in repo-id.sh markers.sh gitignore.sh; do
@@ -105,7 +114,7 @@ echo "[F] the 'On completion' shell block runs and produces both markers + ignor
       && ok "running the block wrote the per-developer local marker" \
       || bad "the block did not write the local marker"
   fi
-) || true
+) || bad "[F] completion-block case aborted before recording a verdict"
 
 # --- [G] an empty plugin version must NOT write a corrupt repo marker --------
 # A failed `sed` (or a versionless plugin.json) yields ver="". Writing the marker
@@ -132,7 +141,7 @@ echo "[G] a missing/empty plugin version does not corrupt the repo marker"
       bad "wrote a corrupt marker (empty plugin_version_applied) — Step 0 would never short-circuit"
     fi
   fi
-) || true
+) || bad "[G] empty-version case aborted before recording a verdict"
 
 # --- [H] an unwritable local-marker path must not abort the completion block -
 # TDD 0009 failure modes: when ${CLAUDE_PLUGIN_DATA} is unwritable the local
@@ -157,7 +166,37 @@ echo "[H] tl_local_marker_write failure does not abort the completion block"
       bad "an unwritable local-marker path aborted the block (missing '|| true' guard); exit=$hexit"
     fi
   fi
-) || true
+) || bad "[H] unwritable-local-path case aborted before recording a verdict"
+
+# --- [I] Step 0 reads the marker version WITHOUT a hard jq dependency --------
+# TDD 0009 §"Dependencies considered": only the hook's local notice is gated on
+# jq; FR-31's re-run short-circuit must work on jq-absent machines. Run Step 0's
+# marker-read block with jq forced to fail and assert it still recovers
+# plugin_version_applied — a jq-dependent read yields empty and never
+# short-circuits.
+echo "[I] Step 0 reads plugin_version_applied without depending on jq"
+( blk="$(extract_step0_block)"
+  if [ -z "$blk" ]; then
+    bad "[I] no Step 0 marker-read block (with tl_repo_marker_read) found"
+  else
+    R="$(mkrepo "$ROOT/i")"
+    # Seed a real marker at a known version using the committed write helper.
+    ( cd "$R" && source "$REPO/scripts/lib/repo-id.sh" \
+        && source "$REPO/scripts/lib/markers.sh" \
+        && tl_repo_marker_write 9.9.9 shell scaffold ) >/dev/null 2>&1
+    # An always-failing `jq` earlier on PATH stands in for a jq-absent machine:
+    # any read that pipes through jq yields empty; a sed/grep read still works.
+    BIN="$ROOT/i-bin"; mkdir -p "$BIN"
+    printf '#!/usr/bin/env bash\nexit 1\n' > "$BIN/jq"; chmod +x "$BIN/jq"
+    { printf '%s\n' "$blk"; printf 'printf "APPLIED=%%s\\n" "$applied"\n'; } > "$ROOT/i.sh"
+    out="$( cd "$R" && CLAUDE_PLUGIN_ROOT="$REPO" PATH="$BIN:$PATH" bash "$ROOT/i.sh" 2>/dev/null )"
+    if printf '%s\n' "$out" | grep -Fxq 'APPLIED=9.9.9'; then
+      ok "Step 0 recovered plugin_version_applied=9.9.9 with jq disabled"
+    else
+      bad "Step 0 failed to read the marker version without jq (got: $(printf '%s' "$out" | grep '^APPLIED=' | head -n1))"
+    fi
+  fi
+) || bad "[I] jq-free Step 0 case aborted before recording a verdict"
 
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
