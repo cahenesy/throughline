@@ -494,7 +494,12 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
   # --disallowed-tools AskUserQuestion (issue #28A): runner-level belt-and-
   # suspenders for the prompt-level prohibition — the unattended build cannot
   # hang on a question nobody will answer.
-  local -a ccmd=(claude -p "$prompt" --input-format stream-json --output-format stream-json --permission-mode auto --disallowed-tools AskUserQuestion)
+  # --verbose: required by Claude CLI ≥ 2.1.158 when --print is combined with
+  # --output-format=stream-json; without it the CLI errors out at argv parse
+  # ("--output-format=stream-json requires --verbose") and no BATCH_RESULT ever
+  # emerges. Stream sentinels the runner reads (STEP_COMMIT etc.) are
+  # unaffected.
+  local -a ccmd=(claude -p "$prompt" --input-format stream-json --output-format stream-json --verbose --permission-mode auto --disallowed-tools AskUserQuestion)
   [ -n "$model" ] && ccmd+=(--model "$model")
   coproc BUILD { "${tocmd[@]}" "${ccmd[@]}" 2>>"$errlog"; }
   local bpid="$BUILD_PID" build_in build_out
