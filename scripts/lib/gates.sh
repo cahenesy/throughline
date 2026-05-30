@@ -62,6 +62,50 @@ _review_prior_patterns_csv() {  # <slug>
     | paste -sd, -
 }
 
+# _cleared_steps_csv <slug> (TDD 0024 / FR-40) — extract the step_id of every
+# entry in the TDD's cleared_step_log as a comma-separated list (deduped, in
+# record order), or the literal `none` when there is no fragment or no cleared
+# step yet. Feeds the build prompt's {{CLEARED_STEPS}} RESUME SIGNAL so a resumed
+# build is told exactly which Sequencing items a prior attempt's per-step review
+# cleared — a structured signal, not an inference from `git log`. The only writer
+# of cleared_step_log is the per-step review's PASS verdict (_record_cleared_step),
+# so the list is authoritative. Mirrors _review_prior_patterns_csv.
+_cleared_steps_csv() {  # <slug>
+  local slug="$1" log f csv
+  f="${STATE_DIR:-}/$slug.json"
+  { [ -z "${STATE_DIR:-}" ] || [ ! -f "$f" ]; } && { printf 'none'; return 0; }
+  log="$(_read_fragment_cleared_log "$f")"
+  { [ -z "$log" ] || [ "$log" = "[]" ]; } && { printf 'none'; return 0; }
+  csv="$(printf '%s' "$log" \
+    | grep -aoE '"step_id":[0-9]+' \
+    | grep -aoE '[0-9]+' \
+    | awk 'NF && !seen[$0]++' \
+    | paste -sd, -)"
+  if [ -z "$csv" ]; then printf 'none'; else printf '%s' "$csv"; fi
+}
+
+# _render_build_prompt <slug> <tdd> (TDD 0024 / FR-40) — render the build-prompt
+# template: substitute {{TDD}} and the {{CLEARED_STEPS}} RESUME SIGNAL (the
+# comma-separated cleared step IDs from _cleared_steps_csv, or `none` for a fresh
+# build). Resolves the template from $TMPL with a fallback to the file beside the
+# scripts dir (TMPL is only set in real-run mode, not under the source-only test
+# harness) — same pattern as _render_review_prompt. {{TDD}} is substituted via
+# sed first; {{CLEARED_STEPS}} via bash parameter expansion (the value is integers
+# or `none`, so it cannot break a sed delimiter or double-expand a placeholder).
+_render_build_prompt() {  # <slug> <tdd>
+  local slug="$1" tdd="$2" tmpl prompt cleared
+  tmpl="${TMPL:-}"
+  [ -z "$tmpl" ] && tmpl="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/build-prompt.md"
+  if [ ! -f "$tmpl" ]; then
+    echo "error: _render_build_prompt: build prompt template not found ($tmpl)" >&2
+    return 1
+  fi
+  prompt="$(sed "s#{{TDD}}#${tdd}#g" "$tmpl")"
+  cleared="$(_cleared_steps_csv "$slug")"
+  prompt="${prompt//\{\{CLEARED_STEPS\}\}/$cleared}"
+  printf '%s' "$prompt"
+}
+
 # _render_review_prompt <tdd> <scope-base> <scope-head> <branch> <prior-tags-csv>
 # (TDD 0020 / FR-57, FR-59) — interpolate the review prompt template's scope +
 # prior-patterns placeholders. Used by BOTH the per-step review (scope =
@@ -227,6 +271,22 @@ verify_runtime_one() {  # <tdd> <base-ref> <log>
 build_status()          { grep -aoE 'BATCH_RESULT: (OK|FAIL.*|BLOCKED.*)' "$1" 2>/dev/null | tail -1; }
 review_status()         { grep -aoE 'REVIEW_RESULT: (PASS|BLOCK.*)' "$1" 2>/dev/null | tail -1; }
 verify_runtime_status() { grep -aoE 'VERIFY_RUNTIME: (PASS|FAIL.*|BLOCKED.*|SKIP.*)' "$1" 2>/dev/null | tail -1; }
+
+# _fresh_review_verdict <log> <pre-log-size> (review-rerun-1 robustness) —
+# echo the first REVIEW_RESULT line in the log slice AFTER <pre-log-size>
+# bytes, or empty if none. Used by _rework_loop to tell a fresh BLOCK
+# verdict (legitimate rework trigger) from a fatal claude crash (no
+# verdict this pass). The regex accepts optional leading backticks /
+# whitespace because reviewers commonly emit the verdict as markdown
+# inline code or fenced. Anchor preserved: REVIEW_RESULT must START a
+# line (modulo the leading marker chars), so prose mentioning the
+# sentinel mid-line is not picked up.
+_fresh_review_verdict() {  # <log> <pre-log-size>
+  local log="$1" pre="$2"
+  tail -c +"$((pre + 1))" "$log" 2>/dev/null \
+    | grep -aE '^[`[:space:]]*REVIEW_RESULT:' \
+    | tail -1
+}
 run_ci_checks()    { bash "$CI_CHECKS" >>"$1" 2>&1; }
 # test-first gate: mechanical, git-history only. The build must show failing-test-
 # first discipline — a dedicated `test(failing): ...` commit BEFORE the impl —
@@ -404,7 +464,18 @@ _run_per_step_review() {  # <slug> <tdd> <step-id> <sha> <build-start-sha> <main
 _per_step_review_loop() {  # <slug> <tdd> <log>
   local slug="$1" tdd="$2" log="$3"
   local prompt build_start inter overall model errlog start
-  prompt="$(sed "s#{{TDD}}#${tdd}#g" "$TMPL")"
+  # TDD 0024 / FR-40: render the build prompt with the {{CLEARED_STEPS}} RESUME
+  # SIGNAL (cleared step IDs from a prior attempt, or `none` for a fresh build)
+  # substituted alongside {{TDD}}. Capture the render rc separately so a
+  # template-missing failure (rc=1, stderr-only diagnostic) does NOT silently
+  # produce an empty prompt + bogus `claude -p ""` + misleading "no
+  # BATCH_RESULT" FAIL; the gate log must carry an in-band diagnostic so a
+  # triage opening the durable artifact sees the cause (review-rerun-1 MAJOR-1).
+  prompt="$(_render_build_prompt "$slug" "$tdd" 2>>"$log")"
+  if [ $? -ne 0 ] || [ -z "$prompt" ]; then
+    echo "FATAL: _per_step_review_loop: build prompt render failed for $slug; refusing to spawn claude -p with an empty prompt" >>"$log"
+    return 1
+  fi
   build_start="$(git rev-parse HEAD 2>/dev/null || echo "")"
   inter="${THROUGHLINE_BUILD_INTER_EVENT_TIMEOUT:-600}"; case "$inter" in ''|*[!0-9]*) inter=600 ;; esac
   overall="${THROUGHLINE_BUILD_TIMEOUT:-7200}"
@@ -873,7 +944,7 @@ _rework_loop() {  # <slug> <tdd> <rbase> <log>
     # legitimate rework trigger); if not, claude crashed silently (fail the
     # gate). The retries-recorded check stays for diagnostic clarity but
     # becomes a refinement of the fail path, not the only fail trigger.
-    verdict_in_new="$(tail -c +"$((pre_log_size + 1))" "$log" 2>/dev/null | grep -aE '^REVIEW_RESULT:' | tail -1)"
+    verdict_in_new="$(_fresh_review_verdict "$log" "$pre_log_size")"
     if [ "$rrc" -ne 0 ] && [ -z "$verdict_in_new" ]; then
       _retries_json="$(_read_fragment_raw_array "${STATE_DIR:-}/$slug.json" retries 2>/dev/null)"
       if [ -n "$_retries_json" ] && [ "$_retries_json" != "[]" ]; then

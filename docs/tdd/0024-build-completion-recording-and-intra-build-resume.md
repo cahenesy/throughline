@@ -1,6 +1,6 @@
 # TDD 0024: Build-completion recording + intra-build resume — supersedes TDD 0011
 
-Status: draft
+Status: implemented
 PRD refs: FR-39, FR-40, FR-41, FR-42, FR-43, FR-44, FR-45
 PRD-rev: cf5538b
 ADR constraints: 0004, 0005, 0006, 0007

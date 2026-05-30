@@ -239,18 +239,51 @@ echo "[3.c] _retry_in_gate on fatal cause does NOT retry; returns 1, no paused"
     || ok "TDD fragment NOT paused on fatal"
 ) || true
 
+echo "[3.d] gate_one records 'build' in gates_completed after BATCH_RESULT: OK (TDD 0024 / FR-40)"
+( D="$ROOT/3d"; mkdir -p "$D/state.d"
+  REPO_T="$D/repo"; mkdir -p "$REPO_T" && cd "$REPO_T"
+  git init -q -b master; git config user.email t@t.t; git config user.name t
+  printf 'base\n' > base.txt; git add -A; git commit -qm base
+
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=("docs/tdd/0007-x.md")
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  _write_tdd_fragment 0007-x 7 docs/tdd/0007-x.md 1 building build \
+    1000 1000 "feat/0007-x" "" "log" "" "" "" "[]" ""
+
+  # Mock the LLM build to emit BATCH_RESULT: OK; halt gate_one at the very next
+  # gate (test-first) so we can observe gates_completed right after gate 1 has
+  # recorded its completion — the build-gate completion record is the unit under
+  # test, not the whole four-gate flow.
+  _build_one_gated() { local log="$2"; printf 'BATCH_RESULT: OK\n' >> "$log"; return 0; }
+  test_first_ok() { return 1; }
+
+  L="$D/3d.log"; : > "$L"
+  gate_one docs/tdd/0007-x.md master "$L" >/dev/null 2>&1
+  F="$D/state.d/0007-x.json"
+  grep -qE '"gates_completed":\[[^]]*"build"' "$F" \
+    && ok "gate_one records build in gates_completed after BATCH_RESULT: OK" \
+    || bad "gates_completed should contain build after the build returns OK (got: $(cat "$F"))"
+) || true
+
 # --- Step 4: _resume_from + driver halt-on-paused ----------------------------
-echo "[4.a] _resume_from populates RESUME_GATES_DONE_<slug> from gates_completed when build branch HEAD matches"
+# TDD 0024 / FR-40 (revised): the per-TDD fragment's gates_completed array is the
+# SOLE source of truth for build-gate completion. A `test(failing):` commit on the
+# branch is NOT a proxy for it — partial commits mean the build was interrupted,
+# not that it reached BATCH_RESULT: OK.
+echo "[4.a] _resume_from puts 'build' in RESUME_GATES_DONE_<slug> ONLY when gates_completed records it (no commit proxy)"
 ( D="$ROOT/4a"; mkdir -p "$D/state.d"
-  # Stand up a tiny git repo with a `test(failing):` commit on the build branch
-  # so the build-history source-of-truth says gate 1 is done.
+  # Stand up a build branch with NO `test(failing):` commit — under the old
+  # commit-proxy this would have refused to resume; under TDD 0024 the explicit
+  # `build` entry in gates_completed is authoritative, so gate 1 is skipped
+  # regardless of the branch's commit subjects.
   REPO_T="$D/repo"
   mkdir -p "$REPO_T" && cd "$REPO_T"
   git init -q -b master; git config user.email t@t.t; git config user.name t
   printf 'base\n' > base.txt; git add -A; git commit -qm base
   git checkout -q -b feat/0007-x
-  printf 'test\n' > test.txt; git add -A; git commit -qm "test(failing): 0007-x"
-  printf 'impl\n' > impl.txt; git add -A; git commit -qm "stub build 0007-x"
+  printf 'impl\n' > impl.txt; git add -A; git commit -qm "build 0007-x (impl only)"
   BRANCH_HEAD="$(git rev-parse HEAD)"
 
   export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
@@ -259,15 +292,15 @@ echo "[4.a] _resume_from populates RESUME_GATES_DONE_<slug> from gates_completed
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
   _write_tdd_fragment 0007-x 7 docs/tdd/0007-x.md 1 paused verify-runtime \
     1000 1000 "feat/0007-x" "" "log" "paused (ratelimit)" \
-    "ratelimit" "test-first,verify" "[]" "$BRANCH_HEAD"
+    "ratelimit" "build,test-first,verify" "[]" "$BRANCH_HEAD"
 
   # _resume_from sets a per-slug shell var listing the gates already done.
   _resume_from 0007-x
   rkey="RESUME_GATES_DONE_0007_x"
   done_list="${!rkey:-}"
   printf '%s' "$done_list" | grep -q 'build' \
-    && ok "build gate marked done (test(failing): commit present)" \
-    || bad "build gate should be marked done (got: '$done_list')"
+    && ok "build gate marked done (gates_completed records build, no commit proxy)" \
+    || bad "build gate should be marked done from gates_completed (got: '$done_list')"
   printf '%s' "$done_list" | grep -q 'test-first' \
     && ok "test-first gate carried forward" || bad "test-first should be in done list (got: '$done_list')"
   printf '%s' "$done_list" | grep -q 'verify' \
@@ -306,12 +339,17 @@ echo "[4.b] _resume_from refuses to resume when build branch HEAD diverges -> pa
     || bad "RESUME_GATES_DONE should not be populated on divergence (got: '${!rkey:-}')"
 ) || true
 
-echo "[4.c] _resume_from refuses when build branch has no test(failing): commit"
+echo "[4.c] _resume_from re-runs gate 1 when gates_completed lacks build, even with test(failing): commits on the branch (no commit proxy)"
 ( D="$ROOT/4c"; mkdir -p "$D/state.d"
   REPO_T="$D/repo"; mkdir -p "$REPO_T" && cd "$REPO_T"
   git init -q -b master; git config user.email t@t.t; git config user.name t
   printf 'base\n' > base.txt; git add -A; git commit -qm base
-  # No build branch / no test(failing): commit anywhere
+  # A build branch carrying a `test(failing):` commit — the OLD commit-proxy
+  # would have declared gate 1 done from this. Under TDD 0024 it must NOT: the
+  # fragment's gates_completed=[] is authoritative, so gate 1 re-runs.
+  git checkout -q -b feat/0007-x
+  printf 'test\n' > test.txt; git add -A; git commit -qm "test(failing): 0007-x"
+  printf 'impl\n' > impl.txt; git add -A; git commit -qm "feat: partial 0007-x"
   BRANCH_HEAD="$(git rev-parse HEAD)"
 
   export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
@@ -319,14 +357,21 @@ echo "[4.c] _resume_from refuses when build branch has no test(failing): commit"
   TDDS=("docs/tdd/0007-x.md")
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
   _write_tdd_fragment 0007-x 7 docs/tdd/0007-x.md 1 paused build \
-    1000 1000 "" "" "log" "paused (ratelimit)" \
+    1000 1000 "feat/0007-x" "" "log" "paused (ratelimit)" \
     "ratelimit" "" "[]" "$BRANCH_HEAD"
 
-  _resume_from 0007-x
+  _resume_from 0007-x; rrc=$?
   F="$STATE_DIR/0007-x.json"
+  [ "$rrc" -ne 3 ] && ok "_resume_from does NOT refuse (rc=$rrc); the absent build entry just re-runs gate 1" \
+    || bad "_resume_from should not refuse when gates_completed lacks build (rc=$rrc)"
   grep -q 'resume-blocked-build-state-missing' "$F" \
-    && ok "paused_cause updated to resume-blocked-build-state-missing" \
-    || bad "paused_cause should be resume-blocked-build-state-missing"
+    && bad "the resume-blocked-build-state-missing write path is removed under TDD 0024" \
+    || ok "no resume-blocked-build-state-missing cause is written (write path removed)"
+  rkey="RESUME_GATES_DONE_0007_x"
+  done_list="${!rkey:-}"
+  printf '%s' "$done_list" | grep -q 'build' \
+    && bad "build must NOT be in the done-list (gates_completed lacked it) — got '$done_list'" \
+    || ok "gate 1 re-runs: build absent from the done-list despite the test(failing): commit"
 ) || true
 
 # --- Step 5: status.sh renderer extensions + --check-paused ------------------
@@ -393,17 +438,19 @@ EOF
     || bad "snapshot should list the ratelimit next-action options"
 ) || true
 
-# --- iter-4 BLOCKER-1: combined-mode resume re-runs gate 1 -------------------
-echo "[4.d] _resume_from in combined mode skips gate-1 done-list (force re-run)"
+# --- combined-mode resume re-runs gate 1 (gates_completed authoritative) -----
+echo "[4.d] _resume_from in combined mode omits gate-1 from the done-list when gates_completed lacks build"
 ( D="$ROOT/4d"; mkdir -p "$D/state.d"
   REPO_T="$D/repo"; mkdir -p "$REPO_T" && cd "$REPO_T"
   git init -q -b master; git config user.email t@t.t; git config user.name t
   printf 'base\n' > base.txt; git add -A; git commit -qm base
-  # In combined mode, ALL TDDs share the same $CHANGE branch — but no
-  # per-TDD test(failing): commits are required for resume to succeed.
+  # In combined mode, ALL TDDs share the same $CHANGE branch. Under TDD 0024 the
+  # combined and sequential paths are unified: done_list = gates_completed, so no
+  # special-casing of the shared branch's ancestry is needed.
   git checkout -q -b ci
-  # Simulate two TDDs already partially built: one fully (with a
-  # test(failing): commit), one just starting.
+  # Simulate a prior TDD's test(failing): commit living in the shared branch's
+  # ancestry — under TDD 0024 it is ignored (gates_completed, not commit
+  # ancestry, decides gate-1 completion for THIS fragment).
   printf 'test-a\n' > test-a.txt; git add -A; git commit -qm "test(failing): 0001-alpha"
   printf 'impl-a\n' > impl-a.txt; git add -A; git commit -qm "stub build 0001-alpha"
   BRANCH_HEAD="$(git rev-parse HEAD)"
@@ -412,9 +459,8 @@ echo "[4.d] _resume_from in combined mode skips gate-1 done-list (force re-run)"
   export INTEGRATION="master" CHANGE="ci" LOGDIR="$D" COMBINED=1
   TDDS=("docs/tdd/0002-beta.md")
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
-  # 0002-beta has no test(failing): commit on the branch (its turn was
-  # interrupted before gate 1 finished). In non-combined mode this would
-  # be refused. In combined mode it should resume; gate-1 will re-run.
+  # 0002-beta's build never reached BATCH_RESULT: OK (gates_completed=[]); its
+  # build gate must re-run, undeceived by a prior TDD's ancestry commit.
   _write_tdd_fragment 0002-beta 2 docs/tdd/0002-beta.md 1 paused build \
     1000 1000 "ci" "" "log" "paused (ratelimit)" \
     "ratelimit" "" "[]" "$BRANCH_HEAD"
@@ -428,6 +474,50 @@ echo "[4.d] _resume_from in combined mode skips gate-1 done-list (force re-run)"
   # done_list MUST be empty for combined mode — gate 1 must re-run.
   [ -z "$done_list" ] && ok "combined-mode done_list omits 'build' so gate 1 re-runs" \
     || bad "combined-mode done_list should be empty (got: '$done_list')"
+) || true
+
+# --- TDD 0024 / FR-40 (b): intra-build interruption, gates_completed empty ----
+echo "[4.f] _resume_from: build interrupted after test(failing):+feat: pairs but before BATCH_RESULT: OK re-runs gate 1, divergence guard unaffected"
+( D="$ROOT/4f"; mkdir -p "$D/state.d"
+  REPO_T="$D/repo"; mkdir -p "$REPO_T" && cd "$REPO_T"
+  git init -q -b master; git config user.email t@t.t; git config user.name t
+  printf 'base\n' > base.txt; git add -A; git commit -qm base
+  git checkout -q -b feat/0007-x
+  # Two test-first + feat pairs landed before a recoverable interruption; the
+  # build never emitted BATCH_RESULT: OK, so gates_completed stayed [].
+  printf 't1\n' > t1.txt;   git add -A; git commit -qm "test(failing): step 1 behavior"
+  printf 'i1\n' > i1.txt;   git add -A; git commit -qm "feat: step 1 impl"
+  printf 't2\n' > t2.txt;   git add -A; git commit -qm "test(failing): step 2 behavior"
+  printf 'i2\n' > i2.txt;   git add -A; git commit -qm "feat: step 2 impl"
+  BRANCH_HEAD="$(git rev-parse HEAD)"
+
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=("docs/tdd/0007-x.md")
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  # Paused by usage-limit mid-build: status=paused, stage=build, gates_completed=[].
+  # branch_head_at_pause matches the branch HEAD so the divergence guard is a no-op.
+  _write_tdd_fragment 0007-x 7 docs/tdd/0007-x.md 1 paused build \
+    1000 1000 "feat/0007-x" "" "log" "paused (usage-limit)" \
+    "usage-limit" "" "[]" "$BRANCH_HEAD"
+
+  _resume_from 0007-x; rrc=$?
+  F="$STATE_DIR/0007-x.json"
+  [ "$rrc" -ne 3 ] && ok "intra-build resume does not refuse (rc=$rrc)" \
+    || bad "intra-build resume must not refuse — gates_completed is authoritative (rc=$rrc)"
+  rkey="RESUME_GATES_DONE_0007_x"
+  done_list="${!rkey:-}"
+  printf '%s' "$done_list" | grep -q 'build' \
+    && bad "done_list must lack build (the build never reached BATCH_RESULT: OK) — got '$done_list'" \
+    || ok "done_list lacks build; gate 1 re-runs against the preserved partial commits"
+  # Divergence guard unaffected: matching head means no resume-blocked cause.
+  grep -q 'resume-blocked-branch-divergence' "$F" \
+    && bad "divergence guard fired spuriously on a matching branch head" \
+    || ok "divergence guard unaffected (branch head matches branch_head_at_pause)"
+  # The build branch's commits are preserved verbatim.
+  [ "$(git rev-parse refs/heads/feat/0007-x)" = "$BRANCH_HEAD" ] \
+    && ok "build branch HEAD preserved across resume" \
+    || bad "build branch HEAD must be preserved (no history rewrite)"
 ) || true
 
 # --- iter-5 BLOCKER-1+2: resume restores CHANGE/PARALLEL/COMBINED ---------

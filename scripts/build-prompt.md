@@ -6,6 +6,15 @@ bodies) plus docs/adr/INDEX.md for anything else relevant. Use the built-in
 `Explore` subagent for broader investigation so reading stays out of context.
 
 Build discipline:
+- RESUME SIGNAL. Cleared steps from any prior attempt: {{CLEARED_STEPS}}
+  (integer step IDs whose per-step review passed previously, or `none`
+  for a fresh build). On resume, continue from the lowest-numbered step
+  ID not in {{CLEARED_STEPS}}. Its base SHA = the last cleared step's
+  `head_sha` (per TDD 0020's `cleared_step_log[-1]`), or the build-start
+  SHA for the very first step; `git diff <base>..HEAD` shows any partial
+  work from the killed attempt. Extend or repair on top — do NOT rewrite
+  history (the divergence guard rejects rewrites) — then emit its
+  `STEP_COMMIT:` sentinel.
 - Implement in the sequence the TDD specifies, one step at a time.
 - AT THE END OF EACH NUMBERED Sequencing item in the TDD, before starting the
   next item, you MUST do the following four-step handshake with the runner

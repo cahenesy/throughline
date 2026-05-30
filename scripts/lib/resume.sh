@@ -86,18 +86,18 @@ _update_paused_cause() {
   fi
 }
 
-# _resume_from <slug> (TDD 0011 / FR-40)
+# _resume_from <slug> (TDD 0011 / FR-40; resume mechanism revised by TDD 0024)
 # Validate that <slug>'s paused fragment is resumable; if so, set the
 # RESUME_GATES_DONE_<slug> variable listing the gates already completed
-# (build / test-first / verify / verify-runtime / review). Two sources of
-# truth, with the documented trust hierarchy:
-#   A — the build branch's commit history (authoritative for gate 1: a
-#       `test(failing):` commit must exist).
-#   B — the per-TDD fragment's gates_completed array (authoritative for
-#       gates 2-4).
-# On a refuse-to-resume condition, updates paused_cause to one of:
-#   resume-blocked-build-state-missing
-#   resume-blocked-branch-missing
+# (build / test-first / verify / verify-runtime / review). The per-TDD fragment's
+# gates_completed array is the SOLE source of truth for EVERY gate, including
+# gate 1 (build): its "build" entry is written by gate_one only when the build
+# emitted BATCH_RESULT: OK. Partial commits on the branch (test(failing): + feat:
+# pairs that landed before an interruption) are NOT a proxy for build completion
+# (TDD 0024 / FR-40 revised) and are no longer scanned — a missing "build" entry
+# re-runs gate 1 (build_one is idempotent at the prompt level: it reads the
+# branch state and either no-ops on completed steps or extends the remaining
+# ones). On a refuse-to-resume condition, updates paused_cause to:
 #   resume-blocked-branch-divergence
 # and leaves the RESUME_GATES_DONE_<slug> variable unset.
 _resume_from() {
@@ -123,86 +123,22 @@ _resume_from() {
   fragment_status="$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$f" | head -1)"
   [ "$fragment_status" = "paused" ] || return 0
 
-  # TDD 0011 / MAJOR-5: guard $INTEGRATION — under THROUGHLINE_SOURCE_ONLY=1
-  # (the test harness) the runner's INTEGRATION assignment is skipped, and
-  # an unguarded `"$INTEGRATION"` aborts the test process under `set -u`.
-  local integration="${INTEGRATION:-}"
   local branch branch_head_at_pause gates_csv
   branch="$(sed -n 's/.*"branch":"\([^"]*\)".*/\1/p' "$f" | head -1)"
   branch_head_at_pause="$(_read_fragment_field "$f" branch_head_at_pause)"
   gates_csv="$(_read_fragment_array_csv "$f" gates_completed)"
 
-  # Source A — gate-1 completion is signaled by a `test(failing):` commit
-  # in the branch history. TDD 0011 / MA-1: scope the scan to commits
-  # introduced by THIS build branch via the merge-base with the integration
-  # branch. Scanning HEAD's full ancestry (the previous behavior) would
-  # falsely match a `test(failing):` commit from any prior TDD on the same
-  # long-lived integration branch.
-  #
-  # TDD 0011 / iter-4 BLOCKER-1: in COMBINED mode the build branch is
-  # SHARED across all TDDs in $CHANGE — another TDD's `test(failing):`
-  # commit lives in the ancestry of this paused TDD, so the test-first
-  # scan would falsely declare gate 1 done. Instead of trying to scope
-  # the scan (no slug-keyed marker exists in the commit subjects),
-  # SKIP the gate-1 resume optimization entirely for combined mode:
-  # treat gate 1 as NOT-done so gate_one re-runs it. The done_list
-  # below is intentionally constructed WITHOUT 'build' for combined,
-  # so gate_one's `_is_done build` returns false and gate 1 executes.
-  # Re-running gate 1 is safe in combined mode: build_one is idempotent
-  # at the prompt level (the LLM sees the current branch state); if it
-  # already committed the change in the prior attempt, the new attempt
-  # will see it and either no-op or extend it.
-  local has_test_first=0 base_ref="" ref_to_scan combined_resume=0
-  if [ "${COMBINED:-0}" = "1" ]; then
-    combined_resume=1
-    # Skip the entire test-first scan branch; jump to divergence check.
-  else
-    # Source A's scan target: TDD 0011 / BLOCKER-1+MAJOR-10 — the divergence
-    # guard below now resolves the build branch via refs/heads/$branch (not
-    # HEAD), so we know exactly which ref we're scanning regardless of the
-    # process's CWD. The test-first scan must use the same ref.
-    ref_to_scan="HEAD"
-    if [ -n "$branch" ] && git rev-parse --verify "refs/heads/$branch" >/dev/null 2>&1; then
-      ref_to_scan="refs/heads/$branch"
-    fi
-    if [ -n "$integration" ]; then
-      base_ref="$(git merge-base "$ref_to_scan" "$integration" 2>/dev/null \
-                   || git merge-base "$ref_to_scan" "origin/$integration" 2>/dev/null \
-                   || true)"
-    fi
-    if [ -n "$base_ref" ]; then
-      if git log --format='%s' "$base_ref..$ref_to_scan" 2>/dev/null | grep -qiE '^test\(failing\)'; then
-        has_test_first=1
-      fi
-    else
-      # TDD 0011 / iter-4 MAJOR-5: no merge-base means we cannot
-      # distinguish THIS TDD's `test(failing):` commit from a prior
-      # stacked TDD's. Per NFR-4 "never silently claim a gate complete
-      # on degraded evidence", REFUSE to resume rather than emit an
-      # affirmative based on the wider ancestry scan (the prior
-      # warning-and-pass behavior).
-      echo "warning: _resume_from $slug — no merge-base with ${integration:-<unset>}; refusing to claim gate 1 done on degraded evidence" >&2
-      # TDD 0011 / iter-6 MAJOR-4: do NOT `|| true` here — that would
-      # swallow a fragment-write failure and let the driver's report
-      # read back a stale paused_cause (e.g. "ratelimit") instead of
-      # the resume-blocked diagnostic.
-      # TDD 0011 / iter-10 M-3: also expose the cause via a global so
-      # drivers don't have to re-read it from the fragment (and read a
-      # stale value if the write failed).
-      RESUME_REFUSE_CAUSE="resume-blocked-build-state-missing"
-      _update_paused_cause "$slug" "$RESUME_REFUSE_CAUSE" \
-        || echo "warning: _resume_from $slug: could not update paused_cause (status.sh may show stale cause)" >&2
-      return 3
-    fi
-  fi
-  # In combined mode we deliberately bypass the has_test_first check —
-  # gate 1 will re-run via the empty done_list below.
-  if [ "$combined_resume" -eq 0 ] && [ "$has_test_first" -ne 1 ]; then
-    RESUME_REFUSE_CAUSE="resume-blocked-build-state-missing"
-    _update_paused_cause "$slug" "$RESUME_REFUSE_CAUSE" \
-      || echo "warning: _resume_from $slug: could not update paused_cause (status.sh may show stale cause)" >&2
-    return 3
-  fi
+  # Build-gate completion is read straight from gates_completed (TDD 0024 /
+  # FR-40 revised) — there is no commit-history scan. The prior Source-A logic
+  # (scan the branch for a `test(failing):` commit, with a combined-mode bypass
+  # and a no-merge-base "resume-blocked-build-state-missing" refuse) is removed:
+  # partial commits are NOT a proxy for build completion, and "gates_completed
+  # is authoritative; if 'build' is absent, re-run gate 1" is correctly safe in
+  # every situation the old refuse covered (degraded merge-base evidence,
+  # shared combined-mode branches) without needing a refuse-to-resume gate.
+  # Re-running gate 1 is safe: build_one is idempotent at the prompt level —
+  # it reads the current branch state and either no-ops on already-committed
+  # sequencing steps or extends with the remaining ones.
 
   # Divergence: if the fragment recorded a HEAD SHA at pause time and the
   # current branch ref differs, the branch was rewritten while paused.
@@ -222,20 +158,12 @@ _resume_from() {
     fi
   fi
 
-  # All checks pass: build the done-list.
-  # - Non-combined: gate 1 (build) is implicit when the test(failing):
-  #   commit is present.
-  # - Combined (iter-4 BLOCKER-1): explicitly omit 'build' so gate_one
-  #   re-runs gate 1 against the shared branch (idempotent at the
-  #   prompt level). Gates 2-4 come from gates_completed in both modes.
-  local done_list
-  if [ "${combined_resume:-0}" -eq 1 ]; then
-    done_list=""
-    if [ -n "$gates_csv" ]; then done_list="$gates_csv"; fi
-  else
-    done_list="build"
-    if [ -n "$gates_csv" ]; then done_list="${done_list},${gates_csv}"; fi
-  fi
+  # All checks pass: the done-list IS the recorded gates_completed, verbatim
+  # (TDD 0024 / FR-40 revised). Sequential and combined modes use identical
+  # logic — gate 1 appears here only when gates_completed records "build" (i.e.
+  # the prior attempt reached BATCH_RESULT: OK). Every gate, including build, is
+  # grounded in the explicit run-state record, not an inferred commit pattern.
+  local done_list="$gates_csv"
   printf -v "$var" '%s' "$done_list"
   export "${var?}"
 }
@@ -324,7 +252,14 @@ gate_one() {  # <tdd> <review-base-ref> <log>
                  echo "BLOCKED (design)${bs#*BLOCKED}"; return 1 ;;
     esac
     case "$bs" in
-      *OK*) : ;;
+      # TDD 0024 / FR-40 (revised): record build-gate completion explicitly the
+      # moment BATCH_RESULT: OK is observed. gates_completed is now the SOLE
+      # source of truth for build-gate completion on resume — the 5th param
+      # appends "build" to the carried-forward array (same additive contract as
+      # test-first / verify / verify-runtime below). A swallowed write would let
+      # a later resume re-run a completed build, so surface failures on stderr.
+      *OK*) set_tdd_state "$slug" building build "" build \
+              || echo "warning: gate_one: could not record build completion for $slug" >&2 ;;
       *) _terminal_state "$slug" failed "" "build did not return OK (${bs:-no BATCH_RESULT})"
          echo "${bs:-FAIL (no BATCH_RESULT; see log)}"; return 1 ;;
     esac
