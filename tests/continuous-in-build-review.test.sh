@@ -579,6 +579,42 @@ echo "[D2] skills/implement/SKILL.md mentions the per-step protocol so the runti
   grep -q 'STEP_COMMIT:' "$F" && ok "SKILL.md names STEP_COMMIT" || bad "SKILL.md should name the STEP_COMMIT sentinel so the runtime contract is discoverable"
 ) || true
 
+# --- §step-5: consolidated final pass picks up every cleared step's tags ---
+echo "[E1] consolidated review_one sees prior patterns from _per_step_review_loop's cleared_step_log writes (TDD 0020 §2 / step 5)"
+( D="$ROOT/E1"; mkdir -p "$D/state.d" "$D/bin"; cd "$D" || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D" RTMPL="$REPO/scripts/review-prompt.md" REVIEW_MODEL=""
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  setup_step_repo "$D/repo" || { bad "setup failed"; exit 0; }
+  _write_tdd_fragment 0020-fix 20 docs/tdd/0020-fix.md 1 building build 1000 1000 "feat/0020-fix" "" log "" "" "" "" "" "" "" "" "" "" "" ""
+  # Per-step review records a pattern tag on step 1's clear (mirrors C3+C4).
+  printf 'minor: nit\npattern_tags: [step5-marker-tag]\nREVIEW_RESULT: PASS\n' > "$D/repo/ctl/review.out"
+  cat > "$D/repo/ctl/build_plan" <<'EOF'
+echo "line 1" >> src/a.txt
+git add -A >/dev/null 2>&1; git commit -q -m "step(1): work" >/dev/null 2>&1
+echo "STEP_COMMIT: 1 $(git rev-parse HEAD)"
+IFS= read -r _reply || true
+echo "BATCH_RESULT: OK"
+EOF
+  _per_step_review_loop 0020-fix docs/tdd/0020-fix.md "$D/e1.log" >/dev/null 2>&1
+  # Now run the consolidated review_one (the existing gate-4 path) with the
+  # SAME fragment. It must pick up the cleared step's pattern tag.
+  cat > "$D/bin/claude" <<EOF
+#!/usr/bin/env bash
+prompt=""
+while [ \$# -gt 0 ]; do case "\$1" in -p) prompt="\$2"; shift 2;; *) shift;; esac; done
+printf '%s' "\$prompt" > "$D/captured-consolidated"
+echo "REVIEW_RESULT: PASS"
+EOF
+  chmod +x "$D/bin/claude"; export PATH="$D/bin:$PATH"
+  cd "$D/repo"
+  review_one "$STATE_DIR/../0020-fix.md" "deadbeef" "$D/consolidated.log" >/dev/null 2>&1
+  grep -q 'step5-marker-tag' "$D/captured-consolidated" 2>/dev/null \
+    && ok "consolidated review prompt carries the per-step cleared pattern tag" \
+    || bad "step 5: review_one (consolidated) should see step1's recorded pattern_tag"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
