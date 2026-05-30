@@ -189,7 +189,13 @@ else
   # and <steps-csv> with the subset of
   # {scaffold,gitignore,linter_config,test_framework_config,git_init}
   # you actually applied this run (comma-separated, no spaces).
-  tl_repo_marker_write "$ver" "<language>" "<steps-csv>"
+  # This marker is the source of truth for re-run short-circuiting: if its write
+  # fails, abort (non-zero, no local marker) rather than leave "local seen, repo
+  # absent" — that silently breaks idempotency.
+  tl_repo_marker_write "$ver" "<language>" "<steps-csv>" || {
+    echo "bootstrap: failed to write docs/.throughline-bootstrap.json — the repo marker is the source of truth for re-run short-circuiting; not recording local state" >&2
+    return 1 2>/dev/null || exit 1
+  }
 
   # FR-33: per-developer local marker (records that deps were installed here).
   # The '|| true' is required: when ${CLAUDE_PLUGIN_DATA} is unwritable the
