@@ -505,6 +505,15 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
   local bpid="$BUILD_PID" build_in build_out
   exec {build_in}>&"${BUILD[1]}"
   exec {build_out}<&"${BUILD[0]}"
+  # Initial user turn (Claude CLI ≥ 2.1.158 + --input-format=stream-json):
+  # the positional `-p "$prompt"` arg is ignored in stream-json input mode —
+  # the user message must arrive as a stream-json event on stdin, or the
+  # build sits on its first turn forever (visible only as SessionStart hook
+  # events with no assistant turn, killed by the inter-event watchdog). Older
+  # CLI versions passed `$prompt` through as a text fallback; 2.1.158 does not.
+  # Best-effort write (the coproc may have died at argv-parse already; the read
+  # loop classifies that case via wait()'s rc).
+  printf '%s\n' "$(_user_turn_json "$prompt")" >&"${build_in}" 2>/dev/null || true
   # NOTE: capture read's status INSIDE the loop. `read_rc=$?` after a
   # `while read; do …; done` would read the WHILE loop's status (0 on normal
   # exit), NOT the failing read's — so a `read -t` timeout (>128) would be
