@@ -168,14 +168,25 @@ ver="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
 # FR-32: ignore throughline's per-run artifacts (idempotent, byte-stable).
 tl_gitignore_add_line "docs/tdd/.implement-logs/"
 
-# FR-31: committed repo marker. Replace <language> with the detected language and
-# <steps-csv> with the subset of
-# {scaffold,gitignore,linter_config,test_framework_config,git_init}
-# you actually applied this run (comma-separated, no spaces).
-tl_repo_marker_write "$ver" "<language>" "<steps-csv>"
+# Guard: a marker with an empty plugin_version_applied is silent corruption —
+# Step 0 reads the field as empty and never short-circuits, so re-runs
+# re-bootstrap forever. If the version could not be read, write NO marker and
+# report it rather than poison the short-circuit.
+if [ -z "$ver" ]; then
+  echo "bootstrap: could not read the plugin version from ${CLAUDE_PLUGIN_ROOT}/.claude-plugin/plugin.json — repo marker NOT written" >&2
+else
+  # FR-31: committed repo marker. Replace <language> with the detected language
+  # and <steps-csv> with the subset of
+  # {scaffold,gitignore,linter_config,test_framework_config,git_init}
+  # you actually applied this run (comma-separated, no spaces).
+  tl_repo_marker_write "$ver" "<language>" "<steps-csv>"
 
-# FR-33: per-developer local marker (records that deps were installed here).
-tl_local_marker_write "$ver" deps_installed
+  # FR-33: per-developer local marker (records that deps were installed here).
+  # The '|| true' is required: when ${CLAUDE_PLUGIN_DATA} is unwritable the
+  # local write fails, but the committed repo marker above is the source of
+  # truth and bootstrap must still complete (see TDD 0009 failure modes).
+  tl_local_marker_write "$ver" deps_installed || true
+fi
 ```
 
 Commit `docs/.throughline-bootstrap.json` and the `.gitignore` change with the
