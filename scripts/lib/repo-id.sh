@@ -17,14 +17,23 @@
 
 # Hash stdin -> hex digest. GNU coreutils `sha256sum` first; BSD `shasum -a 256`
 # fallback (fresh macOS without Homebrew coreutils); else fail (rare).
+#
+# The digest tool runs in a COMMAND SUBSTITUTION, not a `tool | cut` pipeline:
+# piping into `cut` would make the pipeline's exit status `cut`'s (always 0),
+# silently masking a sha256sum failure and yielding an empty digest. Capturing
+# directly lets the tool's non-zero exit propagate so callers fail closed.
 _tl_sha256_hex() {
+  local out
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum | cut -d' ' -f1
+    out="$(sha256sum)" || return 1
   elif command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 | cut -d' ' -f1
+    out="$(shasum -a 256)" || return 1
   else
     return 1
   fi
+  out="${out%%[[:space:]]*}"          # strip the trailing "  -" filename field
+  [ -n "$out" ] || return 1
+  printf '%s' "$out"
 }
 
 tl_repo_id() {
@@ -38,6 +47,12 @@ tl_repo_id() {
   [ -n "$src" ] || src="$toplevel"
   digest="$(printf '%s' "$src" | _tl_sha256_hex)" \
     || { echo "tl_repo_id: need sha256sum or shasum to derive a repo id" >&2; return 1; }
+  # Fail closed: a short/empty/non-hex digest must never silently truncate to a
+  # bogus id. Require at least 12 lowercase hex chars before slicing.
+  case "$digest" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) ;;
+    *) echo "tl_repo_id: digest tool produced an invalid result" >&2; return 1 ;;
+  esac
   printf '%s\n' "${digest:0:12}"
 }
 

@@ -14,12 +14,19 @@
 # `jq`/`python3` are used only to VALIDATE on read (degrading to "assume valid"
 # when neither is installed), keeping the read path soft per FR-36.
 
-# Escape a string for embedding inside a JSON double-quoted value: backslash and
-# double-quote only (the few fields here never carry control chars).
+# Escape a string for embedding inside a JSON double-quoted value. Backslash
+# MUST be escaped first (else it double-escapes the sequences added below), then
+# the double-quote and the JSON control-character escapes (\b \f \n \r \t). This
+# covers every byte that would otherwise break the JSON for these fields.
 _tl_json_escape() {
   local s="$1"
   s="${s//\\/\\\\}"
   s="${s//\"/\\\"}"
+  s="${s//$'\b'/\\b}"
+  s="${s//$'\f'/\\f}"
+  s="${s//$'\n'/\\n}"
+  s="${s//$'\r'/\\r}"
+  s="${s//$'\t'/\\t}"
   printf '%s' "$s"
 }
 
@@ -68,15 +75,20 @@ tl_repo_marker_read() {
 
 # tl_repo_marker_write <plugin_version> <language> <steps_csv>
 tl_repo_marker_write() {
-  local pv="${1-}" lang="${2-}" steps_csv="${3-}" f tmp arr
+  local pv="${1-}" lang="${2-}" steps_csv="${3-}" f dir tmp arr
   f="$(_tl_repo_marker_file)" \
     || { echo "tl_repo_marker_write: not inside a git repo" >&2; return 1; }
-  mkdir -p "$(dirname "$f")" 2>/dev/null || true
+  dir="$(dirname "$f")"
+  mkdir -p "$dir" 2>/dev/null \
+    || { echo "tl_repo_marker_write: cannot create $dir" >&2; return 1; }
   arr="$(_tl_csv_to_json_array "$steps_csv")"
   tmp="$f.tmp.$$"
-  printf '{\n  "schema": 1,\n  "plugin_version_applied": "%s",\n  "language": "%s",\n  "repo_steps_applied": %s,\n  "applied_at": "%s"\n}\n' \
-    "$(_tl_json_escape "$pv")" "$(_tl_json_escape "$lang")" "$arr" "$(_tl_now_utc)" > "$tmp" \
-    && mv -f "$tmp" "$f"
+  if ! printf '{\n  "schema": 1,\n  "plugin_version_applied": "%s",\n  "language": "%s",\n  "repo_steps_applied": %s,\n  "applied_at": "%s"\n}\n' \
+       "$(_tl_json_escape "$pv")" "$(_tl_json_escape "$lang")" "$arr" "$(_tl_now_utc)" > "$tmp"; then
+    echo "tl_repo_marker_write: cannot write $tmp" >&2; rm -f "$tmp"; return 1
+  fi
+  mv -f "$tmp" "$f" \
+    || { echo "tl_repo_marker_write: cannot install $f" >&2; rm -f "$tmp"; return 1; }
 }
 
 # --- local marker ------------------------------------------------------------
@@ -94,7 +106,10 @@ tl_local_marker_write() {
     || { echo "tl_local_marker_write: local marker path unavailable" >&2; return 1; }
   arr="$(_tl_csv_to_json_array "$steps_csv")"
   tmp="$f.tmp.$$"
-  printf '{\n  "schema": 1,\n  "plugin_version_seen": "%s",\n  "local_steps_completed": %s,\n  "updated_at": "%s"\n}\n' \
-    "$(_tl_json_escape "$pv")" "$arr" "$(_tl_now_utc)" > "$tmp" \
-    && mv -f "$tmp" "$f"
+  if ! printf '{\n  "schema": 1,\n  "plugin_version_seen": "%s",\n  "local_steps_completed": %s,\n  "updated_at": "%s"\n}\n' \
+       "$(_tl_json_escape "$pv")" "$arr" "$(_tl_now_utc)" > "$tmp"; then
+    echo "tl_local_marker_write: cannot write $tmp" >&2; rm -f "$tmp"; return 1
+  fi
+  mv -f "$tmp" "$f" \
+    || { echo "tl_local_marker_write: cannot install $f" >&2; rm -f "$tmp"; return 1; }
 }

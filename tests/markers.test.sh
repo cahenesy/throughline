@@ -123,7 +123,7 @@ echo "[F] tl_local_marker_write/read roundtrip under CLAUDE_PLUGIN_DATA"
     || bad "tl_local_marker_read did not echo the local marker"
 ) || true
 
-# --- [G] JSON string escaping (a value with a quote stays valid) -------------
+# --- [G] JSON string escaping (quote AND control chars stay valid) -----------
 echo "[G] string fields are JSON-escaped (write stays parseable)"
 ( R="$(mkrepo "$ROOT/g")"
   ( cd "$R" && bash -c "$SRC; tl_repo_marker_write '1.0\"x' 'sh' 'a'" )
@@ -132,6 +132,15 @@ echo "[G] string fields are JSON-escaped (write stays parseable)"
     ok "a double-quote in a value is escaped and round-trips"
   else
     bad "embedded quote broke the JSON or did not round-trip"
+  fi
+  # A value carrying a newline + tab must NOT break the JSON (control chars are
+  # escaped, not emitted raw).
+  weird="$(printf 'a\tb\nc')"
+  ( cd "$R" && SRC="$SRC" weird="$weird" bash -c 'eval "$SRC"; tl_repo_marker_write "$weird" sh a' )
+  if jq -e . "$f" >/dev/null 2>&1 && [ "$(jq -r '.plugin_version_applied' "$f")" = "$weird" ]; then
+    ok "a tab+newline value is escaped and round-trips"
+  else
+    bad "a control-char value broke the JSON or did not round-trip"
   fi
 ) || true
 
