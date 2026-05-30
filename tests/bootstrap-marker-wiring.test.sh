@@ -107,6 +107,58 @@ echo "[F] the 'On completion' shell block runs and produces both markers + ignor
   fi
 ) || true
 
+# --- [G] an empty plugin version must NOT write a corrupt repo marker --------
+# A failed `sed` (or a versionless plugin.json) yields ver="". Writing the marker
+# with plugin_version_applied="" is silent corruption: Step 0 reads the field as
+# empty and never short-circuits, so re-runs re-bootstrap forever.
+echo "[G] a missing/empty plugin version does not corrupt the repo marker"
+( blk="$(extract_completion_block)"
+  if [ -z "$blk" ]; then
+    bad "[G] no completion block to run"
+  else
+    R="$(mkrepo "$ROOT/g")"; DATA="$ROOT/g-data"
+    blk="${blk//<language>/shell}"; blk="${blk//<steps-csv>/scaffold}"
+    printf '%s' "$blk" > "$ROOT/g.sh"
+    # Fake plugin root whose plugin.json carries NO version field -> ver="".
+    FAKE="$ROOT/g-plugin"; mkdir -p "$FAKE/.claude-plugin"
+    cp -r "$REPO/scripts" "$FAKE/scripts"
+    printf '{ "name": "throughline" }\n' > "$FAKE/.claude-plugin/plugin.json"
+    ( cd "$R" && CLAUDE_PLUGIN_ROOT="$FAKE" CLAUDE_PLUGIN_DATA="$DATA" bash "$ROOT/g.sh" ) >/dev/null 2>&1
+    f="$R/docs/.throughline-bootstrap.json"
+    applied="$(jq -r '.plugin_version_applied // empty' "$f" 2>/dev/null)"
+    if [ ! -f "$f" ] || [ -n "$applied" ]; then
+      ok "no marker written with an empty plugin_version_applied (Step 0 short-circuit stays intact)"
+    else
+      bad "wrote a corrupt marker (empty plugin_version_applied) — Step 0 would never short-circuit"
+    fi
+  fi
+) || true
+
+# --- [H] an unwritable local-marker path must not abort the completion block -
+# TDD 0009 failure modes: when ${CLAUDE_PLUGIN_DATA} is unwritable the local
+# write fails but the committed repo marker (the source of truth) must still
+# land and bootstrap must continue. Run under `set -e` so a missing `|| true`
+# guard on tl_local_marker_write surfaces as a non-zero block exit.
+echo "[H] tl_local_marker_write failure does not abort the completion block"
+( blk="$(extract_completion_block)"
+  if [ -z "$blk" ]; then
+    bad "[H] no completion block to run"
+  else
+    R="$(mkrepo "$ROOT/h")"
+    blk="${blk//<language>/shell}"; blk="${blk//<steps-csv>/scaffold}"
+    { printf 'set -e\n'; printf '%s' "$blk"; } > "$ROOT/h.sh"
+    # CLAUDE_PLUGIN_DATA="" forces tl_local_marker_path (and the write) to fail.
+    if ( cd "$R" && CLAUDE_PLUGIN_ROOT="$REPO" CLAUDE_PLUGIN_DATA="" bash "$ROOT/h.sh" ) >/dev/null 2>&1; then
+      hexit=0; else hexit=1; fi
+    f="$R/docs/.throughline-bootstrap.json"
+    if [ "$hexit" -eq 0 ] && [ -f "$f" ]; then
+      ok "block exits 0 and still wrote the repo marker despite an unwritable local path"
+    else
+      bad "an unwritable local-marker path aborted the block (missing '|| true' guard); exit=$hexit"
+    fi
+  fi
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
