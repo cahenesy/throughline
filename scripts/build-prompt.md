@@ -32,8 +32,11 @@ Build discipline:
          issue. Address the cited finding ONLY (do not change unrelated code
          outside the finding's region), commit the fix on top, emit a fresh
          `STEP_COMMIT: <step-id> <new-sha>` for the SAME `<step-id>`, and
-         block again. The runner's bounded rework loop (TDD 0019) caps this
-         loop's attempts.
+         block again. The overall-build watchdog (`THROUGHLINE_BUILD_TIMEOUT`,
+         default 7200s wall-clock) bounds this BLOCK→re-emit loop's wall-clock
+         duration; per-step rework attempts are NOT counted separately. TDD
+         0019's bounded rework loop runs against the CONSOLIDATED final review
+         after `BATCH_RESULT: OK`, not against per-step BLOCK verdicts.
   Do NOT start the next Sequencing item until you receive `STEP_REVIEW: PASS`.
   Doing so would let uncleared code accumulate, defeating the per-step review
   premise.

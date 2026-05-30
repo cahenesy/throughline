@@ -1,6 +1,6 @@
 # TDD 0020: Continuous in-build review — per-step checkpoints, scoped diff reading, cross-step learning
 
-Status: draft
+Status: implemented
 PRD refs: FR-56, FR-57, FR-59
 PRD-rev: a961955
 ADR constraints: 0003, 0004, 0005, 0006, 0007
