@@ -163,9 +163,15 @@ performed (often just `scaffold`, sometimes an empty CSV). Run, from the repo
 root:
 
 ```bash
-source "${CLAUDE_PLUGIN_ROOT}/scripts/lib/gitignore.sh"
-source "${CLAUDE_PLUGIN_ROOT}/scripts/lib/repo-id.sh"
-source "${CLAUDE_PLUGIN_ROOT}/scripts/lib/markers.sh"
+# The marker steps are NOT optional, so a helper that cannot be sourced must
+# abort loudly rather than turn the write calls below into silent
+# "command not found" no-ops. Bail (with no marker written) if any source fails.
+for _lib in gitignore.sh repo-id.sh markers.sh; do
+  source "${CLAUDE_PLUGIN_ROOT}/scripts/lib/$_lib" || {
+    echo "bootstrap: could not source scripts/lib/$_lib from \${CLAUDE_PLUGIN_ROOT} — markers NOT recorded; fix the plugin path and re-run" >&2
+    return 1 2>/dev/null || exit 1
+  }
+done
 ver="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
         "${CLAUDE_PLUGIN_ROOT}/.claude-plugin/plugin.json" | head -n1)"
 
