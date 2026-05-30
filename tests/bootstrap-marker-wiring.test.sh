@@ -32,6 +32,14 @@ has()  { grep -Fq "$1" "$SKILL"; }   # fixed-string presence
 hasre(){ grep -Eiq "$1" "$SKILL"; }  # case-insensitive regex presence
 mkrepo() { local d="$1"; mkdir -p "$d"; git -C "$d" init -q; printf '%s\n' "$d"; }
 
+# jq-free read of a marker string field — the suite must not hard-depend on jq
+# (TDD 0009 keeps jq optional; only the hook's local notice is gated on it).
+# marker_field <file> <field-name> -> the string value, or "" if absent.
+marker_field() {
+  [ -f "$1" ] || return 0
+  sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" "$1" | head -n1
+}
+
 # Print the first fenced ```bash block that contains tl_repo_marker_write.
 extract_completion_block() {
   awk '
@@ -101,7 +109,7 @@ echo "[F] the 'On completion' shell block runs and produces both markers + ignor
     ( cd "$R" && CLAUDE_PLUGIN_ROOT="$REPO" CLAUDE_PLUGIN_DATA="$DATA" bash "$ROOT/f.sh" ) >/dev/null 2>&1
     ver="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$REPO/.claude-plugin/plugin.json" | head -n1)"
     f="$R/docs/.throughline-bootstrap.json"
-    if [ -f "$f" ] && [ "$(jq -r '.plugin_version_applied' "$f" 2>/dev/null)" = "$ver" ]; then
+    if [ -f "$f" ] && [ "$(marker_field "$f" plugin_version_applied)" = "$ver" ]; then
       ok "running the block wrote the repo marker at the current plugin version"
     else
       bad "the block did not write a correct repo marker (ver=$ver)"
@@ -134,7 +142,7 @@ echo "[G] a missing/empty plugin version does not corrupt the repo marker"
     printf '{ "name": "throughline" }\n' > "$FAKE/.claude-plugin/plugin.json"
     ( cd "$R" && CLAUDE_PLUGIN_ROOT="$FAKE" CLAUDE_PLUGIN_DATA="$DATA" bash "$ROOT/g.sh" ) >/dev/null 2>&1
     f="$R/docs/.throughline-bootstrap.json"
-    applied="$(jq -r '.plugin_version_applied // empty' "$f" 2>/dev/null)"
+    applied="$(marker_field "$f" plugin_version_applied)"
     if [ ! -f "$f" ] || [ -n "$applied" ]; then
       ok "no marker written with an empty plugin_version_applied (Step 0 short-circuit stays intact)"
     else
@@ -201,6 +209,34 @@ echo "[I] Step 0 reads plugin_version_applied without depending on jq"
     fi
   fi
 ) || bad "[I] jq-free Step 0 case aborted before recording a verdict"
+
+# --- [J] a failed helper `source` must NOT silently skip the markers ---------
+# TDD 0009 Components §4: the marker-recording steps are "not optional". If a
+# helper cannot be sourced (wrong/unset CLAUDE_PLUGIN_ROOT), the write helpers
+# become "command not found" and, without a guard, the block limps to a silent
+# exit 0 having recorded nothing. The block must instead fail loudly and write
+# no marker so the operator fixes the path and re-runs.
+echo "[J] completion block fails loudly when a helper cannot be sourced"
+( blk="$(extract_completion_block)"
+  if [ -z "$blk" ]; then
+    bad "[J] no completion block to run"
+  else
+    R="$(mkrepo "$ROOT/j")"; DATA="$ROOT/j-data"
+    blk="${blk//<language>/shell}"; blk="${blk//<steps-csv>/scaffold}"
+    printf '%s' "$blk" > "$ROOT/j.sh"
+    # Plugin root with a valid version but NO scripts/lib -> every source fails.
+    EMPTY="$ROOT/j-empty"; mkdir -p "$EMPTY/.claude-plugin"
+    printf '{ "version": "9.9.9" }\n' > "$EMPTY/.claude-plugin/plugin.json"
+    ( cd "$R" && CLAUDE_PLUGIN_ROOT="$EMPTY" CLAUDE_PLUGIN_DATA="$DATA" bash "$ROOT/j.sh" ) >/dev/null 2>&1
+    rc=$?
+    f="$R/docs/.throughline-bootstrap.json"
+    if [ "$rc" -ne 0 ] && [ ! -f "$f" ]; then
+      ok "block exits non-zero and writes no marker when helpers cannot be sourced"
+    else
+      bad "block continued without the helpers (rc=$rc, marker present=$([ -f "$f" ] && echo yes || echo no))"
+    fi
+  fi
+) || bad "[J] source-failure case aborted before recording a verdict"
 
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
