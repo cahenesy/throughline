@@ -275,6 +275,34 @@ echo "[N] bash fallback refuses to corrupt a draft with an unextractable updated
                                || bad "write_doc mutated the draft: $(cat "$P")"
 ) || true
 
+# --- [O] tl_draft_summary fails (non-zero) on an unparseable draft ------------
+# A corrupt draft must not be masked as success to an exit-code-checking caller.
+echo "[O] tl_draft_summary returns non-zero on an unparseable draft"
+( P="$(dpath prd-author)"; printf 'totally not json {{{' >"$P"
+  set +e
+  s="$(cd "$R" && CLAUDE_PLUGIN_DATA="$DATA" bash -c "source \"$LIB\"; tl_draft_summary prd-author" 2>/dev/null)"; rc=$?
+  set -e
+  [ "$rc" -ne 0 ] && ok "python3 summary non-zero on unparseable draft (rc=$rc)" \
+                  || bad "python3 summary masked corruption (rc=0, out='$s')"
+  NOPY="$(mk_nopy "$ROOT/nopyO")"
+  set +e
+  sf="$(cd "$R" && CLAUDE_PLUGIN_DATA="$DATA" PATH="$NOPY" bash -c "source \"$LIB\"; tl_draft_summary prd-author" 2>/dev/null)"; rc=$?
+  set -e
+  [ "$rc" -ne 0 ] && ok "fallback summary non-zero on unparseable draft (rc=$rc)" \
+                  || bad "fallback summary masked corruption (rc=0, out='$sf')"
+) || true
+
+# --- [P] sourcing drafts.sh leaves the caller's shell options untouched -------
+# "Defines functions only — no top-level side effects": sourcing must not flip
+# the caller's nounset/pipefail (which a top-level `set -uo pipefail` would).
+echo "[P] sourcing drafts.sh leaks no shell options to the caller"
+( leak="$(bash --noprofile --norc -c "set +u +o pipefail; source \"$LIB\"; u=no; case \$- in *u*) u=yes;; esac; p=\$(set -o | awk '/pipefail/{print \$2}'); echo \"nounset=\$u pipefail=\$p\"")"
+  case "$leak" in
+    "nounset=no pipefail=off") ok "drafts.sh leaks no shell options ($leak)" ;;
+    *) bad "drafts.sh leaked shell options to caller: '$leak'" ;;
+  esac
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
