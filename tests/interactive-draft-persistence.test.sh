@@ -230,6 +230,51 @@ echo "[L] tl_draft_append_elicit rejects kinds outside question|decision (FR-50 
   grep -q 'DESIGN_REVIEW' "$P" && bad "a verdict leaked into the draft" || ok "no verdict string in the draft"
 ) || true
 
+# --- [M] tl_draft_path rejects unsafe skill names (path-traversal defense) ----
+echo "[M] tl_draft_path validates the skill name (no traversal / path escape)"
+( for badskill in '../escape' 'a/b' '..' '.hidden' '-x' 'a b'; do
+    if ( cd "$R" && CLAUDE_PLUGIN_DATA="$DATA" bash -c "source \"$LIB\"; tl_draft_path \"$badskill\"" ) >/dev/null 2>&1; then
+      bad "tl_draft_path accepted unsafe skill '$badskill'"
+    else
+      ok "tl_draft_path rejected unsafe skill '$badskill'"
+    fi
+  done
+  # the legitimate names still resolve
+  if ( cd "$R" && CLAUDE_PLUGIN_DATA="$DATA" bash -c "source \"$LIB\"; tl_draft_path prd-author" ) >/dev/null 2>&1; then
+    ok "tl_draft_path still accepts 'prd-author'"
+  else
+    bad "tl_draft_path wrongly rejected 'prd-author'"
+  fi
+) || true
+
+# --- [N] fallback append/write_doc fail loudly instead of corrupting ----------
+# A draft whose updated_at is non-numeric (e.g. null) must NOT be silently
+# spliced into an invalid number by the python3-less path. The helper fails
+# closed and leaves the draft byte-identical.
+echo "[N] bash fallback refuses to corrupt a draft with an unextractable updated_at"
+( NOPY="$(mk_nopy "$ROOT/nopyN")"
+  P="$(dpath prd-author)"
+  bSkel='{"schema":1,"skill":"prd-author","started_at":100,"updated_at":null,"prd_rev_at_start":null,"interview":[],"draft_doc":""}'
+  printf '%s' "$bSkel" >"$P"
+  set +e
+  ( cd "$R" && CLAUDE_PLUGIN_DATA="$DATA" PATH="$NOPY" bash -c \
+      "source \"$LIB\"; tl_draft_append_elicit prd-author question H Q A" ) 2>/dev/null; rc=$?
+  set -e
+  [ "$rc" -ne 0 ] && ok "fallback append fails loudly on unextractable updated_at (rc=$rc)" \
+                  || bad "fallback append returned 0 on a corruptible draft"
+  [ "$(cat "$P")" = "$bSkel" ] && ok "append left the draft byte-identical (atomic, no partial write)" \
+                               || bad "append mutated the draft: $(cat "$P")"
+  printf '%s' "$bSkel" >"$P"
+  set +e
+  ( cd "$R" && CLAUDE_PLUGIN_DATA="$DATA" PATH="$NOPY" bash -c \
+      "source \"$LIB\"; printf 'x' | tl_draft_write_doc prd-author -" ) 2>/dev/null; rc=$?
+  set -e
+  [ "$rc" -ne 0 ] && ok "fallback write_doc fails loudly on unextractable updated_at (rc=$rc)" \
+                  || bad "fallback write_doc returned 0 on a corruptible draft"
+  [ "$(cat "$P")" = "$bSkel" ] && ok "write_doc left the draft byte-identical" \
+                               || bad "write_doc mutated the draft: $(cat "$P")"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
