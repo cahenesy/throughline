@@ -303,6 +303,29 @@ echo "[P] sourcing drafts.sh leaks no shell options to the caller"
   esac
 ) || true
 
+# --- [Q] bash fallback append survives &, backslash, quote in content ---------
+# Bash ${var/pat/repl} treats `&` (and `\`) specially in the REPLACEMENT, so
+# splicing json-escaped user content through it corrupts the draft. The fallback
+# must reproduce the content verbatim — this case was previously uncovered.
+echo "[Q] bash fallback append preserves &/backslash/quote content verbatim"
+( NOPY="$(mk_nopy "$ROOT/nopyQ")"
+  ( cd "$R" && CLAUDE_PLUGIN_DATA="$DATA" PATH="$NOPY" bash -c "source \"$LIB\"; tl_draft_init prd-author" )
+  P="$(dpath prd-author)"
+  ( cd "$R" && CLAUDE_PLUGIN_DATA="$DATA" PATH="$NOPY" bash -c \
+      'source "'"$LIB"'"; tl_draft_append_elicit prd-author question "Tools & flags" "A & B?" "use && and \"quotes\" and a \\ slash"' )
+  # second append so the non-empty-array splice branch is also exercised
+  ( cd "$R" && CLAUDE_PLUGIN_DATA="$DATA" PATH="$NOPY" bash -c \
+      'source "'"$LIB"'"; tl_draft_append_elicit prd-author decision "R&D" "n/a" "x & y & z"' )
+  valid_json "$P" && ok "fallback append with hostile chars -> valid JSON" || bad "fallback corrupted JSON: $(cat "$P")"
+  python3 -c 'import json,sys
+d=json.load(open(sys.argv[1])); iv=d["interview"]
+ok = (iv[0]["header"]=="Tools & flags" and iv[0]["answer"]=="use && and \"quotes\" and a \\ slash"
+      and iv[1]["header"]=="R&D" and iv[1]["answer"]=="x & y & z")
+sys.exit(0 if ok else 1)' "$P" \
+    && ok "fallback preserved &/quotes/backslash verbatim across both splice branches" \
+    || bad "fallback content mismatch: $(cat "$P")"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
