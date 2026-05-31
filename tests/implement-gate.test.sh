@@ -415,4 +415,15 @@ if [ -f "$BCL" ]; then
   bash "$BCL" || BCL_FAIL=1
 fi
 
-[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ] && [ "$SMS_FAIL" -eq 0 ] && [ "$PRM_FAIL" -eq 0 ] && [ "$GRM_FAIL" -eq 0 ] && [ "$BRL_FAIL" -eq 0 ] && [ "$RR_FAIL" -eq 0 ] && [ "$BCL_FAIL" -eq 0 ]
+# Run the build-observability eval (TDD 0010 / FR-36..FR-38) as part of the same
+# suite so the gate-log session pointer (record_session_pointer) and the build /
+# runtime-verify prompt boundaries are regression-gated by ci-checks, not only by
+# the standalone runtime-verify gate. Same rationale as the sibling evals above.
+BO="$(dirname "$0")/build-observability.test.sh"
+BO_FAIL=0
+if [ -f "$BO" ]; then
+  echo
+  bash "$BO" || BO_FAIL=1
+fi
+
+[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ] && [ "$SMS_FAIL" -eq 0 ] && [ "$PRM_FAIL" -eq 0 ] && [ "$GRM_FAIL" -eq 0 ] && [ "$BRL_FAIL" -eq 0 ] && [ "$RR_FAIL" -eq 0 ] && [ "$BCL_FAIL" -eq 0 ] && [ "$BO_FAIL" -eq 0 ]
