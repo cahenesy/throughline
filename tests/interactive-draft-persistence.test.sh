@@ -326,6 +326,35 @@ sys.exit(0 if ok else 1)' "$P" \
     || bad "fallback content mismatch: $(cat "$P")"
 ) || true
 
+# --- [R] bash fallback escapes C0 control chars -> valid JSON (equivalence) ----
+# json_escape only handles \ " \n \r \t; other U+0000–U+001F bytes (e.g. 0x01
+# SOH, 0x0b VTAB, 0x0c FF, 0x08 BS) are forbidden raw in a JSON string. The
+# python3-less path must escape them so the cascade stays equivalent: the parsed
+# draft must round-trip the original bytes (a raw 0x7f is legal JSON, so it may
+# stay raw — equivalence is at the parsed-value level, like python's json).
+echo "[R] bash fallback escapes C0 control characters to valid JSON"
+( NOPY="$(mk_nopy "$ROOT/nopyR")"
+  ctrl="$(printf 'a\001b\013c\014d\010e\177f')"   # SOH VTAB FF BS + a raw DEL
+  export CTRL="$ctrl"
+  ( cd "$R"; export CLAUDE_PLUGIN_DATA="$DATA"; PATH="$NOPY"
+    source "$LIB"
+    tl_draft_init prd-author
+    tl_draft_append_elicit prd-author question H Q "$ctrl"
+  )
+  P="$(dpath prd-author)"
+  valid_json "$P" && ok "fallback append with C0 controls -> valid JSON" || bad "fallback C0 broke JSON: $(od -c "$P" | head -3)"
+  python3 -c 'import json,sys,os
+d=json.load(open(sys.argv[1]))
+sys.exit(0 if d["interview"][0]["answer"]==os.environ["CTRL"] else 1)' "$P" \
+    && ok "fallback round-trips C0-control content to the exact bytes" \
+    || bad "fallback C0 content mismatch"
+  # write_doc fallback path too
+  printf 'doc\013with\001controls\n' | \
+    ( cd "$R"; export CLAUDE_PLUGIN_DATA="$DATA"; PATH="$NOPY"; source "$LIB"; tl_draft_write_doc prd-author - )
+  valid_json "$P" && ok "fallback write_doc with C0 controls -> valid JSON" || bad "fallback write_doc C0 broke JSON: $(od -c "$P" | head -3)"
+  unset CTRL
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
