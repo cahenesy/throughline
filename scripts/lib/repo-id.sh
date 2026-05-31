@@ -1,70 +1,60 @@
 #!/usr/bin/env bash
-# repo-id.sh — deterministic per-repo identity + local-marker path.
+# repo-id.sh — deterministic per-repo identity + local-marker path helper.
 #
 # Sourced by /bootstrap-project, the SessionStart reconcile hook, and any future
-# caller so they all derive the SAME <repo-id> for a given repo (TDD 0009 /
-# FR-33; the path convention TDD 0012 also builds on). No top-level side
-# effects: this file only declares functions.
+# caller so they all compute the SAME <repo-id> for a given repo (TDD 0009,
+# FR-33). Defines functions only — no top-level side effects — so it is safe to
+# source from any context.
 #
-#   tl_repo_id            -> 12 lowercase hex chars identifying $PWD's repo:
-#                            sha256 of `git remote get-url origin` when present,
-#                            else sha256 of the absolute repo toplevel path.
-#                            Exits 1 (msg to stderr) outside a git repo or when
-#                            no sha256 tool is available.
-#   tl_local_marker_path  -> ${CLAUDE_PLUGIN_DATA}/<repo-id>/local.json, creating
-#                            the per-repo dir as a side effect. Exits 1 (msg to
-#                            stderr) when CLAUDE_PLUGIN_DATA is unset/unwritable.
+#   repo_id := sha256_hex_prefix12( git remote get-url origin || abspath(repo_root) )
+#
+# 12 hex chars (48 bits): collision-vanishingly-rare across one developer's
+# repos, short enough for a readable path. sha256sum (GNU coreutils) is tried
+# first, shasum -a 256 (BSD/macOS) second; neither present is a hard error. No
+# Node, no jq — present wherever Bash runs.
 
-# Hash stdin -> hex digest. GNU coreutils `sha256sum` first; BSD `shasum -a 256`
-# fallback (fresh macOS without Homebrew coreutils); else fail (rare).
-#
-# The digest tool runs in a COMMAND SUBSTITUTION, not a `tool | cut` pipeline:
-# piping into `cut` would make the pipeline's exit status `cut`'s (always 0),
-# silently masking a sha256sum failure and yielding an empty digest. Capturing
-# directly lets the tool's non-zero exit propagate so callers fail closed.
-_tl_sha256_hex() {
-  local out
+# _tl_sha256_12 — read stdin, emit the first 12 hex chars of its sha256.
+# Returns 1 (diagnostic to stderr) when no hasher is available.
+_tl_sha256_12() {
   if command -v sha256sum >/dev/null 2>&1; then
-    out="$(sha256sum)" || return 1
+    sha256sum | cut -c1-12
   elif command -v shasum >/dev/null 2>&1; then
-    out="$(shasum -a 256)" || return 1
+    shasum -a 256 | cut -c1-12
   else
+    echo "repo-id: no sha256sum or shasum on PATH" >&2
     return 1
   fi
-  out="${out%%[[:space:]]*}"          # strip the trailing "  -" filename field
-  [ -n "$out" ] || return 1
-  printf '%s' "$out"
 }
 
+# tl_repo_id — echo the 12-hex id for $PWD's containing repo. Returns non-zero
+# when not inside a git repo (so callers can fail closed). Uses the origin
+# remote URL as the hash key when present, else the absolute toplevel path.
 tl_repo_id() {
-  local toplevel src digest
-  toplevel="$(git rev-parse --show-toplevel 2>/dev/null)" \
-    || { echo "tl_repo_id: not inside a git repo" >&2; return 1; }
-  [ -n "$toplevel" ] || { echo "tl_repo_id: not inside a git repo" >&2; return 1; }
-  # Prefer the origin remote URL (stable across clones/paths); else the
-  # absolute toplevel path. sha256 operates on bytes, so any path encodes.
-  src="$(git -C "$toplevel" remote get-url origin 2>/dev/null)"
-  [ -n "$src" ] || src="$toplevel"
-  # `set -o pipefail` scoped to this subshell so a failure in ANY pipeline stage
-  # (not just the last) propagates — defense-in-depth against pipeline masking,
-  # on top of _tl_sha256_hex's direct capture and the digest validation below.
-  digest="$(set -o pipefail; printf '%s' "$src" | _tl_sha256_hex)" \
-    || { echo "tl_repo_id: need sha256sum or shasum to derive a repo id" >&2; return 1; }
-  # Fail closed: a short/empty/non-hex digest must never silently truncate to a
-  # bogus id. Require at least 12 lowercase hex chars before slicing.
-  case "$digest" in
-    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) ;;
-    *) echo "tl_repo_id: digest tool produced an invalid result" >&2; return 1 ;;
-  esac
-  printf '%s\n' "${digest:0:12}"
+  local top
+  top="$(git rev-parse --show-toplevel 2>/dev/null)" || return 1
+  [ -n "$top" ] || return 1
+  local key
+  key="$(git -C "$top" remote get-url origin 2>/dev/null)"
+  [ -n "$key" ] || key="$top"
+  # printf '%s' (no trailing newline) so the hash is of exactly the key bytes.
+  printf '%s' "$key" | _tl_sha256_12
 }
 
+# tl_local_marker_path — echo ${CLAUDE_PLUGIN_DATA}/<repo-id>/local.json and
+# mkdir -p its dir as a side effect. Returns 1 (diagnostic to stderr) when
+# CLAUDE_PLUGIN_DATA is unset/empty, the repo id cannot be derived, or the dir
+# is not writable — letting callers fail closed.
 tl_local_marker_path() {
-  local data="${CLAUDE_PLUGIN_DATA:-}" id dir
-  [ -n "$data" ] || { echo "tl_local_marker_path: CLAUDE_PLUGIN_DATA is unset" >&2; return 1; }
-  id="$(tl_repo_id)" || return 1
-  dir="$data/$id"
-  mkdir -p "$dir" 2>/dev/null || { echo "tl_local_marker_path: cannot create $dir" >&2; return 1; }
-  [ -w "$dir" ] || { echo "tl_local_marker_path: $dir is not writable" >&2; return 1; }
-  printf '%s\n' "$dir/local.json"
+  if [ -z "${CLAUDE_PLUGIN_DATA:-}" ]; then
+    echo "repo-id: CLAUDE_PLUGIN_DATA is not set" >&2
+    return 1
+  fi
+  local id
+  id="$(tl_repo_id)" || { echo "repo-id: cannot derive repo id" >&2; return 1; }
+  local dir="${CLAUDE_PLUGIN_DATA}/${id}"
+  if ! mkdir -p "$dir" 2>/dev/null; then
+    echo "repo-id: cannot create ${dir} (CLAUDE_PLUGIN_DATA not writable)" >&2
+    return 1
+  fi
+  printf '%s/local.json\n' "$dir"
 }

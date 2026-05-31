@@ -505,6 +505,15 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
   local bpid="$BUILD_PID" build_in build_out
   exec {build_in}>&"${BUILD[1]}"
   exec {build_out}<&"${BUILD[0]}"
+  # Initial user turn (Claude CLI ≥ 2.1.158 + --input-format=stream-json):
+  # the positional `-p "$prompt"` arg is ignored in stream-json input mode —
+  # the user message must arrive as a stream-json event on stdin, or the
+  # build sits on its first turn forever (visible only as SessionStart hook
+  # events with no assistant turn, killed by the inter-event watchdog). Older
+  # CLI versions passed `$prompt` through as a text fallback; 2.1.158 does not.
+  # Best-effort write (the coproc may have died at argv-parse already; the read
+  # loop classifies that case via wait()'s rc).
+  printf '%s\n' "$(_user_turn_json "$prompt")" >&"${build_in}" 2>/dev/null || true
   # NOTE: capture read's status INSIDE the loop. `read_rc=$?` after a
   # `while read; do …; done` would read the WHILE loop's status (0 on normal
   # exit), NOT the failing read's — so a `read -t` timeout (>128) would be
@@ -581,6 +590,26 @@ _build_one_gated() {  # <tdd> <log>
   [ "$_rc" -ne 0 ] && return "$_rc"
   bs="$(build_status "$log")"
   case "$bs" in *OK*) return 0 ;; esac
+  # Resume-completion fallback. On resume, when {{CLEARED_STEPS}} already
+  # covers every Sequencing item, the build's reasoning model sometimes treats
+  # the work as already-done and exits with a prose summary instead of emitting
+  # `BATCH_RESULT: OK`. The per-step review path has already vetted every
+  # commit up to last_cleared_review_sha — if that matches the branch HEAD
+  # and the working tree is clean, trust the objective state over the missing
+  # sentinel and synthesize a verdict. Build-prompt's RESUME-COMPLETION CASE
+  # is the belt; this is the suspenders. Empty $bs is the trigger (no FAIL /
+  # BLOCKED sentinel either) — we only synthesize the missing-sentinel case,
+  # never overwrite an explicit FAIL.
+  if [ -z "$bs" ] && [ -n "${STATE_DIR:-}" ] && [ -f "$STATE_DIR/$slug.json" ]; then
+    local cleared_sha head_sha tree_status
+    cleared_sha="$(_read_fragment_field "$STATE_DIR/$slug.json" last_cleared_review_sha 2>/dev/null || true)"
+    head_sha="$(git rev-parse HEAD 2>/dev/null || true)"
+    tree_status="$(git status --porcelain 2>/dev/null || true)"
+    if [ -n "$cleared_sha" ] && [ "$cleared_sha" = "$head_sha" ] && [ -z "$tree_status" ]; then
+      printf 'BATCH_RESULT: OK (synthesized: build exited cleanly without sentinel; last_cleared_review_sha=%s == HEAD, working tree clean)\n' "$cleared_sha" >> "$log"
+      return 0
+    fi
+  fi
   return 1
 }
 _verify_runtime_one_gated() {  # <tdd> <rbase> <log>

@@ -15,6 +15,24 @@ Build discipline:
   work from the killed attempt. Extend or repair on top — do NOT rewrite
   history (the divergence guard rejects rewrites) — then emit its
   `STEP_COMMIT:` sentinel.
+- RESUME-COMPLETION CASE. If on entry you find that `{{CLEARED_STEPS}}` already
+  covers every Sequencing item in the TDD (no work remains), this is a
+  RESUME-COMPLETION turn. Your ONLY task is to emit `BATCH_RESULT: OK` as
+  your final line and end the turn. **This OVERRIDES the entire "Close"
+  section below — do NOT run tests, do NOT run ci-checks.sh, do NOT run
+  shellcheck, do NOT re-verify the working tree, do NOT do anything that
+  spawns a long-running Bash tool call.** Each of those is the JOB OF A
+  LATER GATE (the runner re-runs them after your build returns); doing them
+  inside the build with a >30-minute Bash call will trip the inter-event
+  watchdog before BATCH_RESULT registers and the entire run will pause as
+  transient even though the work is done. The per-step reviews already
+  validated every commit up to HEAD — that is the validation, and it is
+  enough.  Concretely, the resume-completion turn should be: read the TDD,
+  confirm `{{CLEARED_STEPS}}` covers the Sequencing plan, then `git log` to
+  confirm the cleared commits are on the branch, then emit `BATCH_RESULT: OK`.
+  Nothing else. The runner does NOT infer build-done from the cleared list —
+  you MUST declare it. A prose-only "build is complete" message without
+  `BATCH_RESULT: OK` will be classified as a build failure.
 - Implement in the sequence the TDD specifies, one step at a time.
 - AT THE END OF EACH NUMBERED Sequencing item in the TDD, before starting the
   next item, you MUST do the following four-step handshake with the runner

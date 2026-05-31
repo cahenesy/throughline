@@ -1,115 +1,130 @@
 #!/usr/bin/env bash
-# markers.sh — read/write helpers for the two install/update markers (TDD 0009).
+# markers.sh — read/write the two TDD 0009 state markers (FR-31, FR-33).
 #
-#   Repo marker  (docs/.throughline-bootstrap.json, committed):
-#     { schema, plugin_version_applied, language, repo_steps_applied[], applied_at }
-#   Local marker (${CLAUDE_PLUGIN_DATA}/<repo-id>/local.json, per-machine):
-#     { schema, plugin_version_seen, local_steps_completed[], updated_at }
+#   Repo-state marker  (committed):   <repo-root>/docs/.throughline-bootstrap.json
+#   Per-developer marker (per-machine): ${CLAUDE_PLUGIN_DATA}/<repo-id>/local.json
 #
-# Sourced by /bootstrap-project and the SessionStart reconcile hook. The local
-# helpers rely on tl_local_marker_path from repo-id.sh, resolved at call time,
-# so source repo-id.sh alongside this file. No top-level side effects.
-#
-# Writes use printf with manual JSON escaping — no `jq` dependency for WRITING.
-# `jq`/`python3` are used only to VALIDATE on read (degrading to "assume valid"
-# when neither is installed), keeping the read path soft per FR-36.
+# Both carry a top-level integer `schema` field (currently 1). Writes are atomic
+# (`.tmp` + `mv`) and use printf with manual JSON escaping — NO jq dependency for
+# writing. Reading uses jq to validate WHEN PRESENT, degrading to a permissive
+# check otherwise; an absent or malformed marker reads back as `{}` so callers
+# can treat "needs reconcile" uniformly. Defines functions only (sources
+# repo-id.sh for tl_local_marker_path).
 
-# Escape a string for embedding inside a JSON double-quoted value. Backslash
-# MUST be escaped first (else it double-escapes the sequences added below), then
-# the double-quote and the JSON control-character escapes (\b \f \n \r \t). This
-# covers every byte that would otherwise break the JSON for these fields.
+# Source repo-id.sh relative to this file so markers.sh is usable standalone.
+_TL_MARKERS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./repo-id.sh
+. "$_TL_MARKERS_DIR/repo-id.sh"
+
+# _tl_json_escape <str> — escape backslash and double-quote for embedding in a
+# JSON string literal. Sufficient for our fields (versions, language, the closed
+# step enums), which never contain control characters.
 _tl_json_escape() {
   local s="$1"
   s="${s//\\/\\\\}"
   s="${s//\"/\\\"}"
-  s="${s//$'\b'/\\b}"
-  s="${s//$'\f'/\\f}"
-  s="${s//$'\n'/\\n}"
-  s="${s//$'\r'/\\r}"
-  s="${s//$'\t'/\\t}"
   printf '%s' "$s"
 }
 
-# CSV -> JSON array of strings. Empty/blank CSV -> [].
+# _tl_csv_to_json_array <csv> — turn "a,b,c" into ["a", "b", "c"] (empty -> []).
 _tl_csv_to_json_array() {
-  local csv="${1-}" out="" item
-  local -a items=()
-  IFS=',' read -ra items <<<"$csv"
-  for item in "${items[@]}"; do
-    [ -n "$item" ] || continue
-    out="${out:+$out,}\"$(_tl_json_escape "$item")\""
-  done
+  local csv="$1" out="" first=1 tok
+  [ -n "$csv" ] || { printf '[]'; return 0; }
+  while IFS= read -r tok; do
+    [ -n "$tok" ] || continue
+    if [ "$first" -eq 1 ]; then first=0; else out="$out, "; fi
+    out="$out\"$(_tl_json_escape "$tok")\""
+  done < <(printf '%s\n' "$csv" | tr ',' '\n')   # trailing \n so `read` keeps the last token
   printf '[%s]' "$out"
 }
 
-# Validate a JSON file: jq, then python3, else assume valid (non-empty) so the
-# read path never hard-depends on a parser.
-_tl_json_valid() {
+# _tl_now_iso — current time as ISO-8601 UTC, e.g. 2026-05-26T20:30:00Z.
+_tl_now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+# _tl_repo_marker_path — echo <repo-root>/docs/.throughline-bootstrap.json;
+# returns non-zero when not in a git repo.
+_tl_repo_marker_path() {
+  local top
+  top="$(git rev-parse --show-toplevel 2>/dev/null)" || return 1
+  printf '%s/docs/.throughline-bootstrap.json' "$top"
+}
+
+# _tl_marker_read_file <path> — echo the file's JSON if it looks like a marker,
+# else `{}`. Uses jq to validate when present; otherwise falls back to a cheap
+# structural check (a JSON object carrying a "schema" field) so a malformed
+# marker still degrades to `{}` on hosts without jq.
+_tl_marker_read_file() {
   local f="$1"
-  [ -s "$f" ] || return 1
+  [ -f "$f" ] || { printf '{}'; return 0; }
   if command -v jq >/dev/null 2>&1; then
-    jq -e . "$f" >/dev/null 2>&1
-  elif command -v python3 >/dev/null 2>&1; then
-    python3 -m json.tool "$f" >/dev/null 2>&1
-  else
+    if jq -e . "$f" >/dev/null 2>&1; then cat "$f"; else printf '{}'; fi
     return 0
   fi
+  local content stripped
+  content="$(cat "$f")"
+  stripped="$(printf '%s' "$content" | tr -d '[:space:]')"
+  case "$stripped" in
+    \{*\}) if printf '%s' "$content" | grep -q '"schema"'; then printf '%s' "$content"; else printf '{}'; fi ;;
+    *) printf '{}' ;;
+  esac
 }
 
-_tl_now_utc() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+# --- repo-state marker -----------------------------------------------------
 
-_tl_repo_marker_file() {
-  local t
-  t="$(git rev-parse --show-toplevel 2>/dev/null)" || return 1
-  [ -n "$t" ] || return 1
-  printf '%s\n' "$t/docs/.throughline-bootstrap.json"
-}
-
-# --- repo marker -------------------------------------------------------------
-
+# tl_repo_marker_read — echo the repo marker JSON, or `{}` if absent/malformed.
 tl_repo_marker_read() {
   local f
-  f="$(_tl_repo_marker_file)" || { printf '{}\n'; return 0; }
-  if [ -f "$f" ] && _tl_json_valid "$f"; then cat "$f"; else printf '{}\n'; fi
+  f="$(_tl_repo_marker_path)" || { printf '{}'; return 0; }
+  _tl_marker_read_file "$f"
 }
 
-# tl_repo_marker_write <plugin_version> <language> <steps_csv>
+# tl_repo_marker_write <plugin_version> <language> <steps_csv> — atomically
+# write docs/.throughline-bootstrap.json with applied_at = now.
 tl_repo_marker_write() {
-  local pv="${1-}" lang="${2-}" steps_csv="${3-}" f dir tmp arr
-  f="$(_tl_repo_marker_file)" \
-    || { echo "tl_repo_marker_write: not inside a git repo" >&2; return 1; }
-  dir="$(dirname "$f")"
-  mkdir -p "$dir" 2>/dev/null \
-    || { echo "tl_repo_marker_write: cannot create $dir" >&2; return 1; }
-  arr="$(_tl_csv_to_json_array "$steps_csv")"
-  tmp="$f.tmp.$$"
-  if ! printf '{\n  "schema": 1,\n  "plugin_version_applied": "%s",\n  "language": "%s",\n  "repo_steps_applied": %s,\n  "applied_at": "%s"\n}\n' \
-       "$(_tl_json_escape "$pv")" "$(_tl_json_escape "$lang")" "$arr" "$(_tl_now_utc)" > "$tmp"; then
-    echo "tl_repo_marker_write: cannot write $tmp" >&2; rm -f "$tmp"; return 1
-  fi
-  mv -f "$tmp" "$f" \
-    || { echo "tl_repo_marker_write: cannot install $f" >&2; rm -f "$tmp"; return 1; }
+  local version="$1" language="$2" steps_csv="$3"
+  local top
+  top="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+    echo "markers: not inside a git repo" >&2; return 1; }
+  mkdir -p "$top/docs" 2>/dev/null || {
+    echo "markers: cannot create $top/docs" >&2; return 1; }
+  local f="$top/docs/.throughline-bootstrap.json"
+  local tmp="$f.tmp.$$"
+  {
+    printf '{\n'
+    printf '  "schema": 1,\n'
+    printf '  "plugin_version_applied": "%s",\n' "$(_tl_json_escape "$version")"
+    printf '  "language": "%s",\n' "$(_tl_json_escape "$language")"
+    printf '  "repo_steps_applied": %s,\n' "$(_tl_csv_to_json_array "$steps_csv")"
+    printf '  "applied_at": "%s"\n' "$(_tl_now_iso)"
+    printf '}\n'
+  } >"$tmp" || { rm -f "$tmp"; echo "markers: failed to write $tmp" >&2; return 1; }
+  mv -f "$tmp" "$f"
 }
 
-# --- local marker ------------------------------------------------------------
+# --- per-developer local marker --------------------------------------------
 
+# tl_local_marker_read — echo the local marker JSON, or `{}` if absent/malformed
+# or when the local path cannot be derived (CLAUDE_PLUGIN_DATA unset).
 tl_local_marker_read() {
   local f
-  f="$(tl_local_marker_path 2>/dev/null)" || { printf '{}\n'; return 0; }
-  if [ -f "$f" ] && _tl_json_valid "$f"; then cat "$f"; else printf '{}\n'; fi
+  f="$(tl_local_marker_path 2>/dev/null)" || { printf '{}'; return 0; }
+  _tl_marker_read_file "$f"
 }
 
-# tl_local_marker_write <plugin_version> <steps_csv>
+# tl_local_marker_write <plugin_version> <steps_csv> — atomically write
+# ${CLAUDE_PLUGIN_DATA}/<repo-id>/local.json with updated_at = now.
 tl_local_marker_write() {
-  local pv="${1-}" steps_csv="${2-}" f tmp arr
-  f="$(tl_local_marker_path)" \
-    || { echo "tl_local_marker_write: local marker path unavailable" >&2; return 1; }
-  arr="$(_tl_csv_to_json_array "$steps_csv")"
-  tmp="$f.tmp.$$"
-  if ! printf '{\n  "schema": 1,\n  "plugin_version_seen": "%s",\n  "local_steps_completed": %s,\n  "updated_at": "%s"\n}\n' \
-       "$(_tl_json_escape "$pv")" "$arr" "$(_tl_now_utc)" > "$tmp"; then
-    echo "tl_local_marker_write: cannot write $tmp" >&2; rm -f "$tmp"; return 1
-  fi
-  mv -f "$tmp" "$f" \
-    || { echo "tl_local_marker_write: cannot install $f" >&2; rm -f "$tmp"; return 1; }
+  local version="$1" steps_csv="$2"
+  local f
+  f="$(tl_local_marker_path)" || return 1   # also mkdir -p's the dir
+  local tmp="$f.tmp.$$"
+  {
+    printf '{\n'
+    printf '  "schema": 1,\n'
+    printf '  "plugin_version_seen": "%s",\n' "$(_tl_json_escape "$version")"
+    printf '  "local_steps_completed": %s,\n' "$(_tl_csv_to_json_array "$steps_csv")"
+    printf '  "updated_at": "%s"\n' "$(_tl_now_iso)"
+    printf '}\n'
+  } >"$tmp" || { rm -f "$tmp"; echo "markers: failed to write $tmp" >&2; return 1; }
+  mv -f "$tmp" "$f"
 }
