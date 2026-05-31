@@ -4,6 +4,12 @@
 # in skills/implement/SKILL.md; this file is the runner. Keep it terse — read
 # the skill for the rationale.
 #
+# Gate observability & safety boundaries (TDD 0010 / FR-36..38) layer onto those
+# four gates: each `claude -p` gate logs a THROUGHLINE_SESSION: pointer via
+# record_session_pointer (now in lib/pause-retry.sh, called from the gate
+# executors in lib/gates.sh — no longer inline here); the build / runtime-verify
+# scope rules live in scripts/build-prompt.md + verify-runtime-prompt.md.
+#
 #   ./scripts/implement.sh                    # every TDD merged to integration, stacked PRs
 #   ./scripts/implement.sh docs/tdd/0003-x.md # just one TDD
 #   ./scripts/implement.sh --parallel         # independent features, worktrees
@@ -13,11 +19,6 @@
 # Gate 3 (runtime-verify) tiers the model by the plan's complexity (mechanical →
 # sonnet; nontrivial → the build model); override via THROUGHLINE_RUNTIME_VERIFY_MODEL
 # (TDD 0013 / FR-52).
-#
-# Gate observability & safety boundaries (TDD 0010 / FR-36..38): each `claude -p`
-# gate logs a THROUGHLINE_SESSION: pointer via record_session_pointer (now in
-# lib/pause-retry.sh, called from the gate executors in lib/gates.sh); the build /
-# runtime-verify scope rules live in scripts/build-prompt.md + verify-runtime-prompt.md.
 set -uo pipefail
 
 # Sourced library modules (TDD 0015 + 0016 + 0017 / Theme D). Load order is
