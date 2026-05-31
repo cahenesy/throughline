@@ -187,11 +187,22 @@ and `docs/adr/INDEX.md` listing.
 2. Run `/implement docs/tdd/0010-build-observability-and-safety-boundaries.md`
    in a worktree fixture. After the build gate completes (PASS or FAIL),
    inspect the per-TDD log (`docs/tdd/.implement-logs/<ts>/<slug>.log`):
-   `grep -c '^THROUGHLINE_SESSION:' <log>` is exactly `1`, and the path it
-   names is an existing readable file.
+   `grep -c '^THROUGHLINE_SESSION:' <log>` is ≥1, and EVERY path each
+   pointer names resolves to an existing readable JSONL file. The count
+   is dynamic post-[[0020]] — the build gate emits one pointer per
+   `claude -p` invocation, which includes the build coprocess itself
+   PLUS each per-step review subprocess (one per `STEP_COMMIT` handshake)
+   PLUS any step-level rework retries within the build. FR-36's
+   load-bearing observation is path-resolvability for every recorded
+   pointer; the exact count was a pre-[[0020]] proxy.
 3. After the FULL `/implement` run (build + ci-checks.sh + runtime-verify +
-   review), `grep -c '^THROUGHLINE_SESSION:' <log>` is exactly `3` (one per
-   `claude -p` gate: build, runtime-verify, review). Each path resolves.
+   review), `grep -c '^THROUGHLINE_SESSION:' <log>` is ≥3 (at minimum:
+   one for the build coprocess, one for runtime-verify, one for the
+   consolidated review — the three `claude -p` gates that always run).
+   Per-step reviews ([[0020]]) and rework attempts ([[0019]]) add more on
+   any non-trivial build. Every pointer's path must resolve. As in §2,
+   path-resolvability across every recorded pointer is the load-bearing
+   observation; the cumulative count is informational.
 4. `grep -q '^Build-phase boundaries' scripts/build-prompt.md` exits 0;
    `grep -qE 'nested .*claude' scripts/build-prompt.md` exits 0;
    `grep -q 'pkill' scripts/build-prompt.md` exits 0;
