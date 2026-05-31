@@ -23,7 +23,11 @@
 # and the skills share one escaper without duplicating it. No new dependency:
 # python3 is OPTIONAL (jq→python3→bash cascade, same as the runner); mkdir, mv,
 # printf, grep, sed, rm, date are POSIX.
-set -uo pipefail
+#
+# No top-level `set` (matching repo-id.sh / state.sh): this file is SOURCED, so
+# flipping nounset/errexit/pipefail here would leak those options into the
+# caller's shell. Each function is written to be robust on its own (explicit
+# parameter defaults, no reliance on errexit/pipefail).
 
 _TL_DRAFTS_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib/repo-id.sh
@@ -217,7 +221,9 @@ PY
 # tl_draft_summary <skill-name> — echo a one-line resume summary:
 #   <count> elicitations, started <iso8601>, last updated <iso8601> (skill=<skill>, prd_rev=<sha|n/a>)
 # python3 when available, else a grep/sed fallback (lossy but never wrong:
-# missing fields render <unknown>).
+# missing fields render <unknown>). Returns NON-ZERO on an unparseable draft so
+# an exit-code-checking caller is not told corruption succeeded; the
+# `<unparseable draft>` diagnostic goes to stderr.
 tl_draft_summary() {
   local p
   p="$(tl_draft_path "$1")" || return 1
@@ -229,7 +235,7 @@ try:
     with open(sys.argv[1]) as fh:
         d = json.load(fh)
 except Exception:
-    print("<unparseable draft>"); sys.exit(0)
+    print("tl_draft_summary: <unparseable draft>", file=sys.stderr); sys.exit(2)
 def iso(ts):
     try:
         return datetime.datetime.fromtimestamp(int(ts), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -242,6 +248,11 @@ print(f"{n} elicitations, started {iso(d.get('started_at'))}, last updated {iso(
 PY
   else
     local n started updated skill prd
+    # Structural sanity gate (same heuristic as tl_draft_exists' no-python3
+    # path): a draft with no "schema" token is treated as unparseable so the
+    # fallback does not mask corruption with an all-<unknown> line + exit 0.
+    grep -q '"schema"' "$p" 2>/dev/null \
+      || { echo "tl_draft_summary: <unparseable draft>" >&2; return 2; }
     # One "kind": per interview entry; user quotes are escaped so this never
     # over-counts from draft_doc/answer content.
     n="$(grep -o '"kind":' "$p" | wc -l | tr -d ' ')"; n="${n:-0}"
