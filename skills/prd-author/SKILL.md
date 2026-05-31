@@ -31,6 +31,33 @@ relocated. The canonical record is `docs/PRD.md`.
 > snappier back-and-forth. Fast mode keeps Opus, just with faster output, so it
 > suits requirements/design conversation without trading quality.
 
+0. **Resume check.** Source the draft helper:
+   `source "${CLAUDE_PLUGIN_ROOT}/scripts/lib/drafts.sh"`. If
+   `tl_draft_exists prd-author` is true, run `tl_draft_summary prd-author`
+   and present its output to the user via AskUserQuestion with options
+   `Resume from draft` / `Discard and start fresh`. On resume,
+   `tl_draft_read prd-author` and use its `interview` and `draft_doc` as your
+   starting state (do NOT re-elicit anything already in `interview`); the
+   draft already exists, so do NOT call `tl_draft_init`. On discard,
+   `tl_draft_discard prd-author`. On no-existing-draft, simply proceed; do NOT
+   call `tl_draft_init` here. `tl_draft_init` is lazy and is called only at the
+   moment of the first substantive elicitation in step 3 (see below) — so
+   killing the session between steps 0 and 3's first AskUserQuestion leaves no
+   orphaned draft, satisfying FR-46's negative-acceptance clause (killing the
+   session before any answered elicitation leaves no orphaned draft).
+   - If `tl_draft_exists` reports a file present but unparseable, warn "found a
+     draft at `$(tl_draft_path prd-author)` but it is not parseable — ignoring"
+     and proceed as for no-existing-draft (do NOT call `tl_draft_init` here;
+     lazy init at step 3 overwrites the bad file atomically).
+   - **Degraded mode.** If a `tl_draft_*` call fails because
+     `CLAUDE_PLUGIN_DATA` is unset or unwritable (`tl_drafts_dir` returns
+     non-zero with a stderr message), warn the user that draft persistence is
+     unavailable for this run and proceed WITHOUT it — the interview still
+     works, but FR-46's recovery guarantees do not apply. If a `tl_draft_*`
+     call fails partway through the interview, surface the failure immediately
+     and STOP rather than continuing with silent partial persistence.
+   - Running `/prd-author` in two working trees of the same repo at once is
+     unsupported: both map to one per-repo draft and the last writer wins.
 1. Explore the problem space. Establish what exists, who the users are, and
    what success looks like. Ingest any prior design notes (see above).
 2. **Scope check first.** If the ask is really several independent products or
@@ -41,9 +68,25 @@ relocated. The canonical record is `docs/PRD.md`.
    into ambiguity and conflicting goals. Prefer multiple-choice options; don't
    overwhelm — keep each question focused. Apply YAGNI: prune features the user
    doesn't actually need rather than recording them.
+   Before the FIRST `tl_draft_append_elicit` call of this session (and only
+   when no draft was resumed in step 0), run `tl_draft_init prd-author` once to
+   create the draft skeleton. After EACH AskUserQuestion that elicits
+   substantive content, run
+   `tl_draft_append_elicit prd-author question "<header>" "<question text>" "<answer text>"`
+   immediately, BEFORE asking the next question. This persistence is per
+   substantive elicitation (FR-46), not buffered. A substantive design choice
+   you record between questions is appended the same way with `kind` = `decision`.
+   Trivial confirmation prompts (yes/no without semantic content) may skip the
+   append (and do not trigger `tl_draft_init`).
 4. Keep interviewing until the requirements are unambiguous and testable.
 5. Write `docs/PRD.md` from the template. Mark anything unresolved under Open
    questions rather than inventing an answer.
+   - **Before drafting any section, re-read the draft** to refresh your working
+     state across any compaction or long pause: `cat $(tl_draft_path prd-author)`.
+     After EACH section you write or revise, run `tl_draft_write_doc prd-author -`
+     with the in-progress PRD piped to stdin. This is the compaction-survival
+     mechanism (FR-48): the draft on disk is the source of truth across context
+     loss, so anchor your writing on it rather than on a post-compaction summary.
 
 **Observable acceptance criterion (REQUIRED per new requirement).** Every NEW
 requirement states an acceptance criterion phrased as an *observation of the
@@ -70,6 +113,9 @@ After writing the PRD, reread it with fresh eyes and fix issues inline:
 - **Missing acceptance criterion** — every NEW requirement carries an *observable
   acceptance criterion* phrased as an observation of the artifact's surface (see
   above), not "a test exists for X". A new requirement without one is not done.
+- **Draft is the source of truth.** Self-review reads the draft, not in-memory
+  state. If the draft and in-memory state disagree, the draft wins (you may have
+  crossed a compaction). Update your in-memory state from the draft and continue.
 
 Fix and move on (no re-review loop) then commit and open the PR.
 
@@ -103,6 +149,11 @@ Unless the user says "skip git":
 - Open a PR with `gh pr create --fill` (base `main`). `--fill` carries the
   commit message into the PR body, so the cascade audit travels with the PR.
   Do NOT merge — the merge is the human approval gate.
+- After the PR is opened, run `tl_draft_discard prd-author`. This is the ONLY
+  path that discards the draft on success; on any path that exits before PR
+  creation (including a user cancel), the draft persists for a later resume
+  (FR-49). The draft lives outside the repo under `${CLAUDE_PLUGIN_DATA}`, so it
+  is never committed and `git ls-files` can never include it.
 - Tell the user to merge the PRD PR before running `/tdd-author`, so design
   builds on approved requirements. (The PRD commit history is also what
   `/tdd-author` diffs to scope the design work; the cascade audit tells it
