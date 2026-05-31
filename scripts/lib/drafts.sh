@@ -152,7 +152,7 @@ with open(dst, "w") as fh:
 PY
     rc=$?
   else
-    local obj old content
+    local obj old content head tail inner
     obj="$(printf '{"ts":%s,"kind":"%s","header":"%s","question":"%s","answer":"%s"}' \
       "$now" "$(json_escape "$kind")" "$(json_escape "$header")" \
       "$(json_escape "$question")" "$(json_escape "$answer")")"
@@ -162,11 +162,22 @@ PY
       rm -f "$tmp"; return 1
     fi
     content="$(cat "$p")"
+    # updated_at bump: replacement is the numeric $now (no `&`/`\`), so PE
+    # replacement is safe here; the pattern is keyed to "updated_at" so it can
+    # never hit started_at.
     content="${content/\"updated_at\":$old/\"updated_at\":$now}"
-    if [[ "$content" == *'"interview":[]'* ]]; then
-      content="${content/\"interview\":[]/\"interview\":[$obj]}"
-    else
-      content="${content/],\"draft_doc\":/,$obj],\"draft_doc\":}"
+    # Splice the new entry by string-stripping, NOT ${var/pat/repl}: bash treats
+    # `&` and `\` specially in a PE REPLACEMENT, and $obj carries json-escaped
+    # user content (`\"`, `\\`, and any literal `&`), so a `/`-replacement would
+    # corrupt it. Split at the single unescaped `,"draft_doc":` marker; the
+    # interview array's closing `]` is then the last char of $head.
+    head="${content%%,\"draft_doc\":*}"   # {...,"interview":[<entries>]
+    tail="${content#"$head"}"             # ,"draft_doc":"..."}
+    inner="${head%]}"                     # drop the array's closing ]
+    if [ "${inner: -1}" = "[" ]; then     # empty array: ...,"interview":[
+      content="${inner}${obj}]${tail}"
+    else                                  # non-empty: append ,<obj>
+      content="${inner},${obj}]${tail}"
     fi
     printf '%s' "$content" >"$tmp"; rc=$?
   fi
