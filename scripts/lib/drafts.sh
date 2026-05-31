@@ -114,6 +114,35 @@ tl_draft_read() {
   cat "$p"
 }
 
+# _tl_json_escape_full <string> — JSON-escape a free-text string for the
+# python3-less fallback so it is equivalent (at the parsed-value level) to what
+# the python3 path's json.dump emits. json_escape (state.sh) covers the common
+# cases — `\`, `"`, and the `\t`/`\n`/`\r` whitespace controls — but the other
+# C0 control bytes U+0001..U+001F are ILLEGAL raw inside a JSON string, so a bare
+# json_escape would yield invalid JSON for them. This layers the remaining
+# escapes on top: 0x08 → `\b`, 0x0c → `\f`, every other still-raw C0 byte →
+# `\uXXXX`. NUL (0x00) cannot appear in a shell argument (the kernel forbids it
+# in argv), so it need not be handled; DEL (0x7f) is legal raw in JSON and is
+# left untouched (python's encoder leaves it raw too), so content round-trips
+# byte-for-byte. Runs AFTER json_escape so the backslashes introduced here are
+# not double-escaped. Pure bash (printf -v + parameter expansion) — no external
+# tool, so it works in the same degraded environment as the rest of the fallback.
+_tl_json_escape_full() {
+  local s i byte hex
+  s="$(json_escape "${1:-}")"
+  # 1..8, 11, 12, 14..31 — i.e. all of U+0001..U+001F except \t (9), \n (10),
+  # \r (13) which json_escape already turned into their short escapes.
+  for i in 1 2 3 4 5 6 7 8 11 12 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31; do
+    printf -v byte '%b' "\\$(printf '%03o' "$i")"   # the raw control byte itself
+    case "$i" in
+      8)  s=${s//"$byte"/\\b} ;;
+      12) s=${s//"$byte"/\\f} ;;
+      *)  printf -v hex '%04x' "$i"; s=${s//"$byte"/\\u$hex} ;;
+    esac
+  done
+  printf '%s' "$s"
+}
+
 # tl_draft_append_elicit <skill-name> <kind> <header> <question> <answer>
 # — atomically append one entry to interview[] with the current epoch as ts and
 # bump updated_at. <kind> is restricted to the literals `question` / `decision`
@@ -154,8 +183,8 @@ PY
   else
     local obj old content head tail inner
     obj="$(printf '{"ts":%s,"kind":"%s","header":"%s","question":"%s","answer":"%s"}' \
-      "$now" "$(json_escape "$kind")" "$(json_escape "$header")" \
-      "$(json_escape "$question")" "$(json_escape "$answer")")"
+      "$now" "$(json_escape "$kind")" "$(_tl_json_escape_full "$header")" \
+      "$(_tl_json_escape_full "$question")" "$(_tl_json_escape_full "$answer")")"
     old="$(sed -n 's/.*"updated_at":\([0-9]*\)[,}].*/\1/p' "$p" | head -1)"
     if [ -z "$old" ]; then
       echo "tl_draft_append_elicit: cannot locate a numeric updated_at in $p; refusing to corrupt the draft" >&2
@@ -211,7 +240,7 @@ PY
     rc=$?
   else
     local old content prefix esc
-    esc="$(json_escape "$doc")"
+    esc="$(_tl_json_escape_full "$doc")"
     old="$(sed -n 's/.*"updated_at":\([0-9]*\)[,}].*/\1/p' "$p" | head -1)"
     if [ -z "$old" ]; then
       echo "tl_draft_write_doc: cannot locate a numeric updated_at in $p; refusing to corrupt the draft" >&2
