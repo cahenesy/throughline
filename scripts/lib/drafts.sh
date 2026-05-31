@@ -38,11 +38,30 @@ TL_DRAFT_SCHEMA=1
 
 _tl_draft_now() { date +%s; }
 
-# tl_draft_path <skill-name> — echo the absolute draft path for this skill.
-# Propagates tl_drafts_dir's fail-closed behavior (unset/unwritable
-# CLAUDE_PLUGIN_DATA, no repo id).
+# _tl_validate_skill <skill> — return 0 iff the skill name is a safe single path
+# segment, 1 otherwise. The name is interpolated straight into the draft
+# filesystem path, so it must contain only [A-Za-z0-9_-] and not begin with a
+# dash: that rejects `/`, `.` (and thus `..`), whitespace, and any traversal
+# attempt before it can escape the per-repo drafts dir. Same defensive posture
+# as state.sh::_validate_field_name (TDD 0011 / iter-3 MAJOR-4) — all current
+# callers pass the literals `prd-author`/`tdd-author`, but a future caller (or a
+# corrupted prompt) cannot turn this into a path-traversal primitive.
+_tl_validate_skill() {
+  case "${1:-}" in
+    ''|*[!A-Za-z0-9_-]*|-*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+# tl_draft_path <skill-name> — echo the absolute draft path for this skill. This
+# is the single chokepoint every other tl_draft_* helper routes through, so the
+# skill-name validation here guards the whole library boundary. Propagates
+# tl_drafts_dir's fail-closed behavior (unset/unwritable CLAUDE_PLUGIN_DATA, no
+# repo id).
 tl_draft_path() {
   local skill="${1:?tl_draft_path: skill name required}"
+  _tl_validate_skill "$skill" \
+    || { echo "tl_draft_path: invalid skill name '$skill' (expected [A-Za-z0-9_-], no leading dash)" >&2; return 1; }
   local dir
   dir="$(tl_drafts_dir)" || return 1
   printf '%s/%s.json' "$dir" "$skill"
@@ -133,7 +152,11 @@ PY
     obj="$(printf '{"ts":%s,"kind":"%s","header":"%s","question":"%s","answer":"%s"}' \
       "$now" "$(json_escape "$kind")" "$(json_escape "$header")" \
       "$(json_escape "$question")" "$(json_escape "$answer")")"
-    old="$(sed -n 's/.*"updated_at":\([0-9]*\).*/\1/p' "$p" | head -1)"
+    old="$(sed -n 's/.*"updated_at":\([0-9]*\)[,}].*/\1/p' "$p" | head -1)"
+    if [ -z "$old" ]; then
+      echo "tl_draft_append_elicit: cannot locate a numeric updated_at in $p; refusing to corrupt the draft" >&2
+      rm -f "$tmp"; return 1
+    fi
     content="$(cat "$p")"
     content="${content/\"updated_at\":$old/\"updated_at\":$now}"
     if [[ "$content" == *'"interview":[]'* ]]; then
@@ -174,7 +197,11 @@ PY
   else
     local old content prefix esc
     esc="$(json_escape "$doc")"
-    old="$(sed -n 's/.*"updated_at":\([0-9]*\).*/\1/p' "$p" | head -1)"
+    old="$(sed -n 's/.*"updated_at":\([0-9]*\)[,}].*/\1/p' "$p" | head -1)"
+    if [ -z "$old" ]; then
+      echo "tl_draft_write_doc: cannot locate a numeric updated_at in $p; refusing to corrupt the draft" >&2
+      rm -f "$tmp"; return 1
+    fi
     content="$(cat "$p")"
     content="${content/\"updated_at\":$old/\"updated_at\":$now}"
     # draft_doc is the LAST field: strip from its structural marker to EOF, then
