@@ -722,6 +722,47 @@ approved subset as forward context for future design sessions.
   area; the session does not block on the learning; a `/tdd-author` session with
   no overlapping persisted learnings proceeds without surfacing any.
 
+### Build-phase defensive-coding norms
+FR-72/FR-73 close the feedback loop into the *design* phase. This requirement
+closes the complementary loop into the *build* phase: the recurring quality
+classes the reviewer keeps catching (silent error-swallowing, leaked temp files,
+unsafe escaping, sourced-library hygiene, path-traversal, TOCTOU reads,
+hardcoding) are codified as explicit norms the build applies at generation time,
+so the build produces guarded code on the first pass rather than relying on the
+review gate to catch each instance and the rework loop to fix it.
+
+- **FR-74 Build-phase defensive-coding norms.** The build prompt carries an
+  explicit, enumerated set of defensive-coding norms the build applies to every
+  commit it makes — including commits late in a long multi-turn build, not only
+  the first. The norm set codifies the recurring finding classes observed across
+  prior builds: (1) **fail loud** — check every command's return code; no bare
+  `|| true` without a one-line justification; a sourced helper's failure aborts
+  rather than silently continuing; (2) **temp-file cleanup** — every temp file is
+  registered in an `EXIT` trap before it is created; (3) **safe
+  escaping/interpolation** — never hand-roll a JSON escaper (use `jq`; if absent,
+  `python3`; if neither, fail closed with a clear diagnostic); never run bash
+  pattern-substitution (`${v//x/y}`) on an untrusted string (`&` is the
+  matched-text reference); validate before interpolating into `sed`/`eval`/`bash
+  -c`; (4) **sourced-library hygiene** — a sourced library has no top-level side
+  effects and does not leak shell options (`set -uo pipefail`) to its callers;
+  (5) **path/trust-boundary validation** — any filesystem path built from an
+  external identifier is validated against a literal allowlist or a containment
+  check; (6) **read-once** — mutable external state is read once into a variable,
+  not re-read (no TOCTOU window); (7) **no hardcoding** — no hardcoded absolute
+  paths, no non-portable commands. The norm set is a fixed enumerated list in
+  this requirement; a later requirement may source it dynamically from the
+  accepted-learnings store (FR-73) once that store is populated. FR-72/FR-73 feed
+  recurring classes to the *design* phase (`/tdd-author`); FR-74 prevents them at
+  *build* generation time — the two are complementary, not redundant. — Acceptance:
+  in a build whose natural implementation would otherwise exhibit a norm class —
+  e.g. a build that creates a temp file, or emits JSON on a `jq`-absent code path,
+  or calls a command whose failure it must not ignore — the resulting committed
+  diff shows the guarded form (an `EXIT`-trap registration covering the temp file
+  before it is written; a `jq`/`python3` escape rather than a hand-rolled one; an
+  explicit return-code check rather than a silent continue), observable by
+  inspecting that build's committed diff against the specific norm being
+  exercised.
+
 ### Quality hook & delegation
 - **FR-21 Format + lint hook.** A `format-and-lint` PostToolUse hook formats then
   lints edited files when a linter is configured (no-op otherwise), debounced, for
