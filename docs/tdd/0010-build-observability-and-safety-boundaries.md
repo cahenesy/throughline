@@ -1,6 +1,6 @@
 # TDD 0010: Build observability & safety boundaries
 
-Status: draft
+Status: implemented
 PRD refs: FR-36, FR-37, FR-38 (new)
 PRD-rev: f73f2b2
 ADR constraints: 0003, 0004; (proposes ADR 0005)
