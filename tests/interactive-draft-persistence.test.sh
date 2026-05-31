@@ -355,6 +355,27 @@ sys.exit(0 if d["interview"][0]["answer"]==os.environ["CTRL"] else 1)' "$P" \
   unset CTRL
 ) || true
 
+# --- [S] prd-author SKILL.md wires the draft lifecycle into its prompt ---------
+# Steps 3 of TDD 0012's Sequencing plan is verified by reading the skill prompt
+# back: the five prompt edits (Components §4) must be present, each keyed to a
+# stable phrase the design names. No LLM call — keyword presence is the contract.
+echo "[S] prd-author SKILL.md carries the five draft-persistence prompt edits"
+( SK="$REPO/skills/prd-author/SKILL.md"
+  hasF() { grep -qF "$2" "$1"; }
+  [ -f "$SK" ] && ok "prd-author SKILL.md exists" || bad "prd-author SKILL.md missing"
+  hasF "$SK" "scripts/lib/drafts.sh"            && ok "sources drafts.sh"                  || bad "prd-author does not source drafts.sh"
+  hasF "$SK" "Resume check"                     && ok "edit 1: Resume check (step 0)"      || bad "prd-author missing 'Resume check'"
+  hasF "$SK" "tl_draft_exists prd-author"       && ok "edit 1: tl_draft_exists call"       || bad "prd-author missing tl_draft_exists"
+  hasF "$SK" "tl_draft_summary prd-author"      && ok "edit 1: tl_draft_summary call"      || bad "prd-author missing tl_draft_summary"
+  hasF "$SK" "tl_draft_read prd-author"         && ok "edit 1: tl_draft_read on resume"    || bad "prd-author missing tl_draft_read"
+  hasF "$SK" "tl_draft_init prd-author"         && ok "edit 2: lazy tl_draft_init (step 3)" || bad "prd-author missing tl_draft_init"
+  hasF "$SK" "tl_draft_append_elicit prd-author question" && ok "edit 2: append after each elicitation" || bad "prd-author missing tl_draft_append_elicit"
+  hasF "$SK" "re-read the draft"                && ok "edit 3: re-read before each authoring step (FR-48)" || bad "prd-author missing 're-read the draft'"
+  hasF "$SK" "tl_draft_write_doc prd-author"    && ok "edit 3: write_doc after each section" || bad "prd-author missing tl_draft_write_doc"
+  hasF "$SK" "Self-review reads the draft"      && ok "edit 4: self-review-from-draft"     || bad "prd-author missing 'Self-review reads the draft'"
+  hasF "$SK" "tl_draft_discard prd-author"      && ok "edit 5: discard on PR success (FR-49)" || bad "prd-author missing tl_draft_discard"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"

@@ -426,4 +426,15 @@ if [ -f "$BO" ]; then
   bash "$BO" || BO_FAIL=1
 fi
 
-[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ] && [ "$SMS_FAIL" -eq 0 ] && [ "$PRM_FAIL" -eq 0 ] && [ "$GRM_FAIL" -eq 0 ] && [ "$BRL_FAIL" -eq 0 ] && [ "$RR_FAIL" -eq 0 ] && [ "$BCL_FAIL" -eq 0 ] && [ "$BO_FAIL" -eq 0 ]
+# Run the interactive-draft-persistence eval (TDD 0012 / FR-46..FR-50) as part of
+# the same suite so the draft helper (scripts/lib/drafts.sh) AND the prd-author /
+# tdd-author prompt-edit wiring are regression-gated by ci-checks, not orphaned
+# from the aggregator. Same rationale as the sibling evals above.
+IDP="$(dirname "$0")/interactive-draft-persistence.test.sh"
+IDP_FAIL=0
+if [ -f "$IDP" ]; then
+  echo
+  bash "$IDP" || IDP_FAIL=1
+fi
+
+[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ] && [ "$SMS_FAIL" -eq 0 ] && [ "$PRM_FAIL" -eq 0 ] && [ "$GRM_FAIL" -eq 0 ] && [ "$BRL_FAIL" -eq 0 ] && [ "$RR_FAIL" -eq 0 ] && [ "$BCL_FAIL" -eq 0 ] && [ "$BO_FAIL" -eq 0 ] && [ "$IDP_FAIL" -eq 0 ]
