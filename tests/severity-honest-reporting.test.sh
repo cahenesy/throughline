@@ -200,6 +200,44 @@ echo "[S10] re-review counters reject gate/step with regex metacharacters (no se
   [ "$v" = "1" ] && ok "valid gate/step still increments" || bad "valid gate/step should still work (got $v)"
 ) || true
 
+# --- §1/§4/§3: review-prompt.md finding schema + grounding + diff-vs-narrative -
+echo "[P1] review-prompt.md carries the §1 FINDING_BEGIN..END finding schema"
+( cd "$REPO"; F="scripts/review-prompt.md"
+  grep -q 'FINDING_BEGIN'              "$F" && ok "has FINDING_BEGIN"  || bad "review prompt needs the FINDING_BEGIN block opener (§1)"
+  grep -q 'FINDING_END'                "$F" && ok "has FINDING_END"    || bad "review prompt needs the FINDING_END block closer (§1)"
+  grep -qE 'severity:.*blocker.*major.*minor.*nit' "$F" && ok "lists the four severities in the block" || bad "FINDING block needs the severity field listing blocker|major|minor|nit"
+  grep -q 'structural:'                "$F" && ok "has structural field"   || bad "FINDING block needs a structural: field (FR-67c)"
+  grep -q 'region_lines'               "$F" && ok "has region_lines field" || bad "FINDING block needs region_lines (FR-66 scope cap)"
+  grep -q 'evidence:'                  "$F" && ok "has evidence field"      || bad "FINDING block needs an evidence: field"
+  # [B1] strings must survive the rewrite.
+  grep -qi 'pattern_tags'              "$F" && ok "pattern_tags preserved"  || bad "review prompt must keep pattern_tags emission"
+  grep -qi 'recurrent-pattern'         "$F" && ok "recurrent-pattern preserved" || bad "review prompt must keep recurrent-pattern instruction"
+) || true
+
+echo "[P2] review-prompt.md defines the severities and names blocker+major as halting"
+( cd "$REPO"; F="scripts/review-prompt.md"
+  grep -qiE 'blocker.*(unsafe to ship|incorrect behavior|regression|security)' "$F" && ok "defines blocker" || bad "review prompt needs a blocker definition"
+  grep -qiE 'major.*(meaningful flaw|materially|discrepancy)' "$F" && ok "defines major" || bad "review prompt needs a major definition"
+  grep -qiE 'minor.*(does not block|quality concern)' "$F" && ok "defines minor (non-halting)" || bad "review prompt needs a minor definition"
+  grep -qiE 'nit.*(style|polish|does not halt)' "$F" && ok "defines nit (non-halting)" || bad "review prompt needs a nit definition"
+  grep -qiE 'blocker.*(and|/).*major.*(halt|halting)|halting.*blocker.*major' "$F" && ok "names blocker+major the halting set" || bad "review prompt must state blocker+major are the halting severities (FR-58)"
+) || true
+
+echo "[P3] review-prompt.md carries the §4 four-artifact grounding clause"
+( cd "$REPO"; F="scripts/review-prompt.md"
+  grep -q 'git log'             "$F" && ok "names git log artifact"  || bad "grounding clause needs git log (§4 artifact 2)"
+  grep -qi 'run-state record'   "$F" && ok "names run-state record"  || bad "grounding clause needs the run-state record (§4 artifact 4)"
+  grep -q 'evidence-not-grounded' "$F" && ok "names evidence-not-grounded meta-finding" || bad "grounding clause needs the evidence-not-grounded meta-finding tag (§4)"
+) || true
+
+echo "[P4] review-prompt.md carries the §3 diff-vs-narrative honesty check (FR-71)"
+( cd "$REPO"; F="scripts/review-prompt.md"
+  grep -qi 'diff vs narrative\|diff-vs-narrative' "$F" && ok "has the diff-vs-narrative check heading" || bad "review prompt needs the §3 diff-vs-narrative check (FR-71)"
+  grep -q 'BATCH_RESULT'        "$F" && ok "references the BATCH_RESULT narrative" || bad "§3 check must read the build's BATCH_RESULT narrative"
+  grep -q -- '--name-only'      "$F" && ok "cross-checks git diff --name-only" || bad "§3 check must cross-check git diff --name-only"
+  grep -q 'narrative-discrepancy' "$F" && ok "emits narrative-discrepancy pattern_tag" || bad "§3 discrepancy must be a major finding tagged narrative-discrepancy"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
