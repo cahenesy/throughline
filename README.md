@@ -14,6 +14,50 @@ re-implementing them.
 
 ---
 
+## Quick start
+
+**Install** (once per machine — needs Claude Code ≥ 2.1.110 and the official
+marketplace, which you almost certainly already have):
+
+```
+/plugin marketplace add cahenesy/throughline
+/plugin install throughline@throughline
+```
+
+This auto-installs the two official plugins it depends on (superpowers,
+pr-review-toolkit). If dependency resolution complains, add the official
+marketplace first: `/plugin marketplace add anthropics/claude-plugins-official`.
+
+**Set up your repo** (once per project, idempotent):
+
+```
+/bootstrap-project
+```
+
+**Then every feature is one lap of the loop** — one fresh session per command,
+merge the PR it opens before the next command:
+
+| Step | Command | What you get | Your gate |
+|---|---|---|---|
+| 1. Requirements | `/prd-author` | Interviews you → writes/updates `docs/PRD.md` → opens a **PRD PR** | Review + merge it |
+| 2. Design | `/tdd-author` | Diffs the PRD → writes TDDs + ADRs → independent design critique → opens a **design PR** | Review + merge it |
+| 3. Build | `/implement` | Detached runner builds each TDD failing-test-first through **four gates** → opens one **feature PR** per TDD | Review + merge them |
+
+Watch a running build with `/implement-status`. If a build pauses (rate limit,
+halt), re-run `/implement` — it detects the paused run and offers to resume.
+
+That's the whole workflow. Everything below explains *why* it's shaped this way
+and what each gate actually enforces.
+
+**Tried it on a real project?** The most useful feedback is a (sanitized)
+run report — what the gates caught, where it halted, what felt wrong. Open a
+[Discussion](../../discussions). Bugs and halt reports → [Issues](../../issues)
+(templates attach the right run-state artifacts). Want to contribute? See
+[CONTRIBUTING.md](CONTRIBUTING.md) — throughline is built with itself, so
+contributing is the product demo.
+
+---
+
 ## Why use throughline instead of just asking Claude?
 
 Plain Claude Code is excellent at writing code. The problem this overlay solves is
@@ -546,20 +590,10 @@ dependencies. (Cross-marketplace dependency resolution needs Claude Code
 `/security-review`, and the `Explore` agent — ship with Claude Code and need
 no install.
 
-## Install (once per machine)
+## Running the eval suites locally
 
-```
-/plugin marketplace add <your-org>/throughline
-/plugin install throughline@throughline
-```
-
-Bootstrap a new project (or re-bootstrap an existing one — it's idempotent):
-
-```
-/bootstrap-project
-```
-
-If you want to run the eval suites locally before relying on the gates:
+Install and setup are covered in [Quick start](#quick-start) at the top. If you
+want to run the eval suites locally before relying on the gates:
 
 ```
 chmod +x hooks/format-and-lint.sh hooks/throughline-session-reconcile.sh \

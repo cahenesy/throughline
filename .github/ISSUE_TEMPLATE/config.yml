@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Share a run report / general feedback
+    url: https://github.com/cahenesy/throughline/discussions
+    about: Ran throughline on your project? Share your (sanitized) report.md, what the reviewer caught, and what felt wrong — Discussions is the right place.
+  - name: Question about how something works
+    url: https://github.com/cahenesy/throughline/discussions/categories/q-a
+    about: Usage questions go to Discussions Q&A rather than Issues.
