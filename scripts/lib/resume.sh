@@ -121,7 +121,29 @@ _resume_from() {
   var="$(_resume_gates_var "$slug")"
   local fragment_status
   fragment_status="$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$f" | head -1)"
-  [ "$fragment_status" = "paused" ] || return 0
+  if [ "$fragment_status" != "paused" ]; then
+    # TDD 0027 §3c / FR-39: a blocked halt whose halt_next_actions begins with a
+    # resume action (e.g. rework-scope-exceeded → "resume (retries with stricter
+    # scope)") is recoverable. Accept it by flipping the fragment to
+    # paused/transient — the exact edit that previously required hand-surgery —
+    # then fall through to the same validation a paused fragment runs. Any other
+    # non-paused status, and a blocked fragment whose actions are design
+    # escalations only, is not resumable: return 0 so the caller proceeds
+    # normally.
+    local _halt_actions
+    _halt_actions="$(sed -n 's/.*\("halt_next_actions":\[[^]]*\]\).*/\1/p' "$f" | head -1)"
+    if [ "$fragment_status" = "blocked" ] && printf '%s' "$_halt_actions" | grep -qE '(\[|,)"resume'; then
+      local _stage_now
+      if grep -q '"stage":null' "$f" 2>/dev/null; then _stage_now=""
+      else _stage_now="$(sed -n 's/.*"stage":"\([^"]*\)".*/\1/p' "$f" | head -1)"; fi
+      set_tdd_state "$slug" paused "$_stage_now" \
+        || echo "warning: _resume_from $slug: could not flip blocked->paused for resume" >&2
+      _update_paused_cause "$slug" transient \
+        || echo "warning: _resume_from $slug: could not set paused_cause=transient for resume" >&2
+    else
+      return 0
+    fi
+  fi
 
   local branch branch_head_at_pause gates_csv
   branch="$(sed -n 's/.*"branch":"\([^"]*\)".*/\1/p' "$f" | head -1)"
