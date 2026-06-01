@@ -186,6 +186,39 @@ echo "[VP8] verdict-less clean exit (rc=0) resolves to FAIL, never a false PASS"
       || bad "review: rc=0 + no verdict should return 1 (got $rc)" )
 ) || true
 
+# --- [VP3] stale build worktree reclaimed at launch (gap 2) ----------------
+# A worktree left registered by an unclean exit (kill -9 skips the EXIT trap)
+# must be reclaimed before `git worktree add`, so the next /implement proceeds
+# without manual cleanup (FR-43). Build branches live in refs, not the worktree,
+# so removing a stale worktree never discards committed work.
+echo "[VP3] _reclaim_stale_worktree clears a stale worktree so a fresh add succeeds"
+( D="$ROOT/vp3"; mkdir -p "$D"
+  setup_repo "$D"
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  REPORT="$D/report.md"; : > "$REPORT"
+
+  # (a) a genuinely-registered stale worktree.
+  WT="$D/stale-wt"
+  git worktree add --detach "$WT" HEAD >/dev/null 2>&1
+  [ -d "$WT" ] && ok "stale worktree set up (registered)" || bad "could not set up the stale worktree"
+  _reclaim_stale_worktree "$WT" "$REPORT"
+  grep -q "Reclaiming stale build worktree" "$REPORT" \
+    && ok "reclaim logs the 'Reclaiming stale build worktree' line" \
+    || bad "report should carry the reclaim line"
+  if git worktree add --detach "$WT" HEAD >>"$REPORT" 2>&1; then
+    ok "fresh git worktree add succeeds after reclaim (no FATAL)"
+  else
+    bad "fresh git worktree add should succeed after reclaim"
+  fi
+  git worktree remove --force "$WT" >/dev/null 2>&1 || true
+
+  # (b) path exists but is NOT a git worktree (random dir) — rm -rf fallback.
+  WT2="$D/not-a-wt"; mkdir -p "$WT2"; echo junk > "$WT2/file"
+  _reclaim_stale_worktree "$WT2" "$REPORT"
+  [ ! -d "$WT2" ] && ok "non-worktree dir cleared via the rm -rf fallback" \
+    || bad "non-worktree dir at the path should be cleared"
+) || true
+
 # --- report ----------------------------------------------------------------
 n_ok=$(grep -c '^ok$' "$RESULTS" 2>/dev/null); n_ok=${n_ok:-0}
 n_fail=$(grep -c '^fail$' "$RESULTS" 2>/dev/null); n_fail=${n_fail:-0}
