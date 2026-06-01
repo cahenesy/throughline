@@ -240,7 +240,7 @@ build-time surprise:
   inline exception: `- <path> — <N> lines (exception: <one-line justification>)`.
 
   Keep each TDD inside the bounds (defaults: body ≤ `THROUGHLINE_TDD_MAX_LINES`
-  = 350 lines, per-file diff ≤ `THROUGHLINE_TDD_MAX_FILE_DIFF` = 300 lines,
+  = 500 lines, per-file diff ≤ `THROUGHLINE_TDD_MAX_FILE_DIFF` = 300 lines,
   touched files ≤ `THROUGHLINE_TDD_MAX_TOUCHED` = 8). A TDD that blows a bound
   without a recorded exception is refused at design time by step 7b's scope
   pre-pass — split it instead. The bounds are env-overridable for
