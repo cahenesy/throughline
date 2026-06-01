@@ -165,3 +165,44 @@ echo "[S8] _write_run_fragment embeds config.re_review_config in run.json"
   grep -q '"re_review_config":{' "$R" 2>/dev/null && ok "run.json carries config.re_review_config" || bad "run.json should carry config.re_review_config (got: $(cat "$R"))"
   grep -q '"rework_config":{' "$R" 2>/dev/null && ok "rework_config still present (back-compat)" || bad "run.json must still carry rework_config"
 ) || true
+
+echo "[S9] _record_finding fails loud (no silent ledger loss) on a malformed findings array"
+( D="$ROOT/S9"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  _write_tdd_fragment 0021-x 21 docs/tdd/0021-x.md 1 reviewing review 1000 1000 "" "" "" ""
+  F="$D/state.d/0021-x.json"
+  # Corrupt the findings array (truncate its closing bracket) to simulate a
+  # malformed ledger; _record_finding must refuse rather than reset/discard.
+  perl -0pi -e 's/"findings":\[\]/"findings":[{"source":"review"/' "$F" 2>/dev/null \
+    || sed -i 's/"findings":\[\]/"findings":[{"source":"review"/' "$F"
+  if _record_finding 0021-x review "review-1:1" major false "src/a.txt:1-9" 8 "bug" "s" "e" 2>/dev/null; then
+    bad "_record_finding should FAIL on a malformed findings array (fail-loud, no silent reset)"
+  else
+    ok "_record_finding refuses to write on a malformed ledger"
+  fi
+) || true
+
+echo "[S10] re-review counters reject gate/step with regex metacharacters (no sed/grep injection)"
+( D="$ROOT/S10"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  _write_tdd_fragment 0021-x 21 docs/tdd/0021-x.md 1 reviewing review 1000 1000 "" "" "" ""
+  _re_review_attempt_count 0021-x 're.*[/' 1 2>/dev/null && bad "increment must reject a gate with metacharacters" || ok "_re_review_attempt_count rejects metacharacter gate"
+  _re_review_attempt_count 0021-x review 'x9' 2>/dev/null && bad "increment must reject a non-numeric step" || ok "_re_review_attempt_count rejects non-numeric step"
+  _re_review_attempt_count_peek 0021-x 're/d' 1 >/dev/null 2>&1 && bad "peek must reject a metacharacter gate" || ok "_re_review_attempt_count_peek rejects metacharacter gate"
+  # The valid form still works after the guards.
+  v="$(_re_review_attempt_count 0021-x review 1)"
+  [ "$v" = "1" ] && ok "valid gate/step still increments" || bad "valid gate/step should still work (got $v)"
+) || true
+
+echo
+PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
+FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
+rm -f "$RESULTS"
+echo "=== severity-honest-reporting eval: $PASS passed, $FAIL failed ==="
+[ "$FAIL" -eq 0 ]

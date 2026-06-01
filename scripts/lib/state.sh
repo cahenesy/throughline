@@ -1155,7 +1155,19 @@ _record_cleared_step() {  # <slug> <step-id> <base-sha> <head-sha> <pattern-tags
 _rewrite_fragment_findings() {
   local slug="$1" findings_lit="$2" srv_lit="$3" rr_lit="$4"
   local f="${STATE_DIR:-}/$slug.json"
-  [ -n "$STATE_DIR" ] && [ -f "$f" ] || return 0
+  # SOURCE_ONLY / no-run path (STATE_DIR unset) → graceful no-op success, matching
+  # the other fragment writers. But when STATE_DIR IS set and the fragment is
+  # missing (e.g. a TOCTOU removal after the caller's top-of-function existence
+  # check), this is a genuine can't-persist: return NON-ZERO so the §6 counter
+  # setters (_re_review_attempt_count / _incr_self_review_count) propagate the
+  # failure instead of reporting a persisted increment that never landed — a
+  # silent persist failure would let a later _re_review_attempt_count_peek read a
+  # stale count and bypass the THROUGHLINE_RE_REVIEW_MAX budget.
+  [ -z "${STATE_DIR:-}" ] && return 0
+  if [ ! -f "$f" ]; then
+    echo "error: _rewrite_fragment_findings: no fragment $f; refusing to report a §6 write that cannot land" >&2
+    return 1
+  fi
   local n qp path status stage sta branch pr_url log note now
   local paused_cause gates_csv retries_json branch_head
   local halt_cause halt_finding halt_actions_csv halt_detail
@@ -1230,11 +1242,26 @@ _record_finding() {  # <slug> <source> <pass_id> <severity> <structural> <region
   entry="{\"source\":\"$(json_escape "$source")\",\"pass_id\":\"$(json_escape "$pass_id")\",\"severity\":\"$(json_escape "$severity")\",\"structural\":$struct_lit,\"region\":\"$(json_escape "$region")\",\"region_lines\":$region_lines,\"pattern_tags\":$tags_lit,\"summary\":\"$(json_escape "$summary")\",\"evidence\":\"$(json_escape "$evidence")\",\"addressed_at\":null,\"addressed_by_sha\":null}"
   local existing new
   existing="$(_read_fragment_findings "$f")"
-  if [ -z "$existing" ] || [ "$existing" = "[]" ]; then
-    new="[$entry]"
+  if [ -z "$existing" ]; then
+    # An empty reader result is AMBIGUOUS: either the ledger is genuinely empty
+    # (`"findings":[]` / field absent), or it holds findings the greedy reader
+    # could not parse (a corrupt/truncated array, or evidence text that defeats
+    # the anchor). Resetting to "[$entry]" in the latter case would silently
+    # DISCARD the accumulated FR-71 honest-reporting audit trail. Distinguish by
+    # the raw literal: start fresh ONLY when findings is literally [] or absent;
+    # otherwise fail loud and preserve the on-disk state for forensics.
+    if grep -q '"findings":\[\]' "$f" 2>/dev/null || ! grep -q '"findings":' "$f" 2>/dev/null; then
+      new="[$entry]"
+    else
+      echo "error: _record_finding: findings present but unparseable for $slug; refusing to overwrite and lose prior findings" >&2
+      return 1
+    fi
   elif [ "${existing: -1}" != ']' ]; then
-    echo "warning: findings for $slug was malformed (no closing ']'); resetting" >&2
-    new="[$entry]"
+    # Defensive: _read_fragment_findings only ever returns a ]-terminated capture,
+    # so this is normally unreachable — but keep the fail-loud guard rather than a
+    # silent reset in case the reader's contract ever changes.
+    echo "error: _record_finding: findings ledger for $slug is malformed (no closing ']'); refusing to write and lose prior findings" >&2
+    return 1
   else
     new="${existing%]},$entry]"
   fi
@@ -1275,6 +1302,12 @@ _incr_self_review_count() {  # <slug> [<delta>]
 # seeds its budget check from this so a pause+resume preserves the cap.
 _re_review_attempt_count_peek() {  # <slug> <gate> <step>
   local slug="$1" gate="$2" step="$3"
+  # Validate gate/step BEFORE building $key — it is interpolated raw into sed/grep
+  # patterns below, so a metacharacter (`.` `*` `[` `\` `/`) would corrupt the
+  # match. gate is an identifier; step is numeric. Reject anything else rather
+  # than rely on the caller (matches the codebase's numeric-guard discipline).
+  case "$gate" in ''|*[!a-zA-Z0-9_-]*) echo "error: _re_review_attempt_count_peek: invalid gate '$gate'" >&2; return 1 ;; esac
+  case "$step" in ''|*[!0-9]*)         echo "error: _re_review_attempt_count_peek: invalid step '$step'" >&2; return 1 ;; esac
   local f="${STATE_DIR:-}/$slug.json" key="$gate:$step" obj cur
   if [ -z "${STATE_DIR:-}" ] || [ ! -f "$f" ]; then echo 0; return 0; fi
   obj="$(_read_fragment_raw_object "$f" re_review_attempts)"
@@ -1290,6 +1323,12 @@ _re_review_attempt_count_peek() {  # <slug> <gate> <step>
 # scope-tightening for issue #35) against it.
 _re_review_attempt_count() {  # <slug> <gate> <step>
   local slug="$1" gate="$2" step="$3"
+  # Validate gate/step BEFORE building $key — it is interpolated raw into the
+  # sed/grep/sed-replace patterns below (a metacharacter would corrupt the match
+  # or, in the sed replacement, mis-edit the object). gate is an identifier; step
+  # is numeric. Reject anything else rather than rely on the caller.
+  case "$gate" in ''|*[!a-zA-Z0-9_-]*) echo "error: _re_review_attempt_count: invalid gate '$gate'" >&2; return 1 ;; esac
+  case "$step" in ''|*[!0-9]*)         echo "error: _re_review_attempt_count: invalid step '$step'" >&2; return 1 ;; esac
   local f="${STATE_DIR:-}/$slug.json"
   if [ -z "${STATE_DIR:-}" ] || [ ! -f "$f" ]; then
     echo "error: _re_review_attempt_count: no state fragment for $slug ($f)" >&2
