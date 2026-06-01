@@ -397,6 +397,43 @@ echo "[VP6c] resume refuses when the blocked->paused flip write fails"
   [ -z "${!vC:-}" ] && ok "no gates-done var set on refusal" || bad "no gates-done var should be set on refusal"
 ) || true
 
+# --- [VP6d] the blocked->paused flip is atomic (no half-written window) ------
+# A non-atomic flip (set status, then set cause) has a window where the status
+# write lands but the cause write fails, leaving status=paused with a null
+# paused_cause — indistinguishable from a normal paused fragment, which the NEXT
+# resume invocation silently accepts. The flip must be a SINGLE write so the
+# fragment is EITHER still blocked OR fully paused+transient, never a mix.
+echo "[VP6d] a failed flip never leaves status=paused with a null cause"
+( D="$ROOT/vp6d"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE=sequential
+  export INTEGRATION=master CHANGE=ci LOGDIR="$D" RESUME=1
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  write_blocked 0001-alpha 1 rework-scope-exceeded \
+    "resume (retries with stricter scope),revise TDD bounds via /tdd-author"
+  F="$D/state.d/0001-alpha.json"
+  # Make the SECOND write of a two-step flip fail (the cause write). An atomic
+  # single-write flip never reaches a second write, so this leaves no half-state.
+  _update_paused_cause() { return 1; }
+  _resume_from 0001-alpha >/dev/null 2>&1 || true
+  st="$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$F" | head -1)"
+  if grep -q '"paused_cause":null' "$F" 2>/dev/null; then ca=""
+  else ca="$(sed -n 's/.*"paused_cause":"\([^"]*\)".*/\1/p' "$F" | head -1)"; fi
+  if [ "$st" = "paused" ] && [ -z "$ca" ]; then
+    bad "atomicity violated: status=paused with null paused_cause after a failed flip"
+  else
+    ok "no half-written paused/null-cause fragment after a failed flip (st=$st cause=${ca:-null})"
+  fi
+  # And a second invocation must not silently accept a partially-flipped fragment.
+  RESUME_REFUSE_CAUSE=""
+  _resume_from 0001-alpha >/dev/null 2>&1; rc2=$?
+  if [ "$st" = "paused" ] && [ -z "$ca" ] && [ "$rc2" = "0" ]; then
+    bad "second invocation silently accepted a half-written fragment as a valid resume"
+  else
+    ok "second invocation does not silently accept a half-written fragment"
+  fi
+) || true
+
 # --- report ----------------------------------------------------------------
 n_ok=$(grep -c '^ok$' "$RESULTS" 2>/dev/null); n_ok=${n_ok:-0}
 n_fail=$(grep -c '^fail$' "$RESULTS" 2>/dev/null); n_fail=${n_fail:-0}
