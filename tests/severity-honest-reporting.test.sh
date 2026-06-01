@@ -238,6 +238,58 @@ echo "[P4] review-prompt.md carries the §3 diff-vs-narrative honesty check (FR-
   grep -q 'narrative-discrepancy' "$F" && ok "emits narrative-discrepancy pattern_tag" || bad "§3 discrepancy must be a major finding tagged narrative-discrepancy"
 ) || true
 
+# --- §3: _diff_vs_narrative_facts helper + interpolation wiring ---------------
+echo "[D1] _diff_vs_narrative_facts surfaces the BATCH_RESULT line + git --name-only ground truth"
+( D="$ROOT/D1/repo"; mkdir -p "$D"
+  export STATE_DIR="$ROOT/D1/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$ROOT/D1"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  cd "$D"; git init -q; git config user.email t@t.t; git config user.name t
+  printf 'base\n' > seed.txt; git add -A; git commit -qm base; BASE="$(git rev-parse HEAD)"
+  for fn in a b c d e; do printf 'x\n' > "src_$fn.txt"; done
+  git add -A; git commit -qm work
+  L="$ROOT/D1/build.log"
+  printf 'Implemented the change.\nI touched two files: src_a.txt and src_b.txt.\nBATCH_RESULT: OK\n' > "$L"
+  out="$(_diff_vs_narrative_facts "$L" "$BASE")"
+  printf '%s' "$out" | grep -q 'BATCH_RESULT: OK' && ok "surfaces the BATCH_RESULT verdict line" || bad "facts block must carry the BATCH_RESULT line (got: $out)"
+  printf '%s' "$out" | grep -q 'src_e.txt' && ok "surfaces git --name-only ground truth (all 5 files)" || bad "facts block must list the git-touched files (got: $out)"
+  printf '%s' "$out" | grep -qE 'git-touched-file-count: *5' && ok "reports the git-derived file count (5, not the narrative's 2)" || bad "facts block must report the git file count (got: $out)"
+  printf '%s' "$out" | grep -q 'src_a.txt and src_b.txt' && ok "surfaces the author narrative for comparison" || bad "facts block should carry the narrative region (got: $out)"
+) || true
+
+echo "[D2] _diff_vs_narrative_facts reports narrative-missing when the log has no BATCH_RESULT"
+( D="$ROOT/D2/repo"; mkdir -p "$D"
+  export STATE_DIR="$ROOT/D2/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$ROOT/D2"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  cd "$D"; git init -q; git config user.email t@t.t; git config user.name t
+  printf 'base\n' > seed.txt; git add -A; git commit -qm base; BASE="$(git rev-parse HEAD)"
+  L="$ROOT/D2/build.log"; printf 'some build output with no terminal sentinel\n' > "$L"
+  out="$(_diff_vs_narrative_facts "$L" "$BASE")"
+  printf '%s' "$out" | grep -q 'narrative-missing' && ok "reports narrative-missing (§Failure modes)" || bad "no-BATCH_RESULT log must report narrative-missing (got: $out)"
+) || true
+
+echo "[D3] _render_review_prompt substitutes {{DIFF_VS_NARRATIVE_FACTS}} (6th arg) and never leaks it"
+( D="$ROOT/D3"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D" RTMPL="$REPO/scripts/review-prompt.md"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  out="$(_render_review_prompt docs/tdd/0021-x.md base999 head888 "build/ci/0021-x" "tag-a" "MY_FACTS_BLOCK_MARKER")"
+  printf '%s' "$out" | grep -q 'MY_FACTS_BLOCK_MARKER' && ok "facts block substituted into the prompt" || bad "6th-arg facts should substitute {{DIFF_VS_NARRATIVE_FACTS}}"
+  printf '%s' "$out" | grep -q '{{DIFF_VS_NARRATIVE_FACTS}}' && bad "raw {{DIFF_VS_NARRATIVE_FACTS}} leaked" || ok "no raw facts placeholder leaks (with facts)"
+  # Empty 6th arg (per-step pass) must still leave no raw placeholder.
+  out2="$(_render_review_prompt docs/tdd/0021-x.md base999 head888 "br" "")"
+  printf '%s' "$out2" | grep -q '{{DIFF_VS_NARRATIVE_FACTS}}' && bad "raw placeholder leaked when facts empty" || ok "no raw placeholder leaks when facts empty"
+) || true
+
+echo "[D4] review-prompt.md carries the {{DIFF_VS_NARRATIVE_FACTS}} interpolation point"
+( cd "$REPO"; F="scripts/review-prompt.md"
+  grep -q '{{DIFF_VS_NARRATIVE_FACTS}}' "$F" && ok "review prompt has the facts interpolation point" || bad "review prompt needs the {{DIFF_VS_NARRATIVE_FACTS}} placeholder (§3 wiring)"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
