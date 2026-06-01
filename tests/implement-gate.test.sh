@@ -437,4 +437,15 @@ if [ -f "$IDP" ]; then
   bash "$IDP" || IDP_FAIL=1
 fi
 
-[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ] && [ "$SMS_FAIL" -eq 0 ] && [ "$PRM_FAIL" -eq 0 ] && [ "$GRM_FAIL" -eq 0 ] && [ "$BRL_FAIL" -eq 0 ] && [ "$RR_FAIL" -eq 0 ] && [ "$BCL_FAIL" -eq 0 ] && [ "$BO_FAIL" -eq 0 ] && [ "$IDP_FAIL" -eq 0 ]
+# Run the runner-resilience eval (TDD 0027 / FR-39, FR-41, FR-42, FR-43, NFR-4)
+# as part of the same suite — it pins the gate-child watchdog, worktree reclaim,
+# fast-forward + blocked-state resume, and verdict-before-exit-code ordering, all
+# runner-adjacent resilience gates that belong with the other evals above.
+RES="$(dirname "$0")/runner-resilience.test.sh"
+RES_FAIL=0
+if [ -f "$RES" ]; then
+  echo
+  bash "$RES" || RES_FAIL=1
+fi
+
+[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ] && [ "$SMS_FAIL" -eq 0 ] && [ "$PRM_FAIL" -eq 0 ] && [ "$GRM_FAIL" -eq 0 ] && [ "$BRL_FAIL" -eq 0 ] && [ "$RR_FAIL" -eq 0 ] && [ "$BCL_FAIL" -eq 0 ] && [ "$BO_FAIL" -eq 0 ] && [ "$IDP_FAIL" -eq 0 ] && [ "$RES_FAIL" -eq 0 ]

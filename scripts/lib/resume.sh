@@ -121,7 +121,38 @@ _resume_from() {
   var="$(_resume_gates_var "$slug")"
   local fragment_status
   fragment_status="$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$f" | head -1)"
-  [ "$fragment_status" = "paused" ] || return 0
+  if [ "$fragment_status" != "paused" ]; then
+    # TDD 0027 §3c / FR-39: a blocked halt whose halt_next_actions begins with a
+    # resume action (e.g. rework-scope-exceeded → "resume (retries with stricter
+    # scope)") is recoverable. Accept it by flipping the fragment to
+    # paused/transient — the exact edit that previously required hand-surgery —
+    # then fall through to the same validation a paused fragment runs. Any other
+    # non-paused status, and a blocked fragment whose actions are design
+    # escalations only, is not resumable: return 0 so the caller proceeds
+    # normally.
+    local _halt_actions
+    _halt_actions="$(sed -n 's/.*\("halt_next_actions":\[[^]]*\]\).*/\1/p' "$f" | head -1)"
+    if [ "$fragment_status" = "blocked" ] && printf '%s' "$_halt_actions" | grep -qE '(\[|,)"resume'; then
+      local _stage_now
+      if grep -q '"stage":null' "$f" 2>/dev/null; then _stage_now=""
+      else _stage_now="$(sed -n 's/.*"stage":"\([^"]*\)".*/\1/p' "$f" | head -1)"; fi
+      # ATOMIC flip blocked → paused/transient (single write). On failure REFUSE
+      # the resume (rc=3) rather than fall through: a half-written fragment would
+      # otherwise be treated as a valid resume while the on-disk state contradicts
+      # that — a silent-success assumption. Because the flip is one write, a
+      # failure leaves the fragment EITHER still blocked (re-gated on the next
+      # invocation) OR fully paused+transient — never a status=paused/null-cause
+      # mix that the next _resume_from would silently accept. The driver reads
+      # RESUME_REFUSE_CAUSE and skips the TDD with a diagnostic.
+      if ! _accept_blocked_as_paused "$slug" "$_stage_now"; then
+        echo "error: _resume_from $slug: could not flip blocked->paused for resume; refusing" >&2
+        RESUME_REFUSE_CAUSE="resume-blocked-state-write-failed"
+        return 3
+      fi
+    else
+      return 0
+    fi
+  fi
 
   local branch branch_head_at_pause gates_csv
   branch="$(sed -n 's/.*"branch":"\([^"]*\)".*/\1/p' "$f" | head -1)"
@@ -150,11 +181,24 @@ _resume_from() {
     local current_head
     current_head="$(git rev-parse --verify "refs/heads/$branch" 2>/dev/null || true)"
     if [ -n "$current_head" ] && [ "$current_head" != "$branch_head_at_pause" ]; then
-      # iter-10 M-3: expose cause via global for drivers.
-      RESUME_REFUSE_CAUSE="resume-blocked-branch-divergence"
-      _update_paused_cause "$slug" "$RESUME_REFUSE_CAUSE" \
-        || echo "warning: _resume_from $slug: could not update paused_cause (status.sh may show stale cause)" >&2
-      return 3   # see BLOCKER-2
+      # TDD 0027 §3b / FR-41: a head difference is not always a rewrite. If the
+      # recorded SHA is an ANCESTOR of the current head, the branch merely
+      # advanced (commits added, none rewritten) — e.g. the runner was killed
+      # after committing but before updating the fragment. That is continuation,
+      # not rewrite: accept it, advance branch_head_at_pause to the current head,
+      # and fall through to resume. A non-ancestor head (true rewrite, or a
+      # deleted/recreated branch where merge-base fails) is refused exactly as
+      # before.
+      if git merge-base --is-ancestor "$branch_head_at_pause" "$current_head" 2>/dev/null; then
+        _update_branch_head_at_pause "$slug" "$current_head" \
+          || echo "warning: _resume_from $slug: could not advance branch_head_at_pause after fast-forward" >&2
+      else
+        # iter-10 M-3: expose cause via global for drivers.
+        RESUME_REFUSE_CAUSE="resume-blocked-branch-divergence"
+        _update_paused_cause "$slug" "$RESUME_REFUSE_CAUSE" \
+          || echo "warning: _resume_from $slug: could not update paused_cause (status.sh may show stale cause)" >&2
+        return 3   # see BLOCKER-2
+      fi
     fi
   fi
 

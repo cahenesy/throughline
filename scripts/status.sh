@@ -451,13 +451,27 @@ if [ "$CHECK_PAUSED" -eq 1 ]; then
     [ -f "$f" ] || continue
     case "$(basename "$f")" in run.json) continue ;; esac
     st="$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$f" | head -1)"
-    [ "$st" = "paused" ] || continue
     slug="$(sed -n 's/.*"slug":"\([^"]*\)".*/\1/p' "$f" | head -1)"
     if grep -q '"stage":null' "$f" 2>/dev/null; then stage="-"
     else stage="$(sed -n 's/.*"stage":"\([^"]*\)".*/\1/p' "$f" | head -1)"; fi
-    if grep -q '"paused_cause":null' "$f" 2>/dev/null; then cause="-"
-    else cause="$(sed -n 's/.*"paused_cause":"\([^"]*\)".*/\1/p' "$f" | head -1)"; fi
-    printf 'slug=%s gate=%s cause=%s\n' "$slug" "${stage:--}" "${cause:--}"
+    if [ "$st" = "paused" ]; then
+      if grep -q '"paused_cause":null' "$f" 2>/dev/null; then cause="-"
+      else cause="$(sed -n 's/.*"paused_cause":"\([^"]*\)".*/\1/p' "$f" | head -1)"; fi
+      # Plain paused lines stay exactly as they were (no marker) so existing
+      # consumers parse unchanged.
+      printf 'slug=%s gate=%s cause=%s\n' "$slug" "${stage:--}" "${cause:--}"
+    elif [ "$st" = "blocked" ]; then
+      # TDD 0027 §3a / FR-39: a blocked halt whose halt_next_actions array
+      # contains an entry beginning `resume` is recoverable — surface it with a
+      # trailing resumable=blocked marker (cause = the halt_cause, since
+      # paused_cause is null for a blocked fragment). Other blocked causes
+      # (design escalations) carry no resume prefix and stay unsurfaced.
+      acts="$(sed -n 's/.*\("halt_next_actions":\[[^]]*\]\).*/\1/p' "$f" | head -1)"
+      printf '%s' "$acts" | grep -qE '(\[|,)"resume' || continue
+      if grep -q '"halt_cause":null' "$f" 2>/dev/null; then cause="-"
+      else cause="$(sed -n 's/.*"halt_cause":"\([^"]*\)".*/\1/p' "$f" | head -1)"; fi
+      printf 'slug=%s gate=%s cause=%s resumable=blocked\n' "$slug" "${stage:--}" "${cause:--}"
+    fi
   done
   exit 0
 fi

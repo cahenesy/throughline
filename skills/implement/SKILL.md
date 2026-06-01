@@ -37,6 +37,14 @@ that asks.
    - If output names a paused run, output is one line per paused TDD in
      the format `slug=<slug> gate=<gate> cause=<cause>`. Use the FIRST
      line (the run's resume-point per FR-40's per-TDD queue order).
+   - A line may also carry a trailing `resumable=blocked` marker
+     (TDD 0027 / FR-39): the run did not pause but *halted blocked* on a
+     recoverable cause whose `halt_next_actions` begins with a resume
+     action (e.g. `rework-scope-exceeded`). Treat it like a paused line —
+     it is offerable for Resume; `cause=<cause>` is the `halt_cause`.
+     Resume flips it to paused/transient itself, so no manual state edit
+     is needed. Blocked halts WITHOUT the marker (design escalations) are
+     not surfaced here and stay human-routed via /tdd-author.
 2. **Lock-alive race guard (TDD 0011 / iter-3 MAJOR-2).** A paused
    fragment can briefly coexist with a live lock — the runner's atomic
    `mv` lands the fragment a moment before the EXIT trap removes
