@@ -687,6 +687,60 @@ set_tdd_meta() {
   fi
 }
 
+# _update_branch_head_at_pause <slug> <sha> (TDD 0027 §3b / FR-41)
+# Mutate just the branch_head_at_pause field of a fragment, preserving every other
+# field — the round-trip-and-mutate-one-field shape of _update_paused_cause
+# (resume.sh). Used by the resume divergence guard when the branch fast-forwarded
+# past the recorded SHA (commits added, none rewritten): the recorded head is
+# advanced to the current head so the accepted continuation is recorded honestly.
+# Lives in state.sh (sourced before resume.sh) because it is a state-write
+# primitive, not resume orchestration. Fails loudly on a missing fragment so a
+# stray caller can never silently lose state.
+_update_branch_head_at_pause() {  # <slug> <sha>
+  local slug="$1" new_head="$2"
+  local f="${STATE_DIR:-}/$slug.json"
+  if [ -z "${STATE_DIR:-}" ] || [ ! -f "$f" ]; then
+    echo "error: _update_branch_head_at_pause cannot update $slug: state fragment missing ($f)" >&2
+    return 1
+  fi
+  local n qp path status stage sta branch pr_url log_f note paused_cause
+  local gates_csv retries_json
+  local halt_cause halt_finding halt_actions_csv halt_detail
+  local rework_attempts rework_log build_attempt last_cleared_sha cleared_step_log
+  n="$(sed -n 's/.*"n":\([0-9]*\).*/\1/p'            "$f" | head -1)"
+  qp="$(sed -n 's/.*"queue_pos":\([0-9]*\).*/\1/p'   "$f" | head -1)"
+  path="$(sed -n 's/.*"path":"\([^"]*\)".*/\1/p'     "$f" | head -1)"
+  status="$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+  if grep -q '"stage":null' "$f" 2>/dev/null; then stage=""
+  else stage="$(sed -n 's/.*"stage":"\([^"]*\)".*/\1/p' "$f" | head -1)"; fi
+  sta="$(sed -n 's/.*"started_at":\([0-9]*\).*/\1/p' "$f" | head -1)"
+  branch="$(sed -n 's/.*"branch":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+  pr_url="$(sed -n 's/.*"pr_url":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+  log_f="$(sed -n 's/.*"log":"\([^"]*\)".*/\1/p'     "$f" | head -1)"
+  note="$(sed -n 's/.*"note":"\([^"]*\)".*/\1/p'     "$f" | head -1)"
+  paused_cause="$(_read_fragment_field "$f" paused_cause)"
+  gates_csv="$(_read_fragment_array_csv "$f" gates_completed)"
+  retries_json="$(_read_fragment_raw_array "$f" retries)"
+  halt_cause="$(_read_fragment_field "$f" halt_cause)"
+  halt_finding="$(_read_fragment_field "$f" halt_triggering_finding_ref)"
+  halt_actions_csv="$(_read_fragment_array_csv "$f" halt_next_actions)"
+  halt_detail="$(_read_fragment_field "$f" halt_cause_detail)"
+  rework_attempts="$(_read_fragment_raw_object "$f" rework_attempts)"
+  rework_log="$(_read_fragment_raw_array "$f" rework_log)"
+  build_attempt="$(_read_fragment_raw_object "$f" build_attempt)"
+  last_cleared_sha="$(_read_fragment_field "$f" last_cleared_review_sha)"
+  cleared_step_log="$(_read_fragment_cleared_log "$f")"
+  if ! _write_tdd_fragment "$slug" "${n:-0}" "$path" "${qp:-0}" "$status" "$stage" \
+    "${sta:-$(date +%s)}" "$(date +%s)" "$branch" "$pr_url" "$log_f" "$note" \
+    "$paused_cause" "$gates_csv" "$retries_json" "$new_head" \
+    "$halt_cause" "$halt_finding" "$halt_actions_csv" "$halt_detail" \
+    "$rework_attempts" "$rework_log" "$build_attempt" \
+    "$last_cleared_sha" "$cleared_step_log"; then
+    echo "error: _update_branch_head_at_pause: could not write $slug fragment (head=$new_head)" >&2
+    return 1
+  fi
+}
+
 # --- Halt-cause taxonomy (TDD 0018 / FR-63, FR-64; ADR 0007) ------------------
 # The closed enum of human-needed halt causes, the deterministic cause→next-
 # actions mapping, and the writer (set_halt_cause) that enforces both. This is

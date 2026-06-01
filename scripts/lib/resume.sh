@@ -150,11 +150,24 @@ _resume_from() {
     local current_head
     current_head="$(git rev-parse --verify "refs/heads/$branch" 2>/dev/null || true)"
     if [ -n "$current_head" ] && [ "$current_head" != "$branch_head_at_pause" ]; then
-      # iter-10 M-3: expose cause via global for drivers.
-      RESUME_REFUSE_CAUSE="resume-blocked-branch-divergence"
-      _update_paused_cause "$slug" "$RESUME_REFUSE_CAUSE" \
-        || echo "warning: _resume_from $slug: could not update paused_cause (status.sh may show stale cause)" >&2
-      return 3   # see BLOCKER-2
+      # TDD 0027 §3b / FR-41: a head difference is not always a rewrite. If the
+      # recorded SHA is an ANCESTOR of the current head, the branch merely
+      # advanced (commits added, none rewritten) — e.g. the runner was killed
+      # after committing but before updating the fragment. That is continuation,
+      # not rewrite: accept it, advance branch_head_at_pause to the current head,
+      # and fall through to resume. A non-ancestor head (true rewrite, or a
+      # deleted/recreated branch where merge-base fails) is refused exactly as
+      # before.
+      if git merge-base --is-ancestor "$branch_head_at_pause" "$current_head" 2>/dev/null; then
+        _update_branch_head_at_pause "$slug" "$current_head" \
+          || echo "warning: _resume_from $slug: could not advance branch_head_at_pause after fast-forward" >&2
+      else
+        # iter-10 M-3: expose cause via global for drivers.
+        RESUME_REFUSE_CAUSE="resume-blocked-branch-divergence"
+        _update_paused_cause "$slug" "$RESUME_REFUSE_CAUSE" \
+          || echo "warning: _resume_from $slug: could not update paused_cause (status.sh may show stale cause)" >&2
+        return 3   # see BLOCKER-2
+      fi
     fi
   fi
 
