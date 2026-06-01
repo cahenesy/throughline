@@ -437,4 +437,16 @@ if [ -f "$IDP" ]; then
   bash "$IDP" || IDP_FAIL=1
 fi
 
-[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ] && [ "$SMS_FAIL" -eq 0 ] && [ "$PRM_FAIL" -eq 0 ] && [ "$GRM_FAIL" -eq 0 ] && [ "$BRL_FAIL" -eq 0 ] && [ "$RR_FAIL" -eq 0 ] && [ "$BCL_FAIL" -eq 0 ] && [ "$BO_FAIL" -eq 0 ] && [ "$IDP_FAIL" -eq 0 ]
+# Run the severity-honest-reporting eval (TDD 0021 / FR-58, FR-60, FR-70, FR-71 +
+# issues #35, #28A, #28B) as part of the same suite so the findings-schema state
+# I/O, the review/build prompt edits, the diff-vs-narrative + finding-block
+# parsers, and the per-file coverage check are regression-gated by ci-checks,
+# not orphaned from the aggregator. Same rationale as the sibling evals above.
+SHR="$(dirname "$0")/severity-honest-reporting.test.sh"
+SHR_FAIL=0
+if [ -f "$SHR" ]; then
+  echo
+  bash "$SHR" || SHR_FAIL=1
+fi
+
+[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ] && [ "$SMS_FAIL" -eq 0 ] && [ "$PRM_FAIL" -eq 0 ] && [ "$GRM_FAIL" -eq 0 ] && [ "$BRL_FAIL" -eq 0 ] && [ "$RR_FAIL" -eq 0 ] && [ "$BCL_FAIL" -eq 0 ] && [ "$BO_FAIL" -eq 0 ] && [ "$IDP_FAIL" -eq 0 ] && [ "$SHR_FAIL" -eq 0 ]
