@@ -301,6 +301,74 @@ echo "[VP5] non-ancestor head (true rewrite) is still refused"
     || bad "branch_head_at_pause should remain $C1 on refusal"
 ) || true
 
+# Write a blocked fragment: <statedir> <slug> <n> <halt_cause> <halt_actions_csv>.
+# Helper that wraps _write_tdd_fragment with a blocked status + halt metadata.
+write_blocked() {  # <slug> <n> <halt_cause> <halt_actions_csv>
+  #          paused_cause↓ gates_csv↓                retries↓ branch_head↓
+  _write_tdd_fragment "$1" "$2" "docs/tdd/$1.md" "$2" blocked review \
+    1000 1100 "build/$1" "" "log.txt" "" \
+    "" "build,test-first,verify" "" "" \
+    "$3" "review:$2" "$4" "halt detail for $1"
+}
+
+# --- [VP6a] resumable blocked surfaced by --check-paused; non-resumable not -
+# A blocked fragment whose halt_next_actions begins with a resume action
+# (rework-scope-exceeded) is surfaced with the resumable=blocked marker; a
+# design-escalation-only blocked fragment (structural-finding) is not.
+echo "[VP6a] --check-paused surfaces a resumable blocked fragment with the marker"
+( D="$ROOT/vp6a"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE=sequential
+  export INTEGRATION=master CHANGE=ci LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  write_blocked 0001-alpha 1 rework-scope-exceeded \
+    "resume (retries with stricter scope),revise TDD bounds via /tdd-author"
+  write_blocked 0002-beta 2 structural-finding \
+    "revise TDD via /tdd-author,see docs/tdd/BLOCKERS.md"
+  out="$(bash "$STATUS" --logdir "$D" --check-paused 2>&1)"
+  printf '%s\n' "$out" | grep -qE 'slug=0001-alpha .*resumable=blocked' \
+    && ok "resumable blocked fragment surfaced with resumable=blocked marker" \
+    || bad "0001-alpha should be surfaced with resumable=blocked (got: $out)"
+  printf '%s\n' "$out" | grep -qE 'slug=0001-alpha .*cause=rework-scope-exceeded' \
+    && ok "blocked line reports the halt_cause" \
+    || bad "blocked line should carry cause=rework-scope-exceeded (got: $out)"
+  printf '%s\n' "$out" | grep -q '0002-beta' \
+    && bad "non-resumable blocked (0002-beta) must NOT be surfaced" \
+    || ok "non-resumable blocked fragment not surfaced"
+) || true
+
+# --- [VP6b] resume accepts a resumable blocked fragment; refuses non-resumable
+echo "[VP6b] resume validation flips a resumable blocked fragment to paused"
+( D="$ROOT/vp6b"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE=sequential
+  export INTEGRATION=master CHANGE=ci LOGDIR="$D" RESUME=1
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  write_blocked 0001-alpha 1 rework-scope-exceeded \
+    "resume (retries with stricter scope),revise TDD bounds via /tdd-author"
+  write_blocked 0002-beta 2 structural-finding \
+    "revise TDD via /tdd-author,see docs/tdd/BLOCKERS.md"
+  FA="$D/state.d/0001-alpha.json"; FB="$D/state.d/0002-beta.json"
+
+  _resume_from 0001-alpha; rc=$?
+  [ "$rc" = "0" ] && ok "resumable blocked fragment accepted (rc=0)" || bad "should accept resumable blocked (got $rc)"
+  [ "$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$FA" | head -1)" = "paused" ] \
+    && ok "blocked fragment flipped to paused on acceptance" \
+    || bad "0001-alpha should be flipped to paused"
+  [ "$(_read_fragment_field "$FA" paused_cause)" = "transient" ] \
+    && ok "paused_cause set to transient on acceptance" \
+    || bad "paused_cause should be transient (got '$(_read_fragment_field "$FA" paused_cause)')"
+  vA="$(_resume_gates_var 0001-alpha)"
+  [ -n "${!vA:-}" ] && ok "RESUME_GATES_DONE var set (resume proceeds)" || bad "gates-done var should be set"
+
+  _resume_from 0002-beta; rcb=$?
+  [ "$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$FB" | head -1)" = "blocked" ] \
+    && ok "non-resumable blocked fragment left blocked (not accepted)" \
+    || bad "0002-beta should stay blocked"
+  vB="$(_resume_gates_var 0002-beta)"
+  [ -z "${!vB:-}" ] && ok "non-resumable blocked: no gates-done var set" || bad "0002-beta should not set a gates-done var"
+) || true
+
 # --- report ----------------------------------------------------------------
 n_ok=$(grep -c '^ok$' "$RESULTS" 2>/dev/null); n_ok=${n_ok:-0}
 n_fail=$(grep -c '^fail$' "$RESULTS" 2>/dev/null); n_fail=${n_fail:-0}
