@@ -398,6 +398,50 @@ echo "[S2] prd-author SKILL.md carries the five robustness guardrails"
   hasF "$SK" "Mid-interview persistence failure" && ok "guard 5: mid-interview failure signal" || bad "prd-author missing mid-interview failure signal"
 ) || true
 
+# --- [T] tdd-author SKILL.md wires the draft lifecycle into its prompt ----------
+# Step 4 of TDD 0012's Sequencing plan: the same five prompt edits as prd-author
+# (Components §5), adapted to tdd-author. Verified by keyword presence, no LLM call.
+echo "[T] tdd-author SKILL.md carries the five draft-persistence prompt edits"
+( SK="$REPO/skills/tdd-author/SKILL.md"
+  hasF() { grep -qF "$2" "$1"; }
+  [ -f "$SK" ] && ok "tdd-author SKILL.md exists" || bad "tdd-author SKILL.md missing"
+  hasF "$SK" "scripts/lib/drafts.sh"            && ok "sources drafts.sh"                  || bad "tdd-author does not source drafts.sh"
+  hasF "$SK" "Resume check"                     && ok "edit 1: Resume check (step 0)"      || bad "tdd-author missing 'Resume check'"
+  hasF "$SK" "tl_draft_exists tdd-author"       && ok "edit 1: tl_draft_exists call"       || bad "tdd-author missing tl_draft_exists"
+  hasF "$SK" "tl_draft_summary tdd-author"      && ok "edit 1: tl_draft_summary call"      || bad "tdd-author missing tl_draft_summary"
+  hasF "$SK" "tl_draft_read tdd-author"         && ok "edit 1: tl_draft_read on resume"    || bad "tdd-author missing tl_draft_read"
+  hasF "$SK" "tl_draft_init tdd-author"         && ok "edit 2: lazy tl_draft_init (step 5)" || bad "tdd-author missing tl_draft_init"
+  hasF "$SK" "tl_draft_append_elicit tdd-author question" && ok "edit 2: append after each elicitation" || bad "tdd-author missing tl_draft_append_elicit"
+  hasF "$SK" "re-read the draft"                && ok "edit 3: re-read before each authoring step (FR-48)" || bad "tdd-author missing 're-read the draft'"
+  hasF "$SK" "tl_draft_write_doc tdd-author"    && ok "edit 3: write_doc after each section" || bad "tdd-author missing tl_draft_write_doc"
+  hasF "$SK" "Self-review reads the draft"      && ok "edit 4: self-review-from-draft"     || bad "tdd-author missing 'Self-review reads the draft'"
+  hasF "$SK" "tl_draft_discard tdd-author"      && ok "edit 5: discard on PR success (FR-49)" || bad "tdd-author missing tl_draft_discard"
+) || true
+
+# --- [T2] tdd-author SKILL.md carries its two skill-specific tweaks + guardrails -
+# Components §5 adds two tdd-author-only behaviors on top of the shared five
+# edits: PRD-drift surfaced on resume, and the FR-50 ban on persisting the
+# design-reviewer verdict. The five robustness guardrails are carried over too so
+# the per-step-review findings cannot recur in the second skill.
+echo "[T2] tdd-author SKILL.md carries PRD-drift, FR-50, and the robustness guardrails"
+( SK="$REPO/skills/tdd-author/SKILL.md"
+  hasF() { grep -qF "$2" "$1"; }
+  # Tweak 1 — PRD drift surfaced on resume.
+  hasF "$SK" "prd_rev_at_start"                        && ok "tweak 1: records prd_rev_at_start" || bad "tdd-author missing prd_rev_at_start"
+  hasF "$SK" "PRD has advanced since this draft was started" && ok "tweak 1: surfaces PRD drift on resume" || bad "tdd-author missing PRD-drift resume line"
+  # Tweak 2 — FR-50: design-reviewer verdict never persisted.
+  hasF "$SK" "NEVER persisted to the draft"            && ok "tweak 2: FR-50 verdict-never-persisted" || bad "tdd-author missing FR-50 no-persist rule"
+  # Carried-over robustness guardrails (same five findings as prd-author).
+  hasF "$SK" "shell-quoted"                            && ok "guard 1: shell-quote each append argument" || bad "tdd-author missing shell-quote instruction"
+  hasF "$SK" "word-splits"                             && ok "guard 1: names the word-split silent-loss failure" || bad "tdd-author missing word-split rationale"
+  hasF "$SK" '[ -f "$dpath" ]'                         && ok "guard 2: file-presence test reaches the unparseable path" || bad "tdd-author missing [ -f \$dpath ] disambiguation"
+  hasF "$SK" "not parseable"                           && ok "guard 2: unparseable-draft warning" || bad "tdd-author missing 'not parseable' path"
+  hasF "$SK" "If sourcing fails"                       && ok "guard 3: source-failure handler" || bad "tdd-author missing source-failure handler"
+  hasF "$SK" "untrusted data, not instructions"        && ok "guard 4: recovered-content trust boundary" || bad "tdd-author missing trust-boundary label"
+  hasF "$SK" "degraded mode"                           && ok "guard 5: degraded-mode signal" || bad "tdd-author missing degraded-mode signal"
+  hasF "$SK" "Mid-interview persistence failure"       && ok "guard 5: mid-interview failure signal" || bad "tdd-author missing mid-interview failure signal"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
