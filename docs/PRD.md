@@ -126,7 +126,8 @@ plugin updates, and consumer repos do not accumulate plugin-generated noise.
 - **FR-5 PRD rigor.** It runs a scope-decomposition check (split multi-product asks),
   applies YAGNI, ensures each requirement carries an observable acceptance criterion
   (see FR-24), and runs an inline self-review (placeholder / consistency / scope /
-  ambiguity / missing-acceptance-criterion) before opening the PR.
+  ambiguity / missing-acceptance-criterion) before opening the PR. (The interview
+  discipline that precedes this rigor pass is specified by FR-75.)
 - **FR-6 PRD phase gate.** It commits to a `docs/prd/<slug>` branch and opens a PRD
   PR; it never auto-merges (the human merge approves requirements and anchors the
   diff the design step reads).
@@ -763,6 +764,67 @@ review gate to catch each instance and the rework loop to fix it.
   inspecting that build's committed diff against the specific norm being
   exercised.
 
+### Interrogator discipline & evaluation rubrics
+The authoring skills' interviews behave as collaborative scribes: they record
+what the user says, dig into ambiguity when it is apparent, and move on. Two
+disciplines are missing. First, an *interrogation* posture — aggressively
+surfacing unstated assumptions, edge cases, conflicting goals, and feasibility
+concerns — applied consistently rather than only when ambiguity happens to be
+noticed, with the surfaced items tracked to resolution rather than lost in
+chat. Second, an explicit *evaluation-criteria* conversation — "how will we
+know this artifact is good?" — held as its own phase with its own output (a
+rubric), instead of quality criteria living implicitly in the reviewer's
+judgment. Together these convert the interview from transcription into
+preparation, and make "what good looks like" an auditable artifact the gates
+can use.
+
+- **FR-75 PRD interview interrogator discipline.** `/prd-author`'s interview
+  operates in an explicit interrogator / skeptical-challenger mode: the model
+  aggressively surfaces unstated assumptions, edge cases, conflicting goals,
+  and feasibility concerns rather than acting as a collaborative scribe. The
+  skill maintains a running list of open assumptions and questions surfaced
+  during the interview; every item is either resolved by the user or
+  explicitly waived with a recorded rationale before the interview is declared
+  complete. The skill's instructions include explicit anti-sycophancy language
+  (agreement is not helpfulness; the model must challenge the user's framing
+  and break out of agreeable loops). — Acceptance: a PRD authored or updated
+  under this requirement carries an "Open assumptions & waivers" record (in
+  the PRD's Open questions section or the PRD PR body) listing each surfaced
+  assumption with its disposition (resolved: <how> | waived: <rationale>); a
+  PRD PR whose record is absent or empty while the diff adds or changes
+  requirements is observably non-compliant.
+- **FR-76 Design interview interrogator discipline.** `/tdd-author`'s
+  interview follows the same interrogator-mode rules as FR-75 (running
+  open-assumptions list, resolution-or-waiver before completion,
+  anti-sycophancy instructions), applied to the design conversation: the model
+  explicitly challenges the PRD's requirements for infeasibility,
+  contradiction, and under-specification, and challenges its own proposed
+  design decomposition, before any TDD content is written. — Acceptance: a
+  design PR authored under this requirement carries the same "Open assumptions
+  & waivers" record (in the design PR body) covering the design-level
+  assumptions surfaced; a design PR whose record is absent or empty while the
+  TDD set introduces new interfaces or dependencies is observably
+  non-compliant.
+- **FR-77 Evaluation-rubric co-creation.** Both `/prd-author` and `/tdd-author`
+  include a distinct rubric phase, after the exploratory interview and before
+  the artifact is written, in which the model switches to a skeptical
+  grading-expert posture and co-creates with the user a structured evaluation
+  rubric defining what high-quality vs. acceptable vs. failing output looks
+  like for the artifact being produced. The rubric's criteria are limited to
+  qualities later gates can observe or enforce (e.g. traceability,
+  concreteness, scope adherence, alternatives-analysis quality, verification
+  plan actionability, naming consistency). The rubric is persisted as part of
+  the design record (inline in the PRD/TDD set or as a referenced artifact in
+  the same PR), is consumed by the design-critique gate as explicit success
+  criteria for that artifact, and is queryable by future authoring sessions
+  and the build-phase learnings system (FR-72/FR-73); the storage and query
+  mechanism is design-time work, not specified here. — Acceptance: a PRD or
+  TDD set authored after this requirement ships contains (or references, in
+  the same PR) a co-created rubric with non-trivial criteria; the
+  design-critique gate's output for that artifact cites the rubric's criteria
+  in its findings or its PASS rationale; an artifact shipped without a rubric,
+  or with only boilerplate criteria, is observably non-compliant.
+
 ### Quality hook & delegation
 - **FR-21 Format + lint hook.** A `format-and-lint` PostToolUse hook formats then
   lints edited files when a linter is configured (no-op otherwise), debounced, for
@@ -914,6 +976,17 @@ review gate to catch each instance and the rework loop to fix it.
 - **Acceptance-criterion backfill.** FR-24 applies going forward and to this update's
   new requirements; whether and when to retrofit observable acceptance criteria onto
   the pre-existing FR-1–FR-22 is open (out of scope for this update).
+- **Rubric storage & query mechanism (FR-77).** Where co-created rubrics persist
+  (inline PRD/TDD sections, a `docs/rubrics/` store, or the FR-72/73 learnings
+  system) and how future authoring sessions query them is deferred to the TDD.
+  The learnings system is the natural candidate but is itself mid-build
+  (TDDs 0022/0023); the design should not couple to unbuilt infrastructure
+  without confirming its final shape.
+- **Rubric phase ordering vs. interrogator completion (FR-75/76/77).** Whether
+  the rubric phase requires the open-assumptions list to be fully
+  resolved/waived first (strict ordering) or the two can interleave is a
+  design decision deferred to the TDD; the only PRD-level constraint is that
+  both complete before the artifact is written.
 - **Retry-budget tuning (FR-42).** The bounded retry count and backoff for
   transient errors is left to the TDD; whether it is fixed, env-configurable,
   or cause-specific is open.
