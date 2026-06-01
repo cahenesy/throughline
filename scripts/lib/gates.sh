@@ -437,6 +437,36 @@ _user_turn_json() {  # <text>
   printf '{"type":"user","message":{"role":"user","content":"%s"}}' "$(json_escape "$1")"
 }
 
+# _coproc_write <fd> <text> (TDD 0030 §1 / FR-42) — write <text>\n to the build
+# coprocess's stdin <fd> without risking a SIGPIPE that would kill the runner's
+# worker subshell (the observed incident: the coproc died to the overall watchdog
+# while a per-step review ran, then the verdict write at the broken pipe raised
+# SIGPIPE under the shell's default disposition — terminating the worker BEFORE
+# `|| true` could matter). Two guards:
+#   1. Liveness check — if the coproc PID `$bpid` (read from the caller's scope,
+#      matching this module's shared-scope idiom) is known-dead, return non-zero
+#      WITHOUT writing.
+#   2. SIGPIPE immunity for the TOCTOU window (coproc dies between the check and
+#      the write): `trap '' PIPE` makes a write to a broken pipe return EPIPE as
+#      an ordinary error instead of terminating the process, so the `2>/dev/null`
+#      redirection + the non-zero return genuinely cover it; the trap is restored
+#      immediately after so no other pipeline in the runner changes semantics
+#      (scoped, not process-wide — see the rejected global-trap alternative).
+# Returns non-zero whenever the coproc is gone (dead pid or EPIPE on write); the
+# caller decides whether that is best-effort (initial prompt write) or a
+# COPROC_DEAD halt (verdict write).
+_coproc_write() {  # <fd> <text>
+  local fd="$1" text="$2" _rc
+  if [ -n "${bpid:-}" ] && ! kill -0 "$bpid" 2>/dev/null; then
+    return 1
+  fi
+  trap '' PIPE
+  printf '%s\n' "$text" 1>&"$fd" 2>/dev/null
+  _rc=$?
+  trap - PIPE
+  return "$_rc"
+}
+
 # _run_per_step_review <slug> <tdd> <step-id> <sha> <build-start-sha> <main-log>
 # Run ONE scoped review pass for a step commit. Diff range = the TDD's
 # last_cleared_review_sha (or the build-start SHA if none cleared yet) to <sha>
@@ -542,8 +572,10 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
   # events with no assistant turn, killed by the inter-event watchdog). Older
   # CLI versions passed `$prompt` through as a text fallback; 2.1.158 does not.
   # Best-effort write (the coproc may have died at argv-parse already; the read
-  # loop classifies that case via wait()'s rc).
-  printf '%s\n' "$(_user_turn_json "$prompt")" >&"${build_in}" 2>/dev/null || true
+  # loop classifies that case via wait()'s rc). TDD 0030 §1: routed through
+  # _coproc_write for SIGPIPE immunity, same as the verdict write; a non-zero
+  # return here is benign (the loop's next read hits EOF and classifies via wait).
+  _coproc_write "${build_in}" "$(_user_turn_json "$prompt")" || true
   # NOTE: capture read's status INSIDE the loop. `read_rc=$?` after a
   # `while read; do …; done` would read the WHILE loop's status (0 on normal
   # exit), NOT the failing read's — so a `read -t` timeout (>128) would be
@@ -566,7 +598,19 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
             if [ -n "$step_id" ] && [ -n "$sha" ]; then
               verdict="$(_run_per_step_review "$slug" "$tdd" "$step_id" "$sha" "$build_start" "$log")"
               printf '%s\n' "$verdict" >> "$log"
-              printf '%s\n' "$(_user_turn_json "$verdict")" 1>&"${build_in}" 2>/dev/null || true
+              # TDD 0030 §1 / FR-42: the review may have run long enough for the
+              # overall watchdog to kill the coproc (the observed incident). Write
+              # the verdict through _coproc_write so a dead coproc never SIGPIPE-
+              # kills this worker. If the coproc is gone, the cleared step the
+              # review just recorded is already preserved; log COPROC_DEAD and
+              # break so the post-loop `wait` collects the dead coproc's status and
+              # _classify_cause routes the return code (124 + timeout log, or 143)
+              # to the transient/pause path — exactly as a clean watchdog kill.
+              if ! _coproc_write "${build_in}" "$(_user_turn_json "$verdict")"; then
+                printf 'THROUGHLINE_COPROC_DEAD: build coprocess exited before verdict delivery (step %s verdict was %s); cleared work is preserved (transient)\n' \
+                  "$step_id" "$(printf '%s' "$verdict" | grep -aoE 'PASS|BLOCK' | head -1)" >> "$log"
+                break
+              fi
             fi
             ;;
           *"BATCH_RESULT: "*)
