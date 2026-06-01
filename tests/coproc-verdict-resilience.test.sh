@@ -135,6 +135,65 @@ echo "[§2] _coproc_write survives a write to a dead pipe (PIPE trap covers the 
   ok "calling shell survived the dead-pipe write (no SIGPIPE termination)"
 ) || true
 
+# ===========================================================================
+# §5 (gap 3): honest `interrupted` terminal rollup. A fragment left in a
+# non-terminal status (building/verifying/reviewing) at run-end means the run
+# did NOT finish cleanly — set_run_state must derive `interrupted`, never
+# `done`. Precedence: blocked > interrupted > paused > done.
+echo "[§5a] set_run_state derives interrupted when a fragment is still building (never done)"
+( D="$ROOT/s5a"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=(docs/tdd/0030-a.md docs/tdd/0030-b.md)
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  _write_tdd_fragment 0030-a 1 docs/tdd/0030-a.md 1 done flip 1000 1000 "" "" log "" "" "" "" "" "" "" "" "" "" "" ""
+  _write_tdd_fragment 0030-b 2 docs/tdd/0030-b.md 2 building build 1000 1000 "feat/0030-b" "" log "" "" "" "" "" "" "" "" "" "" "" ""
+  set_run_state "done"
+  st="$(sed -n 's/.*"state":"\([^"]*\)".*/\1/p' "$D/state.d/run.json" | head -1)"
+  [ "$st" = "interrupted" ] && ok "run state is interrupted (not done) with a building fragment" \
+    || bad "run state should be interrupted (got '$st')"
+) || true
+
+echo "[§5b] precedence: a blocked fragment dominates an interrupted one (blocked > interrupted)"
+( D="$ROOT/s5b"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=(docs/tdd/0030-a.md docs/tdd/0030-b.md)
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  # One blocked TDD, one still-verifying (orphaned) TDD — blocked must win.
+  _write_tdd_fragment 0030-a 1 docs/tdd/0030-a.md 1 verifying verify 1000 1000 "feat/0030-a" "" log "" "" "" "" "" "" "" "" "" "" "" ""
+  _write_tdd_fragment 0030-b 2 docs/tdd/0030-b.md 2 blocked review 1000 1000 "feat/0030-b" "" log "" "" "" "" "" "" "" "" "" "" "" ""
+  set_run_state "done"
+  st="$(sed -n 's/.*"state":"\([^"]*\)".*/\1/p' "$D/state.d/run.json" | head -1)"
+  [ "$st" = "blocked" ] && ok "run state is blocked (design action outranks interrupted)" \
+    || bad "blocked should dominate interrupted (got '$st')"
+) || true
+
+echo "[§5c] negative: all fragments terminal -> done exactly as today"
+( D="$ROOT/s5c"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=(docs/tdd/0030-a.md docs/tdd/0030-b.md)
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  _write_tdd_fragment 0030-a 1 docs/tdd/0030-a.md 1 done flip 1000 1000 "" "" log "" "" "" "" "" "" "" "" "" "" "" ""
+  _write_tdd_fragment 0030-b 2 docs/tdd/0030-b.md 2 failed "" 1000 1000 "feat/0030-b" "" log "" "" "" "" "" "" "" "" "" "" "" ""
+  set_run_state "done"
+  st="$(sed -n 's/.*"state":"\([^"]*\)".*/\1/p' "$D/state.d/run.json" | head -1)"
+  [ "$st" = "done" ] && ok "run state is done when every fragment is terminal" \
+    || bad "all-terminal run should stay done (got '$st')"
+) || true
+
+echo "[§5d] status.sh renders the 'did not exit cleanly' banner for an interrupted run"
+( D="$ROOT/s5d"; mkdir -p "$D/state.d"
+  # Hand-craft a run.json in state=interrupted + one orphaned building fragment.
+  printf '{"schema":1,"started_at":1000,"updated_at":1001,"pid":999999,"integration_branch":"master","mode":"sequential","change":"ci","logdir":"%s","total":1,"completed":0,"failed":0,"blocked":0,"skipped":0,"paused":0,"state":"interrupted","pause_started_at":null,"config":{"rework_config":{},"gate_timeout":{}}}\n' "$D" > "$D/state.d/run.json"
+  printf '{"schema":1,"n":1,"slug":"0030-x","path":"docs/tdd/0030-x.md","queue_pos":1,"status":"building","stage":"build","started_at":1000,"updated_at":1001,"branch":"feat/0030-x","pr_url":"","log":"log","note":""}\n' > "$D/state.d/0030-x.json"
+  out="$(bash "$REPO/scripts/status.sh" --logdir "$D" 2>&1)"
+  printf '%s' "$out" | grep -qi 'interrupted' \
+    && ok "banner names the interrupted state" || bad "banner should mention interrupted (got: $out)"
+  printf '%s' "$out" | grep -qi 'did not exit cleanly' \
+    && ok "banner says the run did not exit cleanly" || bad "banner should say the run did not exit cleanly (got: $out)"
+  printf '%s' "$out" | grep -q '/implement' \
+    && ok "banner points the user at /implement to resume" || bad "banner should point at /implement (got: $out)"
+) || true
+
 # --- report ----------------------------------------------------------------
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
