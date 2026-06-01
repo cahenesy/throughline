@@ -35,8 +35,10 @@ Otherwise resolve the draft path once: `dpath="$(tl_draft_path tdd-author)"`.
   1. `tl_draft_exists tdd-author` is true → a parseable draft is present. Run
      `tl_draft_summary tdd-author` and present its output to the user via
      AskUserQuestion with options `Resume from draft` / `Discard and start
-     fresh`. **PRD-drift check:** compare `git rev-parse --short HEAD docs/PRD.md`
-     to the draft's `prd_rev_at_start`; if they differ, add this line to the
+     fresh`. **PRD-drift check:** compare `git log -1 --format=%h -- docs/PRD.md`
+     (the short SHA of the PRD's last-touching commit — NOT `git rev-parse
+     --short HEAD docs/PRD.md`, which parses the path as a revision and exits
+     128) to the draft's `prd_rev_at_start`; if they differ, add this line to the
      resume prompt: `PRD has advanced since this draft was started (<old> →
      <new>). Your interview answers may no longer apply.` — the user decides
      resume vs. discard with the drift surfaced. On resume, run
@@ -150,9 +152,12 @@ designing around them.
 
 Before the FIRST `tl_draft_append_elicit` call of this session (and only when
 persistence is available and no draft was resumed in step 0), run
-`tl_draft_init tdd-author "$(git rev-parse --short HEAD docs/PRD.md)"` once to
-create the draft skeleton — the PRD short-SHA you pass is the `prd_rev_at_start`
-the step-0 drift check reads on a later resume. If `tl_draft_init` returns
+`tl_draft_init tdd-author "$(git log -1 --format=%h -- docs/PRD.md)"` once to
+create the draft skeleton — the PRD short-SHA you pass (the last-touching commit
+of `docs/PRD.md`) is the `prd_rev_at_start` the step-0 drift check reads on a
+later resume. Use the path-scoped `git log -1 --format=%h` form, not `git
+rev-parse --short HEAD docs/PRD.md` (which exits 128 — the path is parsed as a
+revision — and would store an empty `prd_rev_at_start`). If `tl_draft_init` returns
 non-zero, treat it as a mid-interview persistence failure (step 0) and STOP.
 After EACH AskUserQuestion that elicits a substantive design decision, run
 `tl_draft_append_elicit tdd-author question "<header>" "<question text>" "<answer text>"`
