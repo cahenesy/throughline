@@ -1,6 +1,6 @@
 # TDD 0027: Runner resilience — hung children, unclean exits, resumable halts
 
-Status: draft
+Status: implemented
 PRD refs: FR-39, FR-41, FR-42, FR-43 (gap-closure); NFR-4
 PRD-rev: 5036877
 ADR constraints: 0004, 0005, 0006, 0007
