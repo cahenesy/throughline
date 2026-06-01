@@ -593,6 +593,12 @@ fi
 # Re-roll the fragments to see if any are paused; rerun parser is fragment-by-
 # fragment because the loop-level `paused_halt` variable is scoped to the
 # specific driver block.
+#
+# TDD 0030 §3 (gap 3): the requested paused/done below is only the BASE state.
+# set_run_state runs the authoritative run-end fragment scan and upgrades it per
+# precedence blocked > interrupted > paused > done — so a fragment left
+# non-terminal (the runner died mid-gate) writes `interrupted`, never `done`,
+# even though this site still passes "done". No duplicate scan is needed here.
 _any_paused=0
 if [ -d "$STATE_DIR" ]; then
   for f in "$STATE_DIR"/*.json; do

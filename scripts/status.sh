@@ -297,8 +297,35 @@ render_snapshot() {
   fi
   case "$_state" in
     paused|blocked|failed) render_halt "$sd" "$_state"; return ;;
+    interrupted) render_interrupted "$sd"; return ;;
   esac
   render_table "$sd"
+}
+
+# render_interrupted <state.d> — TDD 0030 §3 (gap 3) / FR-44, NFR-4. The run did
+# not exit cleanly: the runner died while ≥1 TDD was mid-gate, leaving an
+# orphaned non-terminal fragment a plain re-run would silently rebuild. Name each
+# orphaned TDD + gate and point the user at /implement --resume, so a `building`
+# fragment in a dead run reads honestly as interrupted — never in-progress, never
+# done.
+render_interrupted() {
+  local sd="$1"
+  local runid; runid="$(basename "$(dirname "$sd")")"
+  _clip "Run $runid  •  interrupted: the run did not exit cleanly" 80; printf '\n'
+  local f st slug stage
+  for f in "$sd"/*.json; do
+    [ -f "$f" ] || continue
+    [ "$(basename "$f")" = "run.json" ] && continue
+    st="$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+    case "$st" in building|verifying|reviewing) : ;; *) continue ;; esac
+    slug="$(sed -n 's/.*"slug":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+    if grep -q '"stage":null' "$f" 2>/dev/null; then stage="-"
+    else stage="$(sed -n 's/.*"stage":"\([^"]*\)".*/\1/p' "$f" | head -1)"; fi
+    _clip "TDD: $slug  •  Gate: ${stage:--}  •  orphaned (unclean-exit)" 80; printf '\n'
+  done
+  printf '\n'
+  _clip "The runner exited without finishing. Re-run /implement to resume." 80; printf '\n'
+  printf 'Resume: /implement --resume %s\n' "$runid"
 }
 
 render_table() {
