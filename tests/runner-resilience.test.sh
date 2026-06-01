@@ -38,6 +38,26 @@ Prior addressed patterns: {{PRIOR_PATTERNS}}.
 TMPL
 }
 
+# A minimal runtime-verify prompt template (placeholders the real one carries).
+verify_tmpl() {  # <path>
+  cat > "$1" <<'TMPL'
+INDEPENDENT runtime-verification gate for {{TDD}} base {{BASE}}.
+TMPL
+}
+
+# Write a `claude` stub that prints <line> then exits <rc>, and prepend its dir
+# to PATH. Used to drive the gate wrappers with a controllable verdict + exit
+# code (gap 4: verdict-before-exit-code ordering).
+mk_stub() {  # <bindir> <line> <rc>
+  mkdir -p "$1"
+  cat > "$1/claude" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "$2"
+exit $3
+EOF
+  chmod +x "$1/claude"; export PATH="$1:$PATH"
+}
+
 # A minimal git repo with one committed TDD; cwd is the repo on return, and
 # HEAD/build_start are echoed via the BUILD_START global.
 setup_repo() {  # <dir>
@@ -107,6 +127,63 @@ echo "[VP2] THROUGHLINE_GATE_TIMEOUT is snapshotted into run.json config"
   grep -q '"gate_timeout":120' "$R" 2>/dev/null \
     && ok "run.json config records gate_timeout=120" \
     || bad "run.json config should record \"gate_timeout\":120 ($(cat "$R" 2>/dev/null))"
+) || true
+
+# --- [VP7] honest verdict survives a non-zero child exit (gap 4) -----------
+# _verify_runtime_one_gated / _review_one_gated parse the verdict FIRST; only a
+# verdict-less child is classified by exit code. So a PASS/SKIP verdict wins even
+# when the child exits non-zero (e.g. killed by the gate timeout after emitting
+# its verdict), and an honest FAIL/BLOCK + non-zero exit is a plain gate failure
+# (rc=1), never conflated with a process error (NFR-4).
+echo "[VP7] gate wrappers honor the logged verdict over the child's exit code"
+( D="$ROOT/vp7"; setup_repo "$D"
+  verify_tmpl "$D/verify.md"; review_tmpl "$D/review.md"
+  export MODEL=stub-model REVIEW_MODEL=stub-model RVMTPL="$D/verify.md" RTMPL="$D/review.md"
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+
+  # (a) DISCRIMINATING: PASS verdict but the child exited non-zero -> 0.
+  ( mk_stub "$D/bin-a" "VERIFY_RUNTIME: PASS observed the surface" 3
+    _verify_runtime_one_gated docs/tdd/0001-alpha.md "$BUILD_START" "$D/va.log"; rc=$?
+    [ "$rc" = "0" ] && ok "verify: PASS verdict wins over a non-zero exit (rc=0)" \
+      || bad "verify: PASS verdict + exit 3 should return 0 (got $rc)" )
+  ( mk_stub "$D/bin-ar" "REVIEW_RESULT: PASS clean" 3
+    _review_one_gated docs/tdd/0001-alpha.md "$BUILD_START" "$D/ra.log"; rc=$?
+    [ "$rc" = "0" ] && ok "review: PASS verdict wins over a non-zero exit (rc=0)" \
+      || bad "review: REVIEW_RESULT PASS + exit 3 should return 0 (got $rc)" )
+
+  # (b) honest FAIL/BLOCK + exit 1 -> a gate failure (rc=1), not transient.
+  ( mk_stub "$D/bin-b" "VERIFY_RUNTIME: FAIL surface produced wrong value" 1
+    _verify_runtime_one_gated docs/tdd/0001-alpha.md "$BUILD_START" "$D/vb.log"; rc=$?
+    [ "$rc" = "1" ] && ok "verify: honest FAIL + exit 1 returns gate-fail (rc=1)" \
+      || bad "verify: FAIL verdict + exit 1 should return 1 (got $rc)" )
+  ( mk_stub "$D/bin-br" "REVIEW_RESULT: BLOCK found a real bug" 1
+    _review_one_gated docs/tdd/0001-alpha.md "$BUILD_START" "$D/rb.log"; rc=$?
+    [ "$rc" = "1" ] && ok "review: honest BLOCK + exit 1 returns gate-fail (rc=1)" \
+      || bad "review: BLOCK verdict + exit 1 should return 1 (got $rc)" )
+
+  # (c) no verdict + non-zero exit -> classify by the child's rc (preserved).
+  ( mk_stub "$D/bin-c" "I emit no verdict line at all." 3
+    _verify_runtime_one_gated docs/tdd/0001-alpha.md "$BUILD_START" "$D/vc.log"; rc=$?
+    [ "$rc" = "3" ] && ok "verify: verdict-less non-zero exit preserves the child rc (3)" \
+      || bad "verify: no verdict + exit 3 should return 3 for rc-classification (got $rc)" )
+) || true
+
+# --- [VP8] verdict-less clean exit resolves to FAIL (gap 4 / NFR-4) ---------
+# A child that exits 0 but emits no verdict line must NOT be a false PASS: the
+# gate wrapper returns 1.
+echo "[VP8] verdict-less clean exit (rc=0) resolves to FAIL, never a false PASS"
+( D="$ROOT/vp8"; setup_repo "$D"
+  verify_tmpl "$D/verify.md"; review_tmpl "$D/review.md"
+  export MODEL=stub-model REVIEW_MODEL=stub-model RVMTPL="$D/verify.md" RTMPL="$D/review.md"
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  ( mk_stub "$D/bin-v" "uncertain; no verdict line" 0
+    _verify_runtime_one_gated docs/tdd/0001-alpha.md "$BUILD_START" "$D/v.log"; rc=$?
+    [ "$rc" = "1" ] && ok "verify: clean exit + no verdict returns FAIL (rc=1)" \
+      || bad "verify: rc=0 + no verdict should return 1 (got $rc)" )
+  ( mk_stub "$D/bin-r" "uncertain; no verdict line" 0
+    _review_one_gated docs/tdd/0001-alpha.md "$BUILD_START" "$D/r.log"; rc=$?
+    [ "$rc" = "1" ] && ok "review: clean exit + no verdict returns FAIL (rc=1)" \
+      || bad "review: rc=0 + no verdict should return 1 (got $rc)" )
 ) || true
 
 # --- report ----------------------------------------------------------------
