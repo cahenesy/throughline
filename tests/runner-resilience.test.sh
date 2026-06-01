@@ -369,6 +369,34 @@ echo "[VP6b] resume validation flips a resumable blocked fragment to paused"
   [ -z "${!vB:-}" ] && ok "non-resumable blocked: no gates-done var set" || bad "0002-beta should not set a gates-done var"
 ) || true
 
+# --- [VP6c] resume refuses (no false success) when the flip write fails -----
+# If the blocked->paused/transient flip cannot be written, resume must REFUSE
+# (rc=3) rather than fall through and treat a half-written fragment as a valid
+# resume (silent-success assumption). set_tdd_state is stubbed to simulate the
+# write failure deterministically.
+echo "[VP6c] resume refuses when the blocked->paused flip write fails"
+( D="$ROOT/vp6c"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE=sequential
+  export INTEGRATION=master CHANGE=ci LOGDIR="$D" RESUME=1
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  write_blocked 0001-alpha 1 rework-scope-exceeded \
+    "resume (retries with stricter scope),revise TDD bounds via /tdd-author"
+  F="$D/state.d/0001-alpha.json"
+  set_tdd_state() { return 1; }     # simulate a fragment-write failure mid-flip
+  RESUME_REFUSE_CAUSE=""
+  _resume_from 0001-alpha; rc=$?
+  [ "$rc" = "3" ] && ok "flip-write failure refuses the resume (rc=3)" \
+    || bad "should refuse on flip-write failure (got $rc)"
+  [ "$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$F" | head -1)" = "blocked" ] \
+    && ok "fragment left blocked (no half-written paused state on disk)" \
+    || bad "fragment should remain blocked on refusal"
+  [ -n "${RESUME_REFUSE_CAUSE:-}" ] && ok "refuse cause exposed for the report" \
+    || bad "RESUME_REFUSE_CAUSE should be set on refusal"
+  vC="$(_resume_gates_var 0001-alpha)"
+  [ -z "${!vC:-}" ] && ok "no gates-done var set on refusal" || bad "no gates-done var should be set on refusal"
+) || true
+
 # --- report ----------------------------------------------------------------
 n_ok=$(grep -c '^ok$' "$RESULTS" 2>/dev/null); n_ok=${n_ok:-0}
 n_fail=$(grep -c '^fail$' "$RESULTS" 2>/dev/null); n_fail=${n_fail:-0}

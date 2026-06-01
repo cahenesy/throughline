@@ -136,10 +136,22 @@ _resume_from() {
       local _stage_now
       if grep -q '"stage":null' "$f" 2>/dev/null; then _stage_now=""
       else _stage_now="$(sed -n 's/.*"stage":"\([^"]*\)".*/\1/p' "$f" | head -1)"; fi
-      set_tdd_state "$slug" paused "$_stage_now" \
-        || echo "warning: _resume_from $slug: could not flip blocked->paused for resume" >&2
-      _update_paused_cause "$slug" transient \
-        || echo "warning: _resume_from $slug: could not set paused_cause=transient for resume" >&2
+      # Flip blocked → paused/transient. If EITHER write fails, REFUSE the resume
+      # (rc=3) rather than fall through: a half-written fragment (status still
+      # blocked, or paused_cause unset) would otherwise be treated as a valid
+      # resume while the on-disk state contradicts that — a silent-success
+      # assumption. The driver reads RESUME_REFUSE_CAUSE and skips the TDD with a
+      # diagnostic instead of resuming a fragment that was never cleanly flipped.
+      if ! set_tdd_state "$slug" paused "$_stage_now"; then
+        echo "error: _resume_from $slug: could not flip blocked->paused for resume; refusing" >&2
+        RESUME_REFUSE_CAUSE="resume-blocked-state-write-failed"
+        return 3
+      fi
+      if ! _update_paused_cause "$slug" transient; then
+        echo "error: _resume_from $slug: could not set paused_cause=transient for resume; refusing" >&2
+        RESUME_REFUSE_CAUSE="resume-blocked-state-write-failed"
+        return 3
+      fi
     else
       return 0
     fi
