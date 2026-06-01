@@ -68,6 +68,27 @@ fi
   exit 1
 }
 
+# _reclaim_stale_worktree <workroot> <report> (TDD 0027 §2 / FR-43)
+# A kill -9 (or any unclean death) skips the EXIT trap that removes the build
+# worktree, so the path is left on disk + registered; the next launch then FATALs
+# on `git worktree add` because the path exists. Reclaim it: remove the
+# registration + the directory so the caller falls through to a fresh add. Build
+# branches (the durable output) live in refs, not in the worktree, so removing a
+# stale worktree never discards committed work; uncommitted edits in a stale
+# worktree are intentionally discarded per the existing non-goal ("Recovering
+# uncommitted edits in a build worktree"). A path that is NOT a git worktree
+# (random dir) makes `git worktree remove` fail → the `|| rm -rf` fallback clears
+# it; if even that fails (permissions), the caller's FATAL on `git worktree add`
+# still fires, so we never silently build inside an unknown directory. Defined
+# above the SOURCE_ONLY guard so the test suite can drive it in isolation.
+_reclaim_stale_worktree() {  # <workroot> <report>
+  local workroot="$1" report="$2"
+  [ -d "$workroot" ] || return 0
+  echo "Reclaiming stale build worktree at $workroot (prior unclean exit)" >>"$report"
+  git worktree remove --force "$workroot" >>"$report" 2>&1 || rm -rf "$workroot"
+  git worktree prune >>"$report" 2>&1
+}
+
 # THROUGHLINE_SOURCE_ONLY=1 lets the test suite source this script to call
 # helpers in isolation. Runtime side effects (arg parsing, lock, drivers,
 # report) live below the guard; helpers are defined unconditionally above.
@@ -385,6 +406,9 @@ else
   # worktree can't be created, refuse rather than fall back to the live tree.
   git worktree prune >/dev/null 2>&1 || true
   WORKROOT="$(dirname "$MAINREPO")/$(basename "$MAINREPO")-wt-$(printf '%s' "$CHANGE" | tr '/ :' '---')"
+  # TDD 0027 §2 / FR-43: reclaim a worktree left registered by a prior unclean
+  # exit before adding, so a forcible kill of the prior run doesn't block this one.
+  _reclaim_stale_worktree "$WORKROOT" "$REPORT"
   if ! git worktree add --detach "$WORKROOT" "$BASE" >>"$REPORT" 2>&1; then
     { echo "FATAL: could not create isolated worktree at $WORKROOT (base '$BASE')."
       echo "Refusing to build in the live working tree; clear the error and re-run."; } | tee -a "$REPORT" >&2
