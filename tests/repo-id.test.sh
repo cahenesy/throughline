@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # repo-id.test.sh — eval for TDD 0009 / FR-33: pins the contract of
-# scripts/lib/repo-id.sh::tl_repo_id and ::tl_local_marker_path.
+# scripts/lib/repo-id.sh::tl_repo_id and ::tl_local_marker_path. Extended by
+# TDD 0012 / FR-46..49 to also pin ::tl_drafts_dir (the per-repo drafts dir the
+# interview-draft persistence layer hangs under).
 #
 # Written red-first: before TDD 0009 lands, scripts/lib/repo-id.sh does not
 # exist, so [A] fails on `bash -n` and every behavioral case errors out. The
@@ -106,6 +108,38 @@ echo "[F] tl_local_marker_path fails closed when CLAUDE_PLUGIN_DATA is unset"
   set -e
   [ "$rc" -ne 0 ] && ok "tl_local_marker_path exits non-zero with no CLAUDE_PLUGIN_DATA (rc=$rc)" \
                   || bad "tl_local_marker_path returned 0 with no CLAUDE_PLUGIN_DATA (out='$out')"
+) || true
+
+# --- [G] tl_drafts_dir -> $CLAUDE_PLUGIN_DATA/<id>/drafts (+mkdir) ------------
+# TDD 0012 / FR-46..49: the interview-draft files live under this dir, one
+# subdir per repo (sharing TDD 0009's <repo-id> scheme).
+echo "[G] tl_drafts_dir -> \$CLAUDE_PLUGIN_DATA/<id>/drafts (+mkdir)"
+( R="$(mkrepo "$ROOT/g" git@github.com:acme/widget.git)"
+  DATA="$ROOT/g-data"
+  p="$(cd "$R" && CLAUDE_PLUGIN_DATA="$DATA" bash -c "source \"$LIB\"; tl_drafts_dir")"
+  id="$(cd "$R" && bash -c "source \"$LIB\"; tl_repo_id")"
+  if [ "$p" = "$DATA/$id/drafts" ]; then
+    ok "tl_drafts_dir returns \$DATA/<id>/drafts"
+  else
+    bad "tl_drafts_dir wrong path (got '$p', want '$DATA/$id/drafts')"
+  fi
+  [ -d "$DATA/$id/drafts" ] && ok "tl_drafts_dir created the per-repo drafts dir" \
+                            || bad "tl_drafts_dir did not mkdir the drafts dir"
+) || true
+
+# --- [H] tl_drafts_dir fails closed when CLAUDE_PLUGIN_DATA is unset ----------
+echo "[H] tl_drafts_dir fails closed when CLAUDE_PLUGIN_DATA is unset"
+( R="$(mkrepo "$ROOT/h" git@github.com:acme/widget.git)"
+  set +e
+  out="$(cd "$R" && bash -c "unset CLAUDE_PLUGIN_DATA; source \"$LIB\"; tl_drafts_dir" 2>"$ROOT/H.err")"; rc=$?
+  set -e
+  if [ "$rc" -ne 0 ]; then
+    ok "tl_drafts_dir exits non-zero with no CLAUDE_PLUGIN_DATA (rc=$rc)"
+  else
+    bad "tl_drafts_dir returned 0 with no CLAUDE_PLUGIN_DATA (out='$out')"
+  fi
+  [ -s "$ROOT/H.err" ] && ok "tl_drafts_dir wrote a diagnostic to stderr" \
+                       || bad "tl_drafts_dir emitted no stderr diagnostic"
 ) || true
 
 echo

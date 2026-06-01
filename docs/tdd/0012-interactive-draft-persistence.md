@@ -1,6 +1,6 @@
 # TDD 0012: Interactive interview-draft persistence & resume
 
-Status: draft
+Status: implemented
 PRD refs: FR-46, FR-47, FR-48, FR-49, FR-50 (new)
 PRD-rev: 9626a59
 ADR constraints: 0003, 0004

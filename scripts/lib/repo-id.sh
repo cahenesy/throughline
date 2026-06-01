@@ -58,3 +58,26 @@ tl_local_marker_path() {
   fi
   printf '%s/local.json\n' "$dir"
 }
+
+# tl_drafts_dir — echo ${CLAUDE_PLUGIN_DATA}/<repo-id>/drafts and mkdir -p it as
+# a side effect. The interview-draft persistence layer (TDD 0012, FR-46..49)
+# hangs its <skill>.json drafts under this dir, so they are naturally
+# per-developer (inherits <repo-id>), per-machine, and outside git
+# (CLAUDE_PLUGIN_DATA lives outside the repo). Same fail-closed semantics as
+# tl_local_marker_path: returns 1 with a stderr diagnostic when
+# CLAUDE_PLUGIN_DATA is unset/empty, the repo id cannot be derived, or the dir
+# is not writable.
+tl_drafts_dir() {
+  if [ -z "${CLAUDE_PLUGIN_DATA:-}" ]; then
+    echo "tl_drafts_dir: CLAUDE_PLUGIN_DATA is not set" >&2
+    return 1
+  fi
+  local id
+  id="$(tl_repo_id)" || { echo "tl_drafts_dir: cannot derive repo id" >&2; return 1; }
+  local d="${CLAUDE_PLUGIN_DATA}/${id}/drafts"
+  if ! mkdir -p "$d" 2>/dev/null; then
+    echo "tl_drafts_dir: cannot create $d (CLAUDE_PLUGIN_DATA not writable)" >&2
+    return 1
+  fi
+  printf '%s' "$d"
+}
