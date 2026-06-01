@@ -105,6 +105,12 @@ verdict. Cross-check each claim against the artifacts, NOT the prose:
 - intended scope: the `## Touched files` declaration in {{TDD}},
 - behavior actually added: the diff itself.
 
+To ground this check the runner pre-extracts the verdict line, the narrative
+region, and the git ground truth from the build artifacts (a `narrative-missing`
+marker here means there is no narrative to check — skip the step):
+
+{{DIFF_VS_NARRATIVE_FACTS}}
+
 Any discrepancy — a file the narrative claims it did not touch but did, a behavior
 the narrative claims to have added that no code supports, or a verdict the
 narrative declares that a halting finding contradicts — is a `major` finding with

@@ -114,8 +114,8 @@ _render_build_prompt() {  # <slug> <tdd>
 # branch name's `/` or a tag's punctuation cannot break a sed delimiter; the
 # model-derived prior tags are substituted LAST so they cannot double-expand a
 # literal `{{...}}`. Echoes the rendered prompt.
-_render_review_prompt() {  # <tdd> <scope-base> <scope-head> <branch> <prior-tags-csv>
-  local tdd="$1" sbase="$2" shead="$3" branch="$4" prior_csv="${5:-}" tmpl prompt prior_disp
+_render_review_prompt() {  # <tdd> <scope-base> <scope-head> <branch> <prior-tags-csv> [<diff-vs-narrative-facts>]
+  local tdd="$1" sbase="$2" shead="$3" branch="$4" prior_csv="${5:-}" facts="${6:-}" tmpl prompt prior_disp
   tmpl="${RTMPL:-}"
   [ -z "$tmpl" ] && tmpl="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/review-prompt.md"
   if [ ! -f "$tmpl" ]; then
@@ -123,6 +123,13 @@ _render_review_prompt() {  # <tdd> <scope-base> <scope-head> <branch> <prior-tag
     return 1
   fi
   if [ -z "$prior_csv" ]; then prior_disp="none"; else prior_disp="${prior_csv//,/, }"; fi
+  # TDD 0021 §3: the diff-vs-narrative facts block is pre-extracted only for the
+  # CONSOLIDATED review pass (where the build's BATCH_RESULT exists). The per-step
+  # pass renders before the terminal verdict, so it passes no facts; substitute a
+  # skip note rather than leak the raw placeholder.
+  if [ -z "$facts" ]; then
+    facts="(diff-vs-narrative facts are pre-extracted only for the consolidated review pass; this scoped pass runs before the build's terminal BATCH_RESULT, so SKIP the §3 diff-vs-narrative check here.)"
+  fi
   prompt="$(cat "$tmpl")"
   prompt="${prompt//\{\{TDD\}\}/$tdd}"
   prompt="${prompt//\{\{BASE\}\}/$sbase}"
@@ -130,6 +137,9 @@ _render_review_prompt() {  # <tdd> <scope-base> <scope-head> <branch> <prior-tag
   prompt="${prompt//\{\{SCOPE_HEAD\}\}/$shead}"
   prompt="${prompt//\{\{BRANCH\}\}/$branch}"
   prompt="${prompt//\{\{PRIOR_PATTERNS\}\}/$prior_disp}"
+  # Substitute the facts block LAST so any placeholder-like text in the build's
+  # narrative (e.g. a literal {{...}} the author printed) is not re-expanded.
+  prompt="${prompt//\{\{DIFF_VS_NARRATIVE_FACTS\}\}/$facts}"
   printf '%s' "$prompt"
 }
 
@@ -155,14 +165,58 @@ _extract_pattern_tags() {  # <review-log> [<pre-log-size>]
     | paste -sd, -
 }
 
+# _diff_vs_narrative_facts <build-log> <build-start-sha> (TDD 0021 §3 / FR-71;
+# ADR 0006) — extract the build's terminal BATCH_RESULT narrative AND the git
+# ground truth into a structured facts block for the review prompt's
+# {{DIFF_VS_NARRATIVE_FACTS}} interpolation point, so the reviewer's honesty check
+# compares the narrative's CLAIMS against artifacts, not prose alone. When the
+# build log carries no BATCH_RESULT line (older / interrupted builds), emits a
+# `narrative-missing` marker so the reviewer skips the §3 step (§Failure modes).
+# Pure git + text extraction (no model call); cwd is the build worktree so
+# `git diff` resolves the build branch.
+_diff_vs_narrative_facts() {  # <build-log> <build-start-sha>
+  local log="$1" base="${2:-}" br files count last_ln start narrative
+  printf '=== diff-vs-narrative facts (pre-extracted from artifacts; FR-71 / ADR 0006) ===\n'
+  br="$(grep -aoE 'BATCH_RESULT: .*' "$log" 2>/dev/null | tail -1)"
+  if [ -z "$br" ]; then
+    printf 'narrative-missing: the build log carries no BATCH_RESULT line; SKIP the diff-vs-narrative check (a missing narrative is not a finding).\n'
+  else
+    printf 'build-verdict-line: %s\n' "$br"
+    # Narrative region: up to the last 40 log lines ending at the BATCH_RESULT
+    # line — the build's final summary precedes it. Verbatim (a real multi-turn
+    # build log may include stream-json envelope noise); the reviewer reads the
+    # claims and compares them to the git facts below.
+    last_ln="$(grep -an 'BATCH_RESULT:' "$log" 2>/dev/null | tail -1 | cut -d: -f1)"
+    if [ -n "$last_ln" ]; then
+      start=$(( last_ln > 40 ? last_ln - 40 : 1 ))
+      narrative="$(sed -n "${start},${last_ln}p" "$log" 2>/dev/null)"
+      printf 'narrative-region (verbatim from the build log, may be truncated/noisy):\n%s\n' "$narrative"
+    fi
+  fi
+  printf 'git-touched-files (git diff --name-only %s..HEAD):\n' "${base:-<build-start>}"
+  if [ -n "$base" ]; then files="$(git diff --name-only "$base..HEAD" 2>/dev/null)"; else files=""; fi
+  if [ -z "$files" ]; then
+    printf '(none — or git diff unavailable)\n'; count=0
+  else
+    printf '%s\n' "$files"; count="$(printf '%s\n' "$files" | grep -c .)"
+  fi
+  printf 'git-touched-file-count: %s\n' "$count"
+  printf '=== end facts ===\n'
+}
+
 review_one() {  # <tdd> <base-ref> <log>
-  local tdd="$1" base="$2" log="$3" slug branch prior prompt
+  local tdd="$1" base="$2" log="$3" slug branch prior prompt facts
   slug="$(basename "$tdd" .md)"
   branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
   prior="$(_review_prior_patterns_csv "$slug")"
+  # FR-71 / §3: pre-extract the diff-vs-narrative facts from the SHARED gate log
+  # (the build's BATCH_RESULT + narrative live there; gate_one passes one log
+  # through build → review) so the reviewer's honesty check is grounded in
+  # artifacts (ADR 0006), not the author's prose alone.
+  facts="$(_diff_vs_narrative_facts "$log" "$base")"
   # Consolidated/rework review scope is <build-start-base>..HEAD; the per-step
   # review (TDD 0020 §2) renders the same template with a tighter <cleared>..<sha>.
-  if ! prompt="$(_render_review_prompt "$tdd" "$base" "HEAD" "$branch" "$prior")"; then
+  if ! prompt="$(_render_review_prompt "$tdd" "$base" "HEAD" "$branch" "$prior" "$facts")"; then
     echo "error: review_one: could not render review prompt for $tdd" >>"$log"
     return 1
   fi
