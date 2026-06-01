@@ -655,21 +655,34 @@ _build_one_gated() {  # <tdd> <log>
   fi
   return 1
 }
+# TDD 0027 §4 / NFR-4: parse the verdict from the log FIRST; only a verdict-less
+# child is classified by exit code. So an honest verdict wins even when the child
+# exits non-zero — e.g. a child killed by the gate timeout (§1) AFTER emitting its
+# verdict, or one that crashes on exit having already decided. This is the same
+# bug shape _build_one_gated had pre-[[0025]]; that wrapper is NOT the model here
+# (its verdict-bearing exit is guaranteed clean by 0025's stdin-close lifecycle,
+# so its rc!=0 genuinely means no-verdict) and is intentionally left untouched.
 _verify_runtime_one_gated() {  # <tdd> <rbase> <log>
   local tdd="$1" rbase="$2" log="$3" rvs _rc
   verify_runtime_one "$tdd" "$rbase" "$log"; _rc=$?
-  [ "$_rc" -ne 0 ] && return "$_rc"
   rvs="$(verify_runtime_status "$log")"
-  case "$rvs" in *PASS*|*SKIP*) return 0 ;; esac
-  return 1
+  case "$rvs" in
+    *PASS*|*SKIP*) return 0 ;;        # honest verdict wins, even if rc!=0
+    *FAIL*|*BLOCKED*) return 1 ;;     # honest FAIL is a gate failure, not transient
+  esac
+  [ "$_rc" -ne 0 ] && return "$_rc"   # no verdict at all → classify by rc
+  return 1                            # clean exit, no verdict → NFR-4: resolve to FAIL
 }
 _review_one_gated() {  # <tdd> <rbase> <log>
   local tdd="$1" rbase="$2" log="$3" rs _rc
   review_one "$tdd" "$rbase" "$log"; _rc=$?
-  [ "$_rc" -ne 0 ] && return "$_rc"
   rs="$(review_status "$log")"
-  case "$rs" in *PASS*) return 0 ;; esac
-  return 1
+  case "$rs" in
+    *PASS*)  return 0 ;;              # honest verdict wins, even if rc!=0
+    *BLOCK*) return 1 ;;              # honest BLOCK is a gate failure, not transient
+  esac
+  [ "$_rc" -ne 0 ] && return "$_rc"   # no verdict at all → classify by rc
+  return 1                            # clean exit, no verdict → NFR-4: resolve to FAIL
 }
 
 # === Bounded rework loop (TDD 0019 / FR-61, FR-62, FR-65, FR-66, FR-67) ========
