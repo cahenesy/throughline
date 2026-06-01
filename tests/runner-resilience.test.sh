@@ -219,6 +219,88 @@ echo "[VP3] _reclaim_stale_worktree clears a stale worktree so a fresh add succe
     || bad "non-worktree dir at the path should be cleared"
 ) || true
 
+# --- [VP4-setter] _update_branch_head_at_pause mutates only that field ------
+echo "[VP4-setter] _update_branch_head_at_pause rewrites only branch_head_at_pause"
+( D="$ROOT/vp4s"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE=sequential
+  export INTEGRATION=master CHANGE=ci LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  _write_tdd_fragment 0001-alpha 1 docs/tdd/0001-alpha.md 1 paused review \
+    1000 1100 "build/x" "" "log.txt" "transient" \
+    "transient" "build,verify" "[]" "oldsha111"
+  F="$D/state.d/0001-alpha.json"
+  _update_branch_head_at_pause 0001-alpha newsha222
+  [ "$(_read_fragment_field "$F" branch_head_at_pause)" = "newsha222" ] \
+    && ok "setter updates branch_head_at_pause" || bad "setter should update branch_head_at_pause"
+  [ "$(_read_fragment_field "$F" paused_cause)" = "transient" ] \
+    && ok "setter preserves paused_cause" || bad "setter should preserve paused_cause"
+  grep -q '"gates_completed":\["build","verify"\]' "$F" \
+    && ok "setter preserves gates_completed" || bad "setter should preserve gates_completed"
+  [ "$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$F" | head -1)" = "paused" ] \
+    && ok "setter preserves status" || bad "setter should preserve status=paused"
+) || true
+
+# --- [VP4] fast-forward-advanced branch resumes (gap 3b) -------------------
+# When the branch ref advanced past the recorded SHA (commits added, none
+# rewritten — e.g. killed after committing but before updating the fragment),
+# resume accepts it as continuation and advances branch_head_at_pause.
+echo "[VP4] fast-forward-advanced branch resumes; branch_head_at_pause updated"
+( D="$ROOT/vp4"; mkdir -p "$D/state.d"
+  setup_repo "$D"
+  git checkout -q -b build/x
+  git commit -q --allow-empty -m c1; C1="$(git rev-parse HEAD)"
+  git commit -q --allow-empty -m c2; C2="$(git rev-parse HEAD)"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE=sequential
+  export INTEGRATION=master CHANGE=ci LOGDIR="$D" RESUME=1
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  _write_tdd_fragment 0001-alpha 1 docs/tdd/0001-alpha.md 1 paused review \
+    1000 1100 "build/x" "" "log.txt" "transient" \
+    "transient" "build,test-first,verify" "[]" "$C1"
+  F="$D/state.d/0001-alpha.json"
+  RESUME_REFUSE_CAUSE=""
+  _resume_from 0001-alpha; rc=$?
+  [ "$rc" = "0" ] && ok "fast-forward resume accepted (rc=0)" || bad "ff resume should return 0 (got $rc)"
+  [ -z "${RESUME_REFUSE_CAUSE:-}" ] && ok "no divergence refusal on fast-forward" \
+    || bad "ff resume should not set a refuse cause (got '${RESUME_REFUSE_CAUSE:-}')"
+  [ "$(_read_fragment_field "$F" branch_head_at_pause)" = "$C2" ] \
+    && ok "branch_head_at_pause advanced to the current head" \
+    || bad "branch_head_at_pause should be $C2 (got '$(_read_fragment_field "$F" branch_head_at_pause)')"
+  var="$(_resume_gates_var 0001-alpha)"
+  [ -n "${!var:-}" ] && ok "RESUME_GATES_DONE var set (resume proceeds to the gates list)" \
+    || bad "gates-done var should be set after acceptance"
+) || true
+
+# --- [VP5] true rewrite still refused (gap 3b negative) --------------------
+# The recorded SHA is NOT an ancestor of the current head (branch hard-reset to a
+# sibling): a genuine rewrite, refused exactly as today.
+echo "[VP5] non-ancestor head (true rewrite) is still refused"
+( D="$ROOT/vp5"; mkdir -p "$D/state.d"
+  setup_repo "$D"
+  git checkout -q -b build/x
+  git commit -q --allow-empty -m c1; C1="$(git rev-parse HEAD)"
+  git reset --hard HEAD~1 >/dev/null 2>&1     # back to C0
+  git commit -q --allow-empty -m sibling       # divergent commit; C1 is NOT an ancestor
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE=sequential
+  export INTEGRATION=master CHANGE=ci LOGDIR="$D" RESUME=1
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  _write_tdd_fragment 0001-alpha 1 docs/tdd/0001-alpha.md 1 paused review \
+    1000 1100 "build/x" "" "log.txt" "transient" \
+    "transient" "build" "[]" "$C1"
+  F="$D/state.d/0001-alpha.json"
+  RESUME_REFUSE_CAUSE=""
+  _resume_from 0001-alpha; rc=$?
+  [ "$rc" = "3" ] && ok "true rewrite refused (rc=3)" || bad "rewrite resume should return 3 (got $rc)"
+  [ "${RESUME_REFUSE_CAUSE:-}" = "resume-blocked-branch-divergence" ] \
+    && ok "refuse cause is resume-blocked-branch-divergence" \
+    || bad "rewrite should set resume-blocked-branch-divergence (got '${RESUME_REFUSE_CAUSE:-}')"
+  [ "$(_read_fragment_field "$F" branch_head_at_pause)" = "$C1" ] \
+    && ok "branch_head_at_pause left unchanged on refusal" \
+    || bad "branch_head_at_pause should remain $C1 on refusal"
+) || true
+
 # --- report ----------------------------------------------------------------
 n_ok=$(grep -c '^ok$' "$RESULTS" 2>/dev/null); n_ok=${n_ok:-0}
 n_fail=$(grep -c '^fail$' "$RESULTS" 2>/dev/null); n_fail=${n_fail:-0}
