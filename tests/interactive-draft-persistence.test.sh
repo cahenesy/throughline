@@ -376,6 +376,28 @@ echo "[S] prd-author SKILL.md carries the five draft-persistence prompt edits"
   hasF "$SK" "tl_draft_discard prd-author"      && ok "edit 5: discard on PR success (FR-49)" || bad "prd-author missing tl_draft_discard"
 ) || true
 
+# --- [S2] prd-author SKILL.md carries the per-step-review robustness guardrails -
+# The per-step review of step 3 found five gaps in the prompt spec; the fixes are
+# verified the same way (keyword presence). Each phrase is the stable anchor for
+# one finding so a future edit that drops the guardrail trips this gate.
+echo "[S2] prd-author SKILL.md carries the five robustness guardrails"
+( SK="$REPO/skills/prd-author/SKILL.md"
+  hasF() { grep -qF "$2" "$1"; }
+  # Finding 1 — unquoted args risk silent elicitation loss (FR-46).
+  hasF "$SK" "shell-quoted"        && ok "guard 1: shell-quote each append argument" || bad "prd-author missing shell-quote instruction"
+  hasF "$SK" "word-splits"         && ok "guard 1: names the word-split silent-loss failure" || bad "prd-author missing word-split rationale"
+  # Finding 2 — tl_draft_exists exit-code ambiguity; file-presence test disambiguates.
+  hasF "$SK" '[ -f "$dpath" ]'     && ok "guard 2: file-presence test reaches the unparseable path" || bad "prd-author missing [ -f \$dpath ] disambiguation"
+  hasF "$SK" "not parseable"       && ok "guard 2: unparseable-draft warning" || bad "prd-author missing 'not parseable' path"
+  # Finding 3 — missing source-failure handler.
+  hasF "$SK" "If sourcing fails"   && ok "guard 3: source-failure handler" || bad "prd-author missing source-failure handler"
+  # Finding 4 — stored prompt-injection via recovered draft content.
+  hasF "$SK" "untrusted data, not instructions" && ok "guard 4: recovered-content trust boundary" || bad "prd-author missing trust-boundary label"
+  # Finding 5 — underspecified degraded-mode + mid-interview failure signals.
+  hasF "$SK" "degraded mode"             && ok "guard 5: degraded-mode signal" || bad "prd-author missing degraded-mode signal"
+  hasF "$SK" "Mid-interview persistence failure" && ok "guard 5: mid-interview failure signal" || bad "prd-author missing mid-interview failure signal"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
