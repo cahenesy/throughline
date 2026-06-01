@@ -279,6 +279,22 @@ _rework_config_json() {
     "$(json_escape "$model")" "$max" "$floor" "$factor"
 }
 
+# _gate_timeout_json — emit the gate-child watchdog ceiling (TDD 0027 §1, the
+# THROUGHLINE_GATE_TIMEOUT knob read by _claude_call) as a JSON number for the
+# run.json config snapshot, so a timeout-driven halt is reproducible from
+# run-state alone (ADR 0006). Mirrors _claude_call's resolution: 0/unlimited/empty
+# → 0 (disabled), non-numeric → the 3600 default, numeric → as-is. Self-contained
+# (reads env with the default) like _rework_config_json, so it is correct under
+# the THROUGHLINE_SOURCE_ONLY test path too.
+_gate_timeout_json() {
+  local to="${THROUGHLINE_GATE_TIMEOUT:-3600}"
+  case "$to" in
+    0|unlimited|'') printf '0' ;;
+    *[!0-9]*)       printf '3600' ;;
+    *)              printf '%s' "$to" ;;
+  esac
+}
+
 # Re-roll the run-level rollup from per-TDD fragments and rewrite run.json.
 # state ∈ {running, done, paused}. Called by state_init (running), at run end
 # (done), and by _enter_paused (paused). When state is paused, pause_started_at
@@ -323,11 +339,12 @@ _write_run_fragment() {
   # TDD 0011 / iter-3 MAJOR-5: same printf+mv failure handling as
   # _write_tdd_fragment.
   local rework_config_lit; rework_config_lit="$(_rework_config_json)"
-  if ! printf '{"schema":1,"started_at":%d,"updated_at":%d,"pid":%d,"integration_branch":"%s","mode":"%s","change":"%s","logdir":"%s","total":%d,"completed":%d,"failed":%d,"blocked":%d,"skipped":%d,"paused":%d,"state":"%s","pause_started_at":%s,"config":{"rework_config":%s}}\n' \
+  local gate_timeout_lit; gate_timeout_lit="$(_gate_timeout_json)"
+  if ! printf '{"schema":1,"started_at":%d,"updated_at":%d,"pid":%d,"integration_branch":"%s","mode":"%s","change":"%s","logdir":"%s","total":%d,"completed":%d,"failed":%d,"blocked":%d,"skipped":%d,"paused":%d,"state":"%s","pause_started_at":%s,"config":{"rework_config":%s,"gate_timeout":%s}}\n' \
     "$STATE_STARTED_AT" "$(date +%s)" "$$" \
     "$(json_escape "$INTEGRATION")" "$STATE_MODE" "$(json_escape "$CHANGE")" "$(json_escape "$LOGDIR")" \
     "$total" "$completed" "$failed" "$blocked" "$skipped" "$paused" \
-    "$(json_escape "$state")" "$pause_started_lit" "$rework_config_lit" \
+    "$(json_escape "$state")" "$pause_started_lit" "$rework_config_lit" "$gate_timeout_lit" \
     > "$tmp"; then
     echo "error: _write_run_fragment printf failed; run.json NOT updated" >&2
     rm -f "$tmp" 2>/dev/null || true

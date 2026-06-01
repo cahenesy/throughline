@@ -20,12 +20,42 @@
 # $STATE_DIR, …), which the runner sets before these functions are called.
 # Shared scope is deliberate for this dogfood slice, matching lib/state.sh.
 
+# _claude_call <log> <args...> — run a single-shot `claude` call under the child
+# watchdog (TDD 0027 §1 / FR-42). On timeout, GNU `timeout` SIGTERMs the child
+# and ITSELF exits 124 — a code _classify_cause's signal arm does NOT handle (it
+# handles the child's 137/143, and `timeout` writes no "timed out" text for the
+# log-pattern arm to match). So the wrapper does two things on 124: (a) appends an
+# explicit `THROUGHLINE_GATE_TIMEOUT: …(transient)` line to the log — which
+# _classify_cause's existing `timed[- ]out` pattern DOES match — and (b) returns
+# 124 unchanged so the caller's rc capture still sees the timeout distinctly. Belt
+# and suspenders: the log line is the classification mechanism; the distinct rc is
+# the triage signal. THROUGHLINE_GATE_TIMEOUT=0/unlimited/'' disables the wrap
+# (matching THROUGHLINE_BUILD_TIMEOUT); a non-numeric value falls back to 3600.
+# When `timeout` is absent (minimal container) tocmd stays empty → the call runs
+# un-wrapped, exactly today's behavior (degraded, never broken).
+_claude_call() {  # <log> <args...>
+  local log="$1"; shift
+  local to="${THROUGHLINE_GATE_TIMEOUT:-3600}"
+  local -a tocmd=()
+  case "$to" in
+    0|unlimited|'') : ;;
+    *[!0-9]*) to=3600; command -v timeout >/dev/null 2>&1 && tocmd=(timeout 3600) ;;
+    *) command -v timeout >/dev/null 2>&1 && tocmd=(timeout "$to") ;;
+  esac
+  "${tocmd[@]}" claude "$@" >>"$log" 2>&1
+  local rc=$?
+  if [ "$rc" = "124" ]; then
+    printf 'THROUGHLINE_GATE_TIMEOUT: gate child timed out after %ss (transient)\n' "$to" >> "$log"
+  fi
+  return "$rc"
+}
+
 # --- per-TDD primitives (cwd = the repo or worktree they run in) ---------------
 build_one() {  # <tdd> <log>
   local tdd="$1" log="$2" prompt; prompt="$(sed "s#{{TDD}}#${tdd}#g" "$TMPL")"
   local args=(-p "$prompt" --permission-mode auto); [ -n "$MODEL" ] && args+=(--model "$MODEL")
   local start _rc; start=$(date +%s); _rc=0
-  claude "${args[@]}" >>"$log" 2>&1; _rc=$?
+  _claude_call "$log" "${args[@]}"; _rc=$?   # TDD 0027 §1: under the gate watchdog
   record_session_pointer "$log" "$start"
   # TDD 0019 / FR-68: record the original-build token spend on the fragment so
   # the rework-vs-original comparison is derivable from run-state alone. Reads
@@ -168,7 +198,7 @@ review_one() {  # <tdd> <base-ref> <log>
   fi
   local args=(-p "$prompt" --permission-mode auto); [ -n "$REVIEW_MODEL" ] && args+=(--model "$REVIEW_MODEL")
   local start _rc; start=$(date +%s); _rc=0
-  claude "${args[@]}" >>"$log" 2>&1; _rc=$?
+  _claude_call "$log" "${args[@]}"; _rc=$?   # TDD 0027 §1: under the gate watchdog
   record_session_pointer "$log" "$start"
   return "$_rc"   # TDD 0011 / BL-2: preserve claude's exit code
 }
@@ -264,7 +294,7 @@ verify_runtime_one() {  # <tdd> <base-ref> <log>
   local args=(-p "$prompt" --permission-mode auto)
   [ -n "$vm" ] && args+=(--model "$vm")
   local start _rc; start=$(date +%s); _rc=0
-  claude "${args[@]}" >>"$log" 2>&1; _rc=$?
+  _claude_call "$log" "${args[@]}"; _rc=$?   # TDD 0027 §1: under the gate watchdog
   record_session_pointer "$log" "$start"
   return "$_rc"   # TDD 0011 / BL-2: preserve claude's exit code
 }
@@ -432,7 +462,7 @@ _run_per_step_review() {  # <slug> <tdd> <step-id> <sha> <build-start-sha> <main
   local args=(-p "$prompt" --permission-mode auto); [ -n "${REVIEW_MODEL:-}" ] && args+=(--model "$REVIEW_MODEL")
   start=$(date +%s)
   printf '=== per-step review: step %s scope %s..%s ===\n' "$step_id" "$base" "$sha" >> "$rlog"
-  claude "${args[@]}" >>"$rlog" 2>&1
+  _claude_call "$rlog" "${args[@]}"   # TDD 0027 §1: under the gate watchdog
   record_session_pointer "$rlog" "$start"
   rs="$(review_status "$rlog")"
   case "$rs" in
@@ -857,7 +887,7 @@ _rework_one() {  # <tdd> <log> <finding-ref> <finding-text> <cap>
   # "rework invocation failed" diagnostic path catches both failure modes
   # uniformly. On success we still echo HEAD so the caller can detect
   # empty-vs-shipped reworks via $new_head comparison.
-  claude "${args[@]}" >>"$log" 2>&1; _rc=$?
+  _claude_call "$log" "${args[@]}"; _rc=$?   # TDD 0027 §1: under the gate watchdog
   record_session_pointer "$log" "$start"
   if [ "$_rc" -ne 0 ]; then
     echo "warning: _rework_one: claude subprocess exited rc=$_rc (no rework commit; caller will treat as invocation failure)" >>"$log"
