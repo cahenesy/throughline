@@ -442,6 +442,26 @@ echo "[T2] tdd-author SKILL.md carries PRD-drift, FR-50, and the robustness guar
   hasF "$SK" "Mid-interview persistence failure"       && ok "guard 5: mid-interview failure signal" || bad "tdd-author missing mid-interview failure signal"
 ) || true
 
+# --- [T3] tdd-author PRD-rev command actually resolves (per-step-review BLOCK) --
+# The first cut used `git rev-parse --short HEAD docs/PRD.md`, which treats the
+# path as a revision and exits 128 — prd_rev_at_start would be stored empty and
+# the PRD-drift tweak (FR-50/tweak-1) would be dead. The command must be the
+# path-scoped last-commit form, and it must actually resolve here.
+echo "[T3] tdd-author PRD-rev command resolves to a non-empty short SHA"
+( SK="$REPO/skills/tdd-author/SKILL.md"
+  if grep -qF 'git rev-parse --short HEAD docs/PRD.md' "$SK"; then
+    bad "tdd-author still uses the broken 'git rev-parse --short HEAD docs/PRD.md' (exits 128)"
+  else
+    ok "tdd-author dropped the broken git rev-parse PRD-rev command"
+  fi
+  grep -qF 'git log -1 --format=%h -- docs/PRD.md' "$SK" \
+    && ok "tdd-author uses 'git log -1 --format=%h -- docs/PRD.md' for prd_rev" \
+    || bad "tdd-author missing the working path-scoped PRD-rev command"
+  rev="$( cd "$REPO" && git log -1 --format=%h -- docs/PRD.md 2>/dev/null )"
+  [ -n "$rev" ] && ok "PRD-rev command resolves to non-empty short SHA ($rev)" \
+    || bad "PRD-rev command resolved to empty (drift detection would be inoperative)"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
