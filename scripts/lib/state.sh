@@ -741,6 +741,59 @@ _update_branch_head_at_pause() {  # <slug> <sha>
   fi
 }
 
+# _accept_blocked_as_paused <slug> [<stage>] (TDD 0027 §3c / FR-39)
+# Atomically convert a blocked-but-recoverable fragment into a resumable paused
+# one: status→paused AND paused_cause→transient in a SINGLE _write_tdd_fragment
+# call (temp-file + mv), preserving every other field (incl. halt metadata).
+# Atomicity is the point: a two-step flip (set status, then set cause) has a
+# window where the status write lands but the cause write fails, leaving
+# status=paused with a null paused_cause — indistinguishable from a normal paused
+# fragment, which the NEXT resume invocation silently accepts. One write means
+# the fragment is EITHER still blocked (on failure, untouched) OR fully
+# paused+transient — never a half-written mix. Fails loudly + non-zero on a
+# missing fragment or write failure so the caller refuses the resume.
+_accept_blocked_as_paused() {  # <slug> [<stage>]
+  local slug="$1" stage="${2:-}"
+  local f="${STATE_DIR:-}/$slug.json"
+  if [ -z "${STATE_DIR:-}" ] || [ ! -f "$f" ]; then
+    echo "error: _accept_blocked_as_paused cannot update $slug: state fragment missing ($f)" >&2
+    return 1
+  fi
+  local n qp path sta branch pr_url log_f note
+  local gates_csv retries_json branch_head
+  local halt_cause halt_finding halt_actions_csv halt_detail
+  local rework_attempts rework_log build_attempt last_cleared_sha cleared_step_log
+  n="$(sed -n 's/.*"n":\([0-9]*\).*/\1/p'            "$f" | head -1)"
+  qp="$(sed -n 's/.*"queue_pos":\([0-9]*\).*/\1/p'   "$f" | head -1)"
+  path="$(sed -n 's/.*"path":"\([^"]*\)".*/\1/p'     "$f" | head -1)"
+  sta="$(sed -n 's/.*"started_at":\([0-9]*\).*/\1/p' "$f" | head -1)"
+  branch="$(sed -n 's/.*"branch":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+  pr_url="$(sed -n 's/.*"pr_url":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+  log_f="$(sed -n 's/.*"log":"\([^"]*\)".*/\1/p'     "$f" | head -1)"
+  note="$(sed -n 's/.*"note":"\([^"]*\)".*/\1/p'     "$f" | head -1)"
+  gates_csv="$(_read_fragment_array_csv "$f" gates_completed)"
+  retries_json="$(_read_fragment_raw_array "$f" retries)"
+  branch_head="$(_read_fragment_field "$f" branch_head_at_pause)"
+  halt_cause="$(_read_fragment_field "$f" halt_cause)"
+  halt_finding="$(_read_fragment_field "$f" halt_triggering_finding_ref)"
+  halt_actions_csv="$(_read_fragment_array_csv "$f" halt_next_actions)"
+  halt_detail="$(_read_fragment_field "$f" halt_cause_detail)"
+  rework_attempts="$(_read_fragment_raw_object "$f" rework_attempts)"
+  rework_log="$(_read_fragment_raw_array "$f" rework_log)"
+  build_attempt="$(_read_fragment_raw_object "$f" build_attempt)"
+  last_cleared_sha="$(_read_fragment_field "$f" last_cleared_review_sha)"
+  cleared_step_log="$(_read_fragment_cleared_log "$f")"
+  if ! _write_tdd_fragment "$slug" "${n:-0}" "$path" "${qp:-0}" paused "$stage" \
+    "${sta:-$(date +%s)}" "$(date +%s)" "$branch" "$pr_url" "$log_f" "$note" \
+    transient "$gates_csv" "$retries_json" "$branch_head" \
+    "$halt_cause" "$halt_finding" "$halt_actions_csv" "$halt_detail" \
+    "$rework_attempts" "$rework_log" "$build_attempt" \
+    "$last_cleared_sha" "$cleared_step_log"; then
+    echo "error: _accept_blocked_as_paused: could not write $slug fragment" >&2
+    return 1
+  fi
+}
+
 # --- Halt-cause taxonomy (TDD 0018 / FR-63, FR-64; ADR 0007) ------------------
 # The closed enum of human-needed halt causes, the deterministic cause→next-
 # actions mapping, and the writer (set_halt_cause) that enforces both. This is

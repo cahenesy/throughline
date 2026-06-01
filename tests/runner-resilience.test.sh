@@ -383,7 +383,7 @@ echo "[VP6c] resume refuses when the blocked->paused flip write fails"
   write_blocked 0001-alpha 1 rework-scope-exceeded \
     "resume (retries with stricter scope),revise TDD bounds via /tdd-author"
   F="$D/state.d/0001-alpha.json"
-  set_tdd_state() { return 1; }     # simulate a fragment-write failure mid-flip
+  _write_tdd_fragment() { return 1; }   # simulate a fragment-write failure at the flip
   RESUME_REFUSE_CAUSE=""
   _resume_from 0001-alpha; rc=$?
   [ "$rc" = "3" ] && ok "flip-write failure refuses the resume (rc=3)" \
