@@ -533,6 +533,23 @@ echo "[S22] run-end watcher-wake PID guard rejects 0 / negative / non-numeric (n
   fi
 ) || true
 
+# --- §5: skill launch + review step (mechanical grep; the interactive review is
+#         exercised by the human at run time / the runtime-verify gate) ---------
+
+echo "[S23] SKILL.md carries the watcher launch + the Detect-pending-candidate-learnings review step"
+( S="$SKILL"
+  grep -q 'implement-watch.sh' "$S" 2>/dev/null && ok "launches via implement-watch.sh" || bad "SKILL.md should launch the watcher"
+  grep -q 'run_in_background' "$S" 2>/dev/null && ok "watcher launched as harness-tracked background (run_in_background)" || bad "SKILL.md should launch the watcher with run_in_background"
+  # the OLD bare-nohup implement.sh launch must be gone (replaced by the watcher).
+  grep -qE 'nohup bash "\$\{CLAUDE_PLUGIN_ROOT\}/scripts/implement\.sh"' "$S" 2>/dev/null && bad "the bare nohup implement.sh launch must be replaced by the watcher" || ok "no bare nohup implement.sh launch remains"
+  grep -qi 'Detect pending candidate learnings' "$S" 2>/dev/null && ok "has the Detect-pending-candidate-learnings step" || bad "SKILL.md should add the review step"
+  grep -q 'IMPLEMENT_RUN_COMPLETE' "$S" 2>/dev/null && ok "auto path reads the IMPLEMENT_RUN_COMPLETE line" || bad "should describe the auto callback (IMPLEMENT_RUN_COMPLETE)"
+  grep -qi 'fallback' "$S" 2>/dev/null && ok "describes the fallback path" || bad "should describe the fallback review path"
+  grep -q 'multiSelect' "$S" 2>/dev/null && ok "review uses one multiSelect AskUserQuestion" || bad "review should use a multiSelect AskUserQuestion"
+  grep -q 'candidate-learnings.reviewed.json' "$S" 2>/dev/null && ok "marks reviewed by renaming to candidate-learnings.reviewed.json" || bad "should rename to candidate-learnings.reviewed.json after review"
+  grep -q 'append_accepted_learning' "$S" 2>/dev/null && ok "accepted classes call append_accepted_learning" || bad "should call append_accepted_learning for accepted classes"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
