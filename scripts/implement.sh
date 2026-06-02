@@ -49,6 +49,19 @@ fi
   echo "FATAL: failed to source $SCRIPT_DIR/lib/pause-retry.sh" >&2
   exit 1
 }
+# learnings.sh (TDD 0022 / FR-72) — build-phase learning capture. Depends only on
+# state.sh (its _read_fragment_findings reader + json_escape). Sourced here,
+# OUTSIDE the THROUGHLINE_SOURCE_ONLY guard, so the test suite sees its helpers
+# and the run-end hook (below) can call detect_build_learnings.
+if [ ! -r "$SCRIPT_DIR/lib/learnings.sh" ]; then
+  echo "FATAL: cannot read $SCRIPT_DIR/lib/learnings.sh (partial install or perms)" >&2
+  exit 1
+fi
+# shellcheck source=lib/learnings.sh
+. "$SCRIPT_DIR/lib/learnings.sh" || {
+  echo "FATAL: failed to source $SCRIPT_DIR/lib/learnings.sh" >&2
+  exit 1
+}
 if [ ! -r "$SCRIPT_DIR/lib/gates.sh" ]; then
   echo "FATAL: cannot read $SCRIPT_DIR/lib/gates.sh (partial install or perms)" >&2
   exit 1
@@ -645,9 +658,28 @@ fi
 if [ "$_any_paused" -eq 1 ]; then
   set_run_state "paused" \
     || echo "warning: could not write final run.json (state=paused)" | tee -a "$REPORT" >&2
+  _run_complete_state="paused"
 else
   set_run_state "done" \
     || echo "warning: could not write final run.json (state=done)" | tee -a "$REPORT" >&2
+  # FR-72 detection runs in the done branch ONLY — its precondition is "all TDDs
+  # terminal" (a paused run isn't complete). Guarded so a detection failure is a
+  # logged warning, never fatal to the run (the run already produced its work).
+  detect_build_learnings "$STATE_DIR" "$LOGDIR" "$MAINREPO" \
+    || echo "warning: build-phase learning detection failed (non-fatal)" | tee -a "$REPORT" >&2
+  _run_complete_state="done"
 fi
+
+# Run-completion bridge (TDD 0022 §4): in BOTH branches, after the terminal
+# set_run_state, drop the completion marker and wake the watcher so the
+# interactive session is re-invoked for the candidate-learning review. A
+# dead/absent watcher is the survives-close fallback (TDD 0011 / FR-39), not an
+# error — every step is best-effort with a one-line justification (FR-74 #1).
+printf '%s\n' "$_run_complete_state" > "$LOGDIR/.run-complete" 2>/dev/null \
+  || echo "warning: could not write $LOGDIR/.run-complete (non-fatal; watcher falls back to its poll)" >&2
+# Read the watcher PID once (read-once; no TOCTOU re-read) and signal only a live
+# one. Each guard's failure is the intended no-op, hence the trailing || true.
+_wp="$(cat "$MAINREPO/docs/tdd/.implement-logs/.watch.pid" 2>/dev/null)" || true
+[ -n "$_wp" ] && kill -0 "$_wp" 2>/dev/null && kill -USR1 "$_wp" 2>/dev/null || true
 
 echo; echo "=== Done. Report: $REPORT ==="; cat "$REPORT"
