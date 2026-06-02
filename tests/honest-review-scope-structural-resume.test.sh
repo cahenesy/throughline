@@ -343,11 +343,15 @@ echo "[§8] integration merge conflict refuses cleanly with a persisted cause"
 echo "[§9-A] the conflict outcome renders correctly in status.sh (no unknown-cause warning; --check-paused surfaces it)"
 ( TDDS=(); THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
   _setup_structural_halt "$ROOT/s9a" 1 1 || { bad "setup failed"; exit 0; }
-  # Guard the fixture: the resume MUST refuse on the merge conflict (rc=3) before
-  # we assert on the render — a silently-discarded rc would let the render checks
-  # pass against the wrong fragment state (false pass).
-  _resume_from 0031-fix >/dev/null 2>&1; rrc=$?
-  [ "$rrc" -eq 3 ] || { bad "§9-A fixture: resume should refuse on the merge conflict (rc=3, got $rrc)"; exit 0; }
+  # Guard the fixture: the resume MUST refuse on the merge conflict, identified by
+  # BOTH rc=3 AND the specific cause — rc=3 alone is ambiguous (other refusal
+  # paths also return 3), which would let the render checks pass against the wrong
+  # fragment state (false pass). Capture stderr so a broken fixture's diagnostic
+  # is surfaced rather than swallowed.
+  RESUME_REFUSE_CAUSE=""
+  _resume_from 0031-fix >/dev/null 2>"$ROOT/s9a.err"; rrc=$?
+  { [ "$rrc" -eq 3 ] && [ "${RESUME_REFUSE_CAUSE:-}" = "resume-blocked-integration-conflict" ]; } \
+    || { bad "§9-A fixture: resume should refuse the merge conflict (want rc=3 cause=resume-blocked-integration-conflict; got rc=$rrc cause='${RESUME_REFUSE_CAUSE:-}' stderr='$(cat "$ROOT/s9a.err" 2>/dev/null)')"; exit 0; }
   printf '{"schema":1,"started_at":1000,"updated_at":1001,"pid":1,"state":"paused","total":1,"completed":0,"failed":0,"blocked":0,"skipped":0,"paused":1}\n' > "$STATE_DIR/run.json" \
     || { bad "§9-A fixture: could not write run.json"; exit 0; }
   out="$(bash "$REPO/scripts/status.sh" --logdir "$LOGDIR" 2>&1)"
@@ -389,11 +393,13 @@ echo "[§9-A2] a conflict-cause halt renders its next-action text + Resume trail
 echo "[§9-B] the tdd-unrevised refusal leaves the structural-finding halt rendering unchanged"
 ( TDDS=(); THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
   _setup_structural_halt "$ROOT/s9b" 0 0 || { bad "setup failed"; exit 0; }
-  # Guard the fixture: the resume MUST refuse (rc=3, tdd-unrevised) and leave the
-  # fragment unchanged before we assert the structural-finding render — a discarded
-  # rc would risk asserting against the wrong state.
-  _resume_from 0031-fix >/dev/null 2>&1; rrc=$?
-  [ "$rrc" -eq 3 ] || { bad "§9-B fixture: resume should refuse tdd-unrevised (rc=3, got $rrc)"; exit 0; }
+  # Guard the fixture: the resume MUST refuse, identified by BOTH rc=3 AND the
+  # specific tdd-unrevised cause — rc=3 alone is ambiguous (other refusal paths
+  # also return 3). Capture stderr so a broken fixture surfaces its reason.
+  RESUME_REFUSE_CAUSE=""
+  _resume_from 0031-fix >/dev/null 2>"$ROOT/s9b.err"; rrc=$?
+  { [ "$rrc" -eq 3 ] && [ "${RESUME_REFUSE_CAUSE:-}" = "resume-blocked-tdd-unrevised" ]; } \
+    || { bad "§9-B fixture: resume should refuse tdd-unrevised (want rc=3 cause=resume-blocked-tdd-unrevised; got rc=$rrc cause='${RESUME_REFUSE_CAUSE:-}' stderr='$(cat "$ROOT/s9b.err" 2>/dev/null)')"; exit 0; }
   printf '{"schema":1,"started_at":1000,"updated_at":1001,"pid":1,"state":"blocked","total":1,"completed":0,"failed":0,"blocked":1,"skipped":0,"paused":0}\n' > "$STATE_DIR/run.json" \
     || { bad "§9-B fixture: could not write run.json"; exit 0; }
   out="$(bash "$REPO/scripts/status.sh" --logdir "$LOGDIR" 2>&1)"
