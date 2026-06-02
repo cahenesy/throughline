@@ -363,6 +363,118 @@ echo "[D8] review_one checks _diff_vs_narrative_facts' exit code and proceeds wi
   grep -qi 'facts.*unavailable\|_diff_vs_narrative_facts' "$L" && ok "logs that facts extraction failed / is unavailable" || bad "review_one must record the facts-extraction failure (log: $(cat "$L"))"
 ) || true
 
+# --- §2/§4: FINDING_BEGIN..END parser → findings[] + the {blocker,major} halt --
+# boundary. Helpers: _record_review_findings (parse + record, echo halting count)
+# and _review_halt_boundary (apply §2's three-case decision; synthesize
+# inconsistent-review-output / missing-severity-tag / invalid-severity-value).
+_f4_frag() {  # <dir> — source impl + write a fresh fragment; echo nothing
+  export STATE_DIR="$1/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$1"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || return 1
+  _write_tdd_fragment 0021-x 21 docs/tdd/0021-x.md 1 reviewing review 1000 1000 "" "" "" ""
+}
+
+echo "[F1] _record_review_findings records a FINDING_BEGIN block onto findings[] (source:review)"
+( D="$ROOT/F1"; mkdir -p "$D/state.d"; _f4_frag "$D" || { bad "source guard missing"; exit 0; }
+  L="$D/review.log"
+  { printf 'FINDING_BEGIN\n'; printf 'severity: major\n'; printf 'structural: false\n';
+    printf 'region: src/x.sh:10-20\n'; printf 'region_lines: 11\n';
+    printf 'pattern_tags: [real-bug, edge-case]\n'; printf 'summary: a genuine bug\n';
+    printf 'evidence: the offending line\n'; printf 'FINDING_END\n';
+    printf 'REVIEW_RESULT: BLOCK has a bug\n'; } > "$L"
+  h="$(_record_review_findings "$L" 0 0021-x "review:1")"
+  F="$D/state.d/0021-x.json"
+  [ "$h" = "1" ] && ok "reports 1 halting finding" || bad "expected halting count 1 (got '$h')"
+  grep -q '"source":"review"' "$F" 2>/dev/null && ok "records source:review" || bad "finding must record source:review (got: $(cat "$F"))"
+  grep -q '"severity":"major"' "$F" 2>/dev/null && ok "records severity:major" || bad "finding must record severity:major"
+  grep -q '"region_lines":11' "$F" 2>/dev/null && ok "records region_lines:11" || bad "finding must record region_lines:11"
+  grep -q 'real-bug' "$F" 2>/dev/null && ok "records pattern_tags" || bad "finding must record pattern_tags"
+) || true
+
+echo "[F2] _review_halt_boundary: a minor finding + REVIEW_RESULT: PASS clears (no halt)"
+( D="$ROOT/F2"; mkdir -p "$D/state.d"; _f4_frag "$D" || { bad "source guard missing"; exit 0; }
+  L="$D/review.log"
+  { printf 'FINDING_BEGIN\nseverity: minor\nstructural: false\nregion: a.sh:1-2\nregion_lines: 2\npattern_tags: [naming]\nsummary: nicer name\nevidence: x\nFINDING_END\n';
+    printf 'REVIEW_RESULT: PASS\n'; } > "$L"
+  _review_halt_boundary "$L" 0 0021-x "review:1" "REVIEW_RESULT: PASS"; rc=$?
+  [ "$rc" -eq 0 ] && ok "minor + PASS clears (rc 0)" || bad "minor + PASS must clear (rc=$rc)"
+  grep -q '"severity":"minor"' "$D/state.d/0021-x.json" 2>/dev/null && ok "minor finding still recorded" || bad "minor finding must be recorded"
+) || true
+
+echo "[F3] _review_halt_boundary: a major finding + REVIEW_RESULT: BLOCK halts"
+( D="$ROOT/F3"; mkdir -p "$D/state.d"; _f4_frag "$D" || { bad "source guard missing"; exit 0; }
+  L="$D/review.log"
+  { printf 'FINDING_BEGIN\nseverity: major\nstructural: false\nregion: a.sh:1-9\nregion_lines: 9\npattern_tags: [bug]\nsummary: bug\nevidence: x\nFINDING_END\n';
+    printf 'REVIEW_RESULT: BLOCK bug\n'; } > "$L"
+  _review_halt_boundary "$L" 0 0021-x "review:1" "REVIEW_RESULT: BLOCK bug"; rc=$?
+  [ "$rc" -eq 1 ] && ok "major + BLOCK halts (rc 1)" || bad "major + BLOCK must halt (rc=$rc)"
+) || true
+
+echo "[F3b] _review_halt_boundary: a major finding + REVIEW_RESULT: PASS still halts (severity wins)"
+( D="$ROOT/F3b"; mkdir -p "$D/state.d"; _f4_frag "$D" || { bad "source guard missing"; exit 0; }
+  L="$D/review.log"
+  { printf 'FINDING_BEGIN\nseverity: major\nstructural: false\nregion: a.sh:1-9\nregion_lines: 9\npattern_tags: [bug]\nsummary: bug\nevidence: x\nFINDING_END\n';
+    printf 'REVIEW_RESULT: PASS\n'; } > "$L"
+  _review_halt_boundary "$L" 0 0021-x "review:1" "REVIEW_RESULT: PASS"; rc=$?
+  [ "$rc" -eq 1 ] && ok "major + PASS still halts (≥1 halting finding wins regardless of verdict, §2)" || bad "a halting finding must halt even on a PASS verdict (rc=$rc)"
+) || true
+
+echo "[F4] _review_halt_boundary: zero findings + REVIEW_RESULT: BLOCK → synthetic inconsistent-review-output, halt"
+( D="$ROOT/F4"; mkdir -p "$D/state.d"; _f4_frag "$D" || { bad "source guard missing"; exit 0; }
+  L="$D/review.log"; printf 'no findings here.\nREVIEW_RESULT: BLOCK something\n' > "$L"
+  _review_halt_boundary "$L" 0 0021-x "review:1" "REVIEW_RESULT: BLOCK something"; rc=$?
+  F="$D/state.d/0021-x.json"
+  [ "$rc" -eq 1 ] && ok "BLOCK with no halting finding halts (rc 1)" || bad "mismatch case must halt (rc=$rc)"
+  grep -q 'inconsistent-review-output' "$F" 2>/dev/null && ok "synthesizes inconsistent-review-output finding" || bad "must record inconsistent-review-output (got: $(cat "$F"))"
+  grep -q '"source":"runner-check"' "$F" 2>/dev/null && ok "synthetic finding is source:runner-check" || bad "inconsistent-review-output must be source:runner-check"
+) || true
+
+echo "[F5] missing severity → recorded as major + minor meta-finding missing-severity-tag; counts as halting"
+( D="$ROOT/F5"; mkdir -p "$D/state.d"; _f4_frag "$D" || { bad "source guard missing"; exit 0; }
+  L="$D/review.log"
+  { printf 'FINDING_BEGIN\nstructural: false\nregion: a.sh:1-3\nregion_lines: 3\npattern_tags: [x]\nsummary: untagged\nevidence: y\nFINDING_END\n';
+    printf 'REVIEW_RESULT: PASS\n'; } > "$L"
+  h="$(_record_review_findings "$L" 0 0021-x "review:1")"
+  F="$D/state.d/0021-x.json"
+  [ "$h" = "1" ] && ok "missing-severity finding counts as halting (conservative major)" || bad "missing severity must count as halting (got '$h')"
+  grep -q 'missing-severity-tag' "$F" 2>/dev/null && ok "emits minor meta-finding missing-severity-tag" || bad "must emit missing-severity-tag (got: $(cat "$F"))"
+) || true
+
+echo "[F6] invalid severity → recorded verbatim + minor meta-finding invalid-severity-value; treated as halting"
+( D="$ROOT/F6"; mkdir -p "$D/state.d"; _f4_frag "$D" || { bad "source guard missing"; exit 0; }
+  L="$D/review.log"
+  { printf 'FINDING_BEGIN\nseverity: critical\nstructural: false\nregion: a.sh:1-3\nregion_lines: 3\npattern_tags: [x]\nsummary: weird sev\nevidence: y\nFINDING_END\n';
+    printf 'REVIEW_RESULT: PASS\n'; } > "$L"
+  h="$(_record_review_findings "$L" 0 0021-x "review:1")"
+  F="$D/state.d/0021-x.json"
+  [ "$h" = "1" ] && ok "out-of-set severity treated as halting" || bad "invalid severity must be treated as halting (got '$h')"
+  grep -q '"severity":"critical"' "$F" 2>/dev/null && ok "records the verbatim out-of-set severity value" || bad "must record severity verbatim (got: $(cat "$F"))"
+  grep -q 'invalid-severity-value' "$F" 2>/dev/null && ok "emits minor meta-finding invalid-severity-value" || bad "must emit invalid-severity-value"
+) || true
+
+echo "[F7] _rework_extract_finding selects the FIRST halting FINDING_BEGIN block (region/structural/text)"
+( D="$ROOT/F7"; mkdir -p "$D/state.d"; _f4_frag "$D" || { bad "source guard missing"; exit 0; }
+  L="$D/review.log"
+  { printf 'FINDING_BEGIN\nseverity: nit\nstructural: false\nregion: z.sh:1-1\nregion_lines: 1\npattern_tags: [style]\nsummary: trailing space\nevidence: q\nFINDING_END\n';
+    printf 'FINDING_BEGIN\nseverity: major\nstructural: false\nregion: foo.sh:4-8\nregion_lines: 5\npattern_tags: [bug]\nsummary: the major one\nevidence: q\nFINDING_END\n';
+    printf 'REVIEW_RESULT: BLOCK the major one\n'; } > "$L"
+  _rework_extract_finding "$L" 0
+  [ "$RWK_TEXT" = "the major one" ] && ok "RWK_TEXT is the first halting finding's summary" || bad "RWK_TEXT should be 'the major one' (got '$RWK_TEXT')"
+  [ "$RWK_REGION" = "5" ] && ok "RWK_REGION is the halting finding's region_lines" || bad "RWK_REGION should be 5 (got '$RWK_REGION')"
+  [ "${RWK_STRUCTURAL:-0}" = "0" ] && ok "RWK_STRUCTURAL 0 for a non-structural finding" || bad "RWK_STRUCTURAL should be 0 (got '${RWK_STRUCTURAL:-}')"
+  case "$RWK_REF" in foo.sh:4-8) ok "RWK_REF cites the halting finding's region" ;; *) bad "RWK_REF should cite foo.sh:4-8 (got '$RWK_REF')" ;; esac
+) || true
+
+echo "[F7b] _rework_extract_finding marks a structural:true halting finding for escalation"
+( D="$ROOT/F7b"; mkdir -p "$D/state.d"; _f4_frag "$D" || { bad "source guard missing"; exit 0; }
+  L="$D/review.log"
+  { printf 'FINDING_BEGIN\nseverity: blocker\nstructural: true\nregion: big.sh:1-200\nregion_lines: 200\npattern_tags: [arch]\nsummary: needs a redesign\nevidence: q\nFINDING_END\n';
+    printf 'REVIEW_RESULT: BLOCK redesign\n'; } > "$L"
+  _rework_extract_finding "$L" 0
+  [ "${RWK_STRUCTURAL:-0}" = "1" ] && ok "RWK_STRUCTURAL 1 for structural:true (FR-67c escalation)" || bad "RWK_STRUCTURAL should be 1 (got '${RWK_STRUCTURAL:-}')"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
