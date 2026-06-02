@@ -185,11 +185,46 @@ _extract_pattern_tags() {  # <review-log> [<pre-log-size>]
     | paste -sd, -
 }
 
+# _review_base <fallback-ref> (TDD 0031 §1 / gap A) — the HONEST consolidated-
+# review base: `git merge-base <fallback-ref> HEAD`, the branch's fork point from
+# its stacking base. On a FRESH build this equals the branch tip at creation
+# (what the drivers' old `git rev-parse HEAD` produced); on a RESUMED build the
+# old form returned the branch TIP, collapsing the consolidated review to
+# HEAD..HEAD (a provably empty diff → a vacuous PASS). The merge-base is the same
+# build-start value regardless of how many commits or integration merges the
+# branch accumulated. If no merge-base resolves (detached fixture repos, deleted
+# refs), echo the passed ref unchanged + warn — the pre-0031 behavior, never
+# worse. Pure derivation; no persistence.
+_review_base() {  # <fallback-ref>
+  local fallback="$1" mb
+  if mb="$(git merge-base "$fallback" HEAD 2>/dev/null)" && [ -n "$mb" ]; then
+    printf '%s\n' "$mb"
+  else
+    echo "warning: _review_base: no merge-base for '$fallback'..HEAD; using '$fallback' as the review base (pre-0031 fallback)" >&2
+    printf '%s\n' "$fallback"
+  fi
+}
+
 review_one() {  # <tdd> <base-ref> <log>
   local tdd="$1" base="$2" log="$3" slug branch prior prompt
   slug="$(basename "$tdd" .md)"
   branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
   prior="$(_review_prior_patterns_csv "$slug")"
+  # Empty-scope fail-closed (TDD 0031 §2 / gap A; NFR-4). A consolidated review
+  # with nothing to review is always a runner bug (a build that committed nothing
+  # has nothing to flip) — surface it instead of laundering it into a PASS.
+  # Refuse BEFORE rendering the prompt or spawning a reviewer.
+  local _dq
+  git diff --quiet "$base"..HEAD 2>/dev/null; _dq=$?
+  if [ "$_dq" -eq 0 ]; then
+    echo "THROUGHLINE_REVIEW_SCOPE_EMPTY: review base $base equals HEAD — nothing to review; failing closed (NFR-4: ambiguity is never a false PASS)" >>"$log"
+    return 1
+  elif [ "$_dq" -gt 1 ]; then
+    # rc > 1: bad ref / corrupt repo — the scope is unverifiable, so never
+    # proceed to a reviewer (ADR 0006: verdicts rest on verifiable artifacts).
+    echo "THROUGHLINE_REVIEW_SCOPE_EMPTY: git diff $base..HEAD failed (rc=$_dq; git-diff-failed) — scope unverifiable; failing closed (NFR-4: ambiguity is never a false PASS)" >>"$log"
+    return 1
+  fi
   # Consolidated/rework review scope is <build-start-base>..HEAD; the per-step
   # review (TDD 0020 §2) renders the same template with a tighter <cleared>..<sha>.
   if ! prompt="$(_render_review_prompt "$tdd" "$base" "HEAD" "$branch" "$prior")"; then
