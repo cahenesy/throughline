@@ -127,8 +127,10 @@ two reads are free. Otherwise print nothing about blockers.
 The `THROUGHLINE_BUILD_TIMEOUT` watchdog (a `timeout` wrapping the whole
 coproc) keeps counting while the build is blocked on stdin waiting for a
 per-step review — so long reviews consume the build's budget. Fix: the budget
-becomes **active-time**, accounted by the runner; the `timeout` wrapper is
-demoted to a backstop.
+becomes **active-time**, accounted by the runner; the wall-clock `timeout`
+wrapper is **removed entirely** (any wall-clock bound necessarily counts
+review-wait time, so no wall-clock backstop can honestly claim "firing it is a
+defect"); the backstop becomes an inline active-time check.
 
 **Precise accounting spec.** `THROUGHLINE_BUILD_TIMEOUT` (unchanged name,
 unchanged default 7200) now means *active build seconds*. The runner maintains
@@ -149,12 +151,34 @@ unchanged default 7200) now means *active build seconds*. The runner maintains
   coproc by PID, log the existing
   `THROUGHLINE_BUILD_TIMEOUT: ... (build-overall-timeout) (transient)` line,
   return 124 (the existing classification path).
-- **Backstop**: the `timeout` wrapper stays, with its argument changed to a
-  derived local `backstop=$((2 * overall))` (not a new env var). It exists
-  only to cover runner bugs in the accounting itself; firing it is a defect,
-  and it logs a distinguishable
+- **Backstop**: an **inline active-time check**, not a wall-clock `timeout`
+  wrapper. The coproc is spawned with NO `timeout` wrapper. At each
+  accumulation point, after the primary budget comparison, the runner also
+  compares the same accumulated active seconds against a derived local
+  `backstop=$((2 * overall))` (not a new env var). Because both checks read
+  the same monotonically-growing counter at the same points, exceeding 2× is
+  reachable only if the primary 1× check failed to fire at an earlier
+  accumulation point — a runner control-flow bug, which is exactly what the
+  backstop exists to surface; firing it is a defect. Precision on what this
+  catches: threshold-comparison bugs at accumulation points (a broken 1×
+  comparison). Lifecycle bugs in the clock gating itself (e.g. the
+  active-clock flag stuck off) suppress BOTH checks identically and are out of
+  scope for either — they are covered by the inter-event watchdog below, not
+  by the backstop. On fire: log a
+  distinguishable
   `THROUGHLINE_BUILD_BACKSTOP: hard backstop fired (runner accounting bug?)`
-  line so the two are never conflated.
+  line, kill the coproc by PID, return 124. The TIMEOUT and BACKSTOP log
+  lines are never conflated.
+- **Coverage formerly provided by the wall-clock wrapper** (and why removing
+  it loses nothing):
+  - *Coproc streams forever without emitting a sentinel*: killed by the
+    existing inter-event watchdog (`THROUGHLINE_BUILD_INTER_EVENT_TIMEOUT`,
+    default 600s `read -t`) — so while the runner is alive, accumulation
+    points are guaranteed to keep occurring and both active-time checks
+    remain reachable.
+  - *Coproc orphaned by unclean runner death*: the runner's death closes the
+    coproc's stdin write-end; the coproc sees EOF and self-terminates per
+    [[0025]]'s lifecycle. No wall-clock bound is needed to reap it.
 
 ## Data & state
 
@@ -207,6 +231,14 @@ unchanged default 7200) now means *active build seconds*. The runner maintains
   resets on resume (runner-local). Acceptable: each resume's build attempt gets
   a fresh budget; the cap bounds each attempt, not the lifetime sum (consistent
   with how `_retry_in_gate` budgets attempts, not lifetimes).
+- **Runner SIGKILLed mid-build (gap 5, no wall-clock wrapper to reap the
+  coproc).** The coproc's stdin write-end closes with the runner's death → the
+  coproc sees EOF and exits per [[0025]]'s lifecycle; gap 2's orphan detection
+  surfaces the dead run's fragments on the next `/implement`. A coproc that is
+  BOTH orphaned AND wedged mid-turn (ignoring EOF) is a double failure outside
+  any in-process defense — bounded only by claude's own internal turn limits;
+  accepted and documented rather than re-introducing a wall-clock bound that
+  falsely fires on heavy review load.
 
 ## Verification plan
 
@@ -253,12 +285,19 @@ recovery.
 6. **Report tail truthfulness (gap 4).** Fixture A: a run during which
    BLOCKERS.md did not change → report contains NO blockers boilerplate.
    Fixture B: a run that appends one entry → report contains the boilerplate.
-7. **Review time excluded from build budget (gap 5).** Fixture: stub build
-   that emits STEP_COMMIT immediately; stub review that sleeps 8s; build
-   active-time budget set to 5s (`THROUGHLINE_BUILD_TIMEOUT=5`). Expect: the
-   build is NOT killed during the 8s review wait (review time doesn't count);
-   after the review returns and the build streams for >5s more, THEN the
-   active-time watchdog kills it with the existing timed-out classification.
+7. **Review time excluded from build budget; backstop never fires on
+   review wall-clock (gap 5).** Fixture: stub build that emits STEP_COMMIT
+   immediately; stub review that sleeps 8s; build active-time budget set to 5s
+   (`THROUGHLINE_BUILD_TIMEOUT=5`). Expect: the build is NOT killed during the
+   8s review wait (review time doesn't count) and NO `THROUGHLINE_BUILD_BACKSTOP`
+   line is logged regardless of how much wall-clock the review wait adds — a
+   wall-clock-implemented backstop fails this assertion; after the review
+   returns and the build streams for >5s more of active time, THEN the
+   active-time watchdog kills it with the existing timed-out classification
+   (the `THROUGHLINE_BUILD_TIMEOUT` line, never the BACKSTOP line). Any
+   existing test comment that references a wall-clock backstop interval (e.g.
+   "< the 2× backstop = Ns") is stale under this design and must be updated by
+   the same change that removes the wrapper.
 
 **Expected observations (PASS):** every numbered point yields the cited result.
 
@@ -301,6 +340,13 @@ Alternatives considered:
   alternative) — rejected for now: [[0027]]'s `THROUGHLINE_GATE_TIMEOUT`
   already bounds each review individually; a cumulative review budget adds a
   knob without a demonstrated need.
+- **A wall-clock `timeout` wrapper at 2× the budget as the backstop** (gap 5 —
+  this TDD's own original design, revision 0) — rejected after the first build:
+  wall-clock includes review-wait time, so the wrapper fires on a correct build
+  under heavy review load while logging "runner accounting bug?" — the
+  backstop's honesty claim ("firing it is a defect") is unsatisfiable by ANY
+  wall-clock mechanism. Caught as finding M1 by the final review of run
+  `20260601-191259`; replaced by the inline active-time check.
 
 ## PRD conflicts surfaced (and resolution)
 
@@ -308,6 +354,20 @@ None. All five gaps are implementation shortfalls against existing acceptance
 criteria. The new `interrupted` run-state value is within FR-27's "run-level
 identity + rollup" scope and FR-30/NFR-4's honesty requirements; no FR text
 changes.
+
+**Build-blocker resolution (run `20260601-191259`, revision 1 of this TDD).**
+The first build of this TDD cleared all five steps but was halted at the final
+review gate: (M1) §5's backstop was implemented as a wall-clock `timeout`
+wrapper, which counts review-wait time and therefore can fire on a correct
+build under heavy review load while being logged as "runner accounting bug?" —
+contradicting this TDD's own "firing it is a defect" contract. The automatic
+rework produced the correct fix (inline active-time backstop) but was rejected
+by the FR-67(b) structural check: `scripts/lib/gates.sh` cumulative diff was
+138 lines against the ~55 declared here — the original §1+§5 estimate was low
+by ~2.5×. This revision resolves both halt causes: §5 now specifies the inline
+active-time backstop (no wall-clock wrapper), and `## Expected diff size` is
+trued up to the observed actuals with headroom for the pending rework. The
+corresponding `docs/tdd/BLOCKERS.md` entry is resolved by this revision.
 
 ## Decisions to promote (ADR candidates)
 
@@ -322,7 +382,7 @@ output — the strongest artifact available, fully in 0006's spirit.
 
 ## Touched files
 
-- `scripts/lib/gates.sh` — `_coproc_write` helper + two write-site switches (§1); active-time watchdog accounting (§5).
+- `scripts/lib/gates.sh` — `_coproc_write` helper + two write-site switches (§1); active-time watchdog accounting + inline 2× backstop, no `timeout` wrapper (§5).
 - `scripts/lib/state.sh` — `interrupted` in set_run_state's vocabulary + precedence (§3).
 - `scripts/implement.sh` — run-end non-terminal scan + interrupted write (§3); BLOCKERS.md growth check (§4).
 - `scripts/lib/resume.sh` — orphaned-fragment acceptance + branch-head derivation (§2).
@@ -331,17 +391,40 @@ output — the strongest artifact available, fully in 0006's spirit.
 - `tests/coproc-verdict-resilience.test.sh` — new eval covering verification §1–§7.
 - `tests/implement-gate.test.sh` — wire the new eval into the aggregator.
 
-Total: 8 files touched.
+Build collateral (observed in run `20260601-191259`; not rework surface): the
+build's keep-docs-in-sync discipline also touches `scripts/build-prompt.md` and
+`skills/implement-status/SKILL.md` (both document the timeout/state semantics
+this TDD changes), and `tests/continuous-in-build-review.test.sh` (its fixtures
+stub the gates.sh functions §1/§5 modify). These ride in the build's docs-sync
+commits. They are NOT files an FR-67 rework may target — a halting finding
+whose fix lands in one of them is a design-level event requiring another
+revision of this TDD, not an in-run rework. (This is consistent with how the
+FR-67 checks measure: (a) membership and (b) cumulative size are evaluated
+only for files appearing in the rework's own diff — collateral already landed
+by the build is never re-counted unless a rework edits the same file.)
+
+Total: 8 files touched (+3 build collateral).
 
 ## Expected diff size
 
-- `scripts/lib/gates.sh` — ~55 lines (helper ~20, write-site switches ~6, active-time accounting ~30).
-- `scripts/lib/state.sh` — ~10 lines (vocabulary + precedence).
-- `scripts/implement.sh` — ~25 lines (scan extension + growth check).
-- `scripts/lib/resume.sh` — ~30 lines (orphan acceptance + head derivation).
-- `scripts/status.sh` — ~25 lines (orphan arm + banner).
-- `skills/implement/SKILL.md` — ~8 lines (marker documentation).
-- `tests/coproc-verdict-resilience.test.sh` — ~240 lines (7 verification points + stubs).
-- `tests/implement-gate.test.sh` — ~6 lines (aggregator wire-in).
+Estimates are trued up to the per-file actuals observed in build run
+`20260601-191259` (the first build of this TDD), plus headroom on
+`scripts/lib/gates.sh` for the pending §5 backstop rework — so the FR-67(b)
+cumulative-diff check measures against realistic declarations, not the
+original underestimates.
 
-Total expected diff: ~399 lines across 8 files. No exceptions needed.
+- `scripts/lib/gates.sh` — ~160 lines (helper ~20, write-site switches ~6, active-time accounting + inline backstop ~110; observed 135 + rework headroom).
+- `scripts/lib/state.sh` — ~20 lines (vocabulary + precedence; observed 18).
+- `scripts/implement.sh` — ~30 lines (scan extension + growth check; observed 29).
+- `scripts/lib/resume.sh` — ~60 lines (orphan acceptance + head derivation; observed 56).
+- `scripts/status.sh` — ~45 lines (orphan arm + banner; observed 43).
+- `skills/implement/SKILL.md` — ~12 lines (marker documentation; observed 11).
+- `tests/coproc-verdict-resilience.test.sh` — ~500 lines (exception: one comprehensive eval covering all 7 verification points with shared stub fixtures; observed 491 — splitting it would fragment the coproc/review stubs every point reuses).
+- `tests/implement-gate.test.sh` — ~15 lines (aggregator wire-in; observed 14).
+
+Build collateral (not declared rework surface, see `## Touched files`):
+`scripts/build-prompt.md` ~12 lines, `skills/implement-status/SKILL.md` ~6
+lines, `tests/continuous-in-build-review.test.sh` ~10 lines.
+
+Total expected diff: ~842 lines across 8 declared files (+~28 lines of build
+collateral). One exception declared inline (the eval file).
