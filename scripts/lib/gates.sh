@@ -455,6 +455,16 @@ _user_turn_json() {  # <text>
 # Returns non-zero whenever the coproc is gone (dead pid or EPIPE on write); the
 # caller decides whether that is best-effort (initial prompt write) or a
 # COPROC_DEAD halt (verdict write).
+# _kill_pid <pid> (TDD 0030 §5) — SIGTERM <pid>, but ONLY when it is a real,
+# non-zero pid. A bare `kill 0` / `kill ""` signals the caller's WHOLE process
+# group (which would kill the runner itself), so guard the pid-zero / empty edge
+# before signalling. Returns non-zero (no signal sent) when <pid> is empty or 0.
+_kill_pid() {  # <pid>
+  local pid="${1:-}"
+  [ -n "$pid" ] && [ "$pid" != "0" ] || return 1
+  kill "$pid" 2>/dev/null || true
+}
+
 _coproc_write() {  # <fd> <text>
   local fd="$1" text="$2" _rc
   if [ -n "${bpid:-}" ] && ! kill -0 "$bpid" 2>/dev/null; then
@@ -612,7 +622,9 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
     if [ "$clock_active" -eq 1 ] && [ "$overall_active" -gt 0 ]; then
       _now=$(date +%s); _active=$((build_active_seconds + _now - interval_start))
       if [ "$_active" -gt "$overall_active" ]; then
-        kill "$bpid" 2>/dev/null || true
+        # Guard the pid-zero / empty edge: a bare `kill "$bpid"` with bpid 0/empty
+        # would SIGTERM the runner's own process group (TDD 0030 §5).
+        _kill_pid "$bpid"
         _active_exceeded=1
         break
       fi
