@@ -349,6 +349,21 @@ EOF
   [ "$n" = "1" ] && ok "exactly one IMPLEMENT_RUN_COMPLETE line" || bad "expected exactly one marker line (got $n)"
 ) || true
 
+echo "[S17] watcher fails loud when the logs dir cannot be created (no false completion)"
+( WT="$ROOT/S17"; mkdir -p "$WT/scripts" "$WT/repo/docs/tdd"
+  cp "$WATCH" "$WT/scripts/implement-watch.sh"
+  # Block the logs dir: a regular FILE where the dir must be -> mkdir -p fails.
+  printf '' > "$WT/repo/docs/tdd/.implement-logs"
+  out="$WT/out.txt"; err="$WT/err.txt"
+  ( cd "$WT/repo" && THROUGHLINE_WATCH_POLL_SECS=1 THROUGHLINE_WATCH_MAX_SECS=60 \
+      bash "$WT/scripts/implement-watch.sh" >"$out" 2>"$err" )
+  rc=$?
+  [ "$rc" -ne 0 ] && ok "watcher exits non-zero on logs-dir failure" || bad "watcher should fail (rc=$rc)"
+  grep -qi 'FATAL' "$err" 2>/dev/null && ok "FATAL diagnostic emitted" || bad "should emit a FATAL diagnostic (err: $(cat "$err" 2>/dev/null))"
+  ! grep -q '^IMPLEMENT_RUN_COMPLETE' "$out" 2>/dev/null && ok "no false IMPLEMENT_RUN_COMPLETE when no build ran" || bad "must NOT print a completion line (out: $(cat "$out" 2>/dev/null))"
+  ! grep -q 'launched build pid' "$out" 2>/dev/null && ok "no build launched after logs-dir failure" || bad "must not launch a build (out: $(cat "$out" 2>/dev/null))"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
