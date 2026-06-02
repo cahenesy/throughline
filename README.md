@@ -233,7 +233,7 @@ throughline/
 │   ├── continuous-in-build-review.test.sh # eval: per-step scoped review
 │   ├── bounded-rework-loop.test.sh        # eval: in-invocation sonnet rework + budget
 │   ├── halt-taxonomy.test.sh              # eval: closed cause enum + one-screen context
-│   ├── honest-reporting-self-review.test.sh # eval: severity tags + diff-grounded report
+│   ├── severity-honest-reporting.test.sh  # eval: severity tags + diff-grounded report + author self-review + per-file coverage
 │   ├── build-phase-learnings.test.sh      # eval: recurring-pattern detection + watcher liveness + LEARNINGS.md persistence
 │   └── accepted-learnings-inform-tdd-author.test.sh # eval: /tdd-author reads LEARNINGS.md + scope-matched advisory surfacing
 └── hooks/{hooks.json, format-and-lint.sh, throughline-session-reconcile.sh}
@@ -605,7 +605,7 @@ bash tests/bounded-tdd-scope.test.sh
 bash tests/continuous-in-build-review.test.sh
 bash tests/bounded-rework-loop.test.sh
 bash tests/halt-taxonomy.test.sh
-bash tests/honest-reporting-self-review.test.sh
+bash tests/severity-honest-reporting.test.sh
 ```
 
 ## Caveat
