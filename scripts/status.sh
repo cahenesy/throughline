@@ -498,6 +498,19 @@ if [ "$CHECK_PAUSED" -eq 1 ]; then
       if grep -q '"halt_cause":null' "$f" 2>/dev/null; then cause="-"
       else cause="$(sed -n 's/.*"halt_cause":"\([^"]*\)".*/\1/p' "$f" | head -1)"; fi
       printf 'slug=%s gate=%s cause=%s resumable=blocked\n' "$slug" "${stage:--}" "${cause:--}"
+    elif [ "$st" = "building" ] || [ "$st" = "verifying" ] || [ "$st" = "reviewing" ]; then
+      # TDD 0030 §2 / FR-39 (gap 2): a fragment stuck non-terminal whose run has
+      # no live runner is an interrupted-unclean (orphaned) run — the runner died
+      # mid-gate (e.g. the verdict-write SIGPIPE in the observed incident) and a
+      # plain re-run would silently rebuild finished work. run.json records the
+      # runner pid; if that pid is not alive, every non-terminal fragment is
+      # orphaned. The pid-liveness guard makes this safe against a live-but-slow
+      # run: a live runner's fragments are NEVER reported. A run that died before
+      # recording its pid (pid absent/null → empty) is, by definition, not alive.
+      _runpid="$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$RUNDIR/state.d/run.json" 2>/dev/null | head -1)"
+      if [ -z "$_runpid" ] || ! kill -0 "$_runpid" 2>/dev/null; then
+        printf 'slug=%s gate=%s cause=unclean-exit resumable=orphaned\n' "$slug" "${stage:--}"
+      fi
     fi
   done
   exit 0

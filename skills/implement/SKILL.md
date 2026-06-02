@@ -45,6 +45,17 @@ that asks.
      Resume flips it to paused/transient itself, so no manual state edit
      is needed. Blocked halts WITHOUT the marker (design escalations) are
      not surfaced here and stay human-routed via /tdd-author.
+   - A line may instead carry a trailing `resumable=orphaned` marker
+     (TDD 0030 / FR-39, gap 2): the prior runner *died mid-gate* (e.g. a
+     verdict-write SIGPIPE) and left this TDD in a non-terminal status
+     (`building`/`verifying`/`reviewing`) with no live runner — an
+     interrupted-unclean run. `cause=unclean-exit`. Treat it exactly like
+     a `resumable=blocked` line: it is offerable for Resume; `--resume`
+     flips it to paused/transient and derives the resume baseline from the
+     branch's committed history (FR-40), so no manual state edit is needed.
+     A plain (non-`--resume`) re-run would silently rebuild the finished,
+     reviewed work, so the orphaned line MUST be surfaced for the user's
+     resume/fresh decision.
 2. **Lock-alive race guard (TDD 0011 / iter-3 MAJOR-2).** A paused
    fragment can briefly coexist with a live lock — the runner's atomic
    `mv` lands the fragment a moment before the EXIT trap removes
