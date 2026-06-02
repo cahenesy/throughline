@@ -970,29 +970,147 @@ _rework_one() {  # <tdd> <log> <finding-ref> <finding-text> <cap>
   printf '%s' "$head_out"
 }
 
+# _iter_finding_blocks <review-log> [<pre-log-size>] (TDD 0021 §1) — print the
+# review pass's structured findings, one per line, as a Unit-Separator (\x1f)
+# delimited record `severity␟structural␟region␟region_lines␟pattern_tags␟summary␟evidence`.
+# Parses each `FINDING_BEGIN .. FINDING_END` block the review prompt emits
+# (§1 schema). Field lines tolerate leading whitespace / fence indentation;
+# multi-line `evidence` is collapsed to one space-joined line so each finding is
+# exactly one record. `pattern_tags`' `[a, b]` is normalized to a `a,b` CSV.
+# Like _extract_pattern_tags, the optional second arg scopes the scan to the
+# slice appended AFTER <pre-log-size> so a stale block from a prior pass in the
+# cumulative log is not re-harvested.
+_iter_finding_blocks() {  # <review-log> [<pre-log-size>]
+  local log="$1" pre="${2:-0}" slice US
+  US=$'\x1f'
+  if [ "$pre" -gt 0 ] 2>/dev/null; then
+    slice="$(tail -c +"$((pre + 1))" "$log" 2>/dev/null)"
+  else
+    slice="$(cat "$log" 2>/dev/null)"
+  fi
+  printf '%s\n' "$slice" | awk -v US="$US" '
+    function trim(s){ sub(/^[[:space:]]+/,"",s); sub(/[[:space:]]+$/,"",s); return s }
+    /FINDING_BEGIN/ { inblk=1; sev="";st="";rg="";rl="";tg="";sm="";ev="";evon=0; next }
+    /FINDING_END/   { if(inblk){ printf "%s%s%s%s%s%s%s%s%s%s%s%s%s\n", sev,US,st,US,rg,US,rl,US,tg,US,sm,US,ev } inblk=0; evon=0; next }
+    inblk {
+      if ($0 ~ /^[[:space:]]*severity:/)     { v=$0; sub(/^[[:space:]]*severity:[[:space:]]*/,"",v);     sev=trim(v); evon=0; next }
+      if ($0 ~ /^[[:space:]]*structural:/)   { v=$0; sub(/^[[:space:]]*structural:[[:space:]]*/,"",v);   st=trim(v);  evon=0; next }
+      if ($0 ~ /^[[:space:]]*region_lines:/) { v=$0; sub(/^[[:space:]]*region_lines:[[:space:]]*/,"",v); rl=trim(v);  evon=0; next }
+      if ($0 ~ /^[[:space:]]*region:/)       { v=$0; sub(/^[[:space:]]*region:[[:space:]]*/,"",v);       rg=trim(v);  evon=0; next }
+      if ($0 ~ /^[[:space:]]*pattern_tags:/) { v=$0; sub(/^[[:space:]]*pattern_tags:[[:space:]]*/,"",v); sub(/^\[/,"",v); sub(/\][[:space:]]*$/,"",v); gsub(/,[[:space:]]*/,",",v); tg=trim(v); evon=0; next }
+      if ($0 ~ /^[[:space:]]*summary:/)      { v=$0; sub(/^[[:space:]]*summary:[[:space:]]*/,"",v);      sm=trim(v);  evon=0; next }
+      if ($0 ~ /^[[:space:]]*evidence:/)     { v=$0; sub(/^[[:space:]]*evidence:[[:space:]]*/,"",v);     ev=trim(v);  evon=1; next }
+      if (evon) { ev = ev " " trim($0) }
+    }
+  '
+}
+
+# _normalize_severity <raw-severity>  — echo the HALT-effective severity for a
+# finding (TDD 0021 §Failure modes): a missing or out-of-set value is treated as
+# `major` (conservative) so the halt boundary cannot be slipped by an absent /
+# bogus tag. Valid values pass through unchanged. Pure echo; the caller emits the
+# meta-finding (missing-severity-tag / invalid-severity-value).
+_normalize_severity() {  # <raw-severity>
+  case "${1:-}" in
+    blocker|major|minor|nit) printf '%s' "$1" ;;
+    *) printf 'major' ;;
+  esac
+}
+
+# _record_review_findings <review-log> <pre-log-size> <slug> <pass_id>
+# (TDD 0021 §2/§4 / FR-58) — parse every FINDING_BEGIN..END block in this review
+# pass and append it to the fragment's findings[] (source: review). Normalizes
+# severity per §Failure modes (missing → major + a minor `missing-severity-tag`
+# meta-finding; out-of-set → recorded verbatim, treated as major, + a minor
+# `invalid-severity-value` meta-finding). Echoes the count of HALTING findings
+# (severity treated as blocker/major) so the caller drives the §2 halt boundary.
+_record_review_findings() {  # <review-log> <pre-log-size> <slug> <pass_id>
+  local log="$1" pre="${2:-0}" slug="$3" pass_id="$4"
+  local sev st rg rl tg sm ev recorded treated halting=0
+  while IFS=$'\x1f' read -r sev st rg rl tg sm ev; do
+    [ -z "$sev$st$rg$rl$tg$sm$ev" ] && continue   # defensive: skip empty record
+    recorded="$sev"; treated="$(_normalize_severity "$sev")"
+    if [ -z "$sev" ]; then
+      recorded="major"
+      _record_finding "$slug" runner-check "$pass_id" minor false "$rg" "$rl" "missing-severity-tag" \
+        "finding emitted without a severity tag; recorded as major (conservative default, §Failure modes)" "$sm" \
+        || echo "warning: _record_review_findings: could not record missing-severity-tag for $slug" >> "$log"
+    else
+      case "$sev" in
+        blocker|major|minor|nit) : ;;
+        *) _record_finding "$slug" runner-check "$pass_id" minor false "$rg" "$rl" "invalid-severity-value" \
+             "finding emitted severity '$sev' outside the closed {blocker,major,minor,nit} set; treated as major (§Failure modes)" "$sm" \
+             || echo "warning: _record_review_findings: could not record invalid-severity-value for $slug" >> "$log" ;;
+      esac
+    fi
+    _record_finding "$slug" review "$pass_id" "$recorded" "$st" "$rg" "$rl" "$tg" "$sm" "$ev" \
+      || echo "warning: _record_review_findings: could not record review finding for $slug" >> "$log"
+    case "$treated" in blocker|major) halting=$((halting + 1)) ;; esac
+  done < <(_iter_finding_blocks "$log" "$pre")
+  printf '%s' "$halting"
+}
+
+# _review_halt_boundary <review-log> <pre-log-size> <slug> <pass_id> <verdict-line>
+# (TDD 0021 §2 / FR-58) — record this pass's findings and decide clear-vs-halt
+# from the {blocker,major} subset, NOT the REVIEW_RESULT line alone. Returns
+# 0 = clear, 1 = halt. The precise boundary:
+#   - ≥ 1 halting finding (regardless of the verdict)            → halt.
+#   - zero halting findings AND a PASS verdict                   → clear.
+#   - zero halting findings BUT a BLOCK verdict (mismatch)       → synthesize a
+#     `major` `inconsistent-review-output` finding (an honesty check on the
+#     reviewer itself: its verdict and its findings must agree) and halt.
+_review_halt_boundary() {  # <review-log> <pre-log-size> <slug> <pass_id> <verdict-line>
+  local log="$1" pre="${2:-0}" slug="$3" pass_id="$4" verdict="${5:-}" halting
+  halting="$(_record_review_findings "$log" "$pre" "$slug" "$pass_id")"
+  case "$halting" in ''|*[!0-9]*) halting=0 ;; esac
+  if [ "$halting" -ge 1 ]; then return 1; fi
+  case "$verdict" in
+    *BLOCK*)
+      _record_finding "$slug" runner-check "$pass_id" major false "" 0 "inconsistent-review-output" \
+        "reviewer emitted REVIEW_RESULT: BLOCK but no blocker/major FINDING_BEGIN..END block to justify it" \
+        "$(printf '%s' "$verdict" | head -c 200)" \
+        || echo "warning: _review_halt_boundary: could not record inconsistent-review-output for $slug" >> "$log"
+      return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
 # _rework_extract_finding <review-log> [<pre-log-size>]  — set RWK_STRUCTURAL /
 # RWK_REGION / RWK_REF / RWK_TEXT for the FIRST halting finding in the review
-# output. TDD 0021 adds a structured `REVIEW_FINDING: severity=… structural=…
-# region_lines=… ref=… | <text>` line per finding; this consumes it.
-# Pre-TDD-0021 the review prompt emits no such marker, so the loop degrades
-# safely: structural=0 (no predictive (c) escalation), region empty (cap
-# collapses to the floor), ref `review:1`, and the BLOCK reason as the finding
-# text — the retrospective (a)/(b) checks and the attempt budget still apply in
-# full.
+# output. Primary source is the §1 `FINDING_BEGIN .. FINDING_END` schema (TDD
+# 0021): the first block whose normalized severity is blocker/major (an absent /
+# out-of-set tag normalizes to major, matching _record_review_findings so the
+# finding the halt boundary counted is the one selected here). Falls back to the
+# legacy single-line `REVIEW_FINDING:` marker, then the `REVIEW_RESULT: BLOCK`
+# reason text, so a pass that emits no structured block still degrades safely:
+# structural=0, region empty (cap collapses to the floor), ref `review:1` — the
+# retrospective (a)/(b) checks and the attempt budget still apply in full.
 #
 # The optional second arg is the log size BEFORE the current review pass ran
 # (taken by _rework_loop). When supplied, only the newly-appended slice is
-# scanned — so a current pass that emits only `REVIEW_RESULT: BLOCK` (no
-# structured `REVIEW_FINDING:`) cannot pick up a stale `REVIEW_FINDING:` from a
-# PRIOR iteration's appended slice and falsely route as e.g. structural-(c).
-# This was the TDD 0019 review-rerun-2 MAJOR for line 460; the matching
-# pre_log_size logic in _rework_loop already used this technique for the
-# REVIEW_RESULT verdict, but not for the structured finding line.
+# scanned — so a current pass cannot pick up a stale finding from a PRIOR
+# iteration's appended slice and falsely route as e.g. structural-(c). This was
+# the TDD 0019 review-rerun-2 MAJOR for line 460.
 _rework_extract_finding() {  # <review-log> [<pre-log-size>]
   local log="$1" pre="${2:-0}" line r log_content
   RWK_STRUCTURAL=0; RWK_REGION=""; RWK_REF="review:1"; RWK_TEXT=""
-  # Slice the log starting just after pre_log_size if provided; else fall back
-  # to the whole log (legacy callers / SOURCE_ONLY tests with no snapshot).
+  # Primary: first halting FINDING_BEGIN..END block (§1).
+  local sev st rg rl tg sm ev treated found=0
+  while IFS=$'\x1f' read -r sev st rg rl tg sm ev; do
+    [ "$found" -eq 1 ] && continue
+    treated="$(_normalize_severity "$sev")"
+    case "$treated" in
+      blocker|major)
+        found=1
+        if [ "$st" = "true" ]; then RWK_STRUCTURAL=1; else RWK_STRUCTURAL=0; fi
+        RWK_REGION="$rl"
+        [ -n "$rg" ] && RWK_REF="$rg"
+        RWK_TEXT="$sm"
+        ;;
+    esac
+  done < <(_iter_finding_blocks "$log" "$pre")
+  [ "$found" -eq 1 ] && return 0
+  # Fallback (legacy / no structured block): slice the log the same way.
   if [ "$pre" -gt 0 ] 2>/dev/null; then
     log_content="$(tail -c +"$((pre + 1))" "$log" 2>/dev/null)"
   else
@@ -1092,11 +1210,20 @@ _rework_loop() {  # <slug> <tdd> <rbase> <log>
     # Prefer the fresh-pass verdict over the cumulative log tail; review_status
     # is the legacy fallback for callers that didn't snapshot pre_log_size.
     rs="${verdict_in_new:-$(review_status "$log")}"
+    # Crash guard: a pass that produced neither verdict is a fatal/garbled run.
     case "$rs" in
-      *PASS*)  return 0 ;;
-      *BLOCK*) : ;;
+      *PASS*|*BLOCK*) : ;;
       *) _terminal_state "$slug" failed "" "review: no REVIEW_RESULT line"; return 1 ;;
     esac
+    # TDD 0021 §2/§4 (FR-58): record this pass's findings onto findings[] and
+    # drive the halt boundary off the {blocker,major} subset — NOT the
+    # REVIEW_RESULT line alone. Clear iff (PASS verdict AND zero halting
+    # findings); a halting finding halts even under a PASS verdict, and a BLOCK
+    # with no halting finding synthesizes `inconsistent-review-output`. Returns
+    # 0 = clear, 1 = halt → fall through to finding classification + rework.
+    if _review_halt_boundary "$log" "$pre_log_size" "$slug" "review:$step" "$rs"; then
+      return 0
+    fi
 
     # A halting finding (FR-58 blocker/major) → classify and act. Pass
     # pre_log_size so the extractor scans only the current pass's slice; a
