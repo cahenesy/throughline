@@ -114,8 +114,8 @@ _render_build_prompt() {  # <slug> <tdd>
 # branch name's `/` or a tag's punctuation cannot break a sed delimiter; the
 # model-derived prior tags are substituted LAST so they cannot double-expand a
 # literal `{{...}}`. Echoes the rendered prompt.
-_render_review_prompt() {  # <tdd> <scope-base> <scope-head> <branch> <prior-tags-csv> [<diff-vs-narrative-facts>]
-  local tdd="$1" sbase="$2" shead="$3" branch="$4" prior_csv="${5:-}" facts="${6:-}" tmpl prompt prior_disp
+_render_review_prompt() {  # <tdd> <scope-base> <scope-head> <branch> <prior-tags-csv> [<diff-vs-narrative-facts>] [<attention-directive>]
+  local tdd="$1" sbase="$2" shead="$3" branch="$4" prior_csv="${5:-}" facts="${6:-}" attn="${7:-}" tmpl prompt prior_disp
   tmpl="${RTMPL:-}"
   [ -z "$tmpl" ] && tmpl="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/review-prompt.md"
   if [ ! -f "$tmpl" ]; then
@@ -130,6 +130,15 @@ _render_review_prompt() {  # <tdd> <scope-base> <scope-head> <branch> <prior-tag
   if [ -z "$facts" ]; then
     facts="(diff-vs-narrative facts are pre-extracted only for the consolidated review pass; this scoped pass runs before the build's terminal BATCH_RESULT, so SKIP the §3 diff-vs-narrative check here.)"
   fi
+  # TDD 0021 §3c: the attention directive is set only when this is a re-review
+  # forced by a `runner-check` finding (e.g. incomplete-file-coverage); a normal
+  # first pass has none, so substitute a neutral note rather than leak the
+  # placeholder.
+  if [ -z "$attn" ]; then
+    attn="(no special attention directive for this pass — review the full scoped diff.)"
+  else
+    attn="**Attention directive (re-review, issue #35).** A prior pass on this same diff range was rejected: $attn"
+  fi
   prompt="$(cat "$tmpl")"
   prompt="${prompt//\{\{TDD\}\}/$tdd}"
   prompt="${prompt//\{\{BASE\}\}/$sbase}"
@@ -137,8 +146,10 @@ _render_review_prompt() {  # <tdd> <scope-base> <scope-head> <branch> <prior-tag
   prompt="${prompt//\{\{SCOPE_HEAD\}\}/$shead}"
   prompt="${prompt//\{\{BRANCH\}\}/$branch}"
   prompt="${prompt//\{\{PRIOR_PATTERNS\}\}/$prior_disp}"
-  # Substitute the facts block LAST so any placeholder-like text in the build's
-  # narrative (e.g. a literal {{...}} the author printed) is not re-expanded.
+  # Substitute the facts + attention blocks LAST so any placeholder-like text in
+  # the build's narrative or the directive (e.g. a literal {{...}} the author
+  # printed) is not re-expanded.
+  prompt="${prompt//\{\{ATTENTION_DIRECTIVE\}\}/$attn}"
   prompt="${prompt//\{\{DIFF_VS_NARRATIVE_FACTS\}\}/$facts}"
   printf '%s' "$prompt"
 }
@@ -250,7 +261,9 @@ review_one() {  # <tdd> <base-ref> <log>
   fi
   # Consolidated/rework review scope is <build-start-base>..HEAD; the per-step
   # review (TDD 0020 §2) renders the same template with a tighter <cleared>..<sha>.
-  if ! prompt="$(_render_review_prompt "$tdd" "$base" "HEAD" "$branch" "$prior" "$facts")"; then
+  # REVIEW_ATTENTION_DIRECTIVE is set by _rework_loop only for a §3c re-review pass
+  # (un-cited files from the prior pass); it is empty for every normal pass.
+  if ! prompt="$(_render_review_prompt "$tdd" "$base" "HEAD" "$branch" "$prior" "$facts" "${REVIEW_ATTENTION_DIRECTIVE:-}")"; then
     echo "error: review_one: could not render review prompt for $tdd" >>"$log"
     return 1
   fi
@@ -1075,6 +1088,50 @@ _review_halt_boundary() {  # <review-log> <pre-log-size> <slug> <pass_id> <verdi
   esac
 }
 
+# _per_file_coverage_check <review-log> <pre-log-size> <slug> <scope-base> <scope-head> <pass_id>
+# (TDD 0021 §3c / issue #35) — run AFTER a review pass's stream ends but BEFORE
+# accepting a `REVIEW_RESULT: PASS`. Every file in `git diff --name-only
+# <base>..<head>` must carry a per-file disposition: either a FINDING block whose
+# `region` cites it, or a `FILE_REVIEWED_NO_FINDINGS: <file>` line. If any diff
+# file has neither, the pass under-covered the diff (issue #35's large-diff
+# attention collapse): synthesize a `major` `incomplete-file-coverage` finding
+# (source runner-check) listing the un-cited files, set RFIND_RE_REVIEW_DIRECTIVE
+# (the attention directive the next pass renders), and return 1 (incomplete).
+# Return 0 (complete) when every diff file is cited — or when the diff is empty /
+# git is unavailable (no files to require coverage for; the diff-vs-narrative
+# check separately flags a broken git). This is a `runner-check` finding: per §3c
+# routing it drives a fresh review pass, NOT _rework_one.
+_per_file_coverage_check() {  # <review-log> <pre-log-size> <slug> <scope-base> <scope-head> <pass_id>
+  local log="$1" pre="${2:-0}" slug="$3" base="$4" head="${5:-HEAD}" pass_id="$6"
+  RFIND_RE_REVIEW_DIRECTIVE=""
+  local diff_files
+  diff_files="$(git diff --name-only "$base..$head" 2>/dev/null)"
+  [ -z "$diff_files" ] && return 0   # nothing to require coverage for
+  # Files the reviewer dispositioned: FINDING `region` filenames (strip :line-line)
+  # in this pass's slice + every FILE_REVIEWED_NO_FINDINGS: line.
+  local slice cited
+  if [ "$pre" -gt 0 ] 2>/dev/null; then slice="$(tail -c +"$((pre + 1))" "$log" 2>/dev/null)"
+  else slice="$(cat "$log" 2>/dev/null)"; fi
+  cited="$( {
+      _iter_finding_blocks "$log" "$pre" | awk -F"$(printf '\037')" '{print $3}' | sed -E 's/:[0-9].*$//'
+      printf '%s\n' "$slice" | grep -aoE 'FILE_REVIEWED_NO_FINDINGS:[[:space:]]*[^[:space:]]+' | sed -E 's/.*FILE_REVIEWED_NO_FINDINGS:[[:space:]]*//'
+    } | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' | grep -v '^$' | sort -u )"
+  local f uncited=""
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    if ! printf '%s\n' "$cited" | grep -qxF "$f"; then
+      uncited="${uncited:+$uncited }$f"
+    fi
+  done < <(printf '%s\n' "$diff_files")
+  [ -z "$uncited" ] && return 0   # every diff file dispositioned → complete
+  RFIND_RE_REVIEW_DIRECTIVE="the prior review pass left these diff files with NO per-file disposition — give EACH an explicit FINDING or a FILE_REVIEWED_NO_FINDINGS line this pass: $uncited"
+  _record_finding "$slug" runner-check "$pass_id" major false "" 0 "incomplete-file-coverage" \
+    "review pass emitted REVIEW_RESULT: PASS but left these diff files un-dispositioned: $uncited" \
+    "git diff --name-only $base..$head lists files with no FINDING region or FILE_REVIEWED_NO_FINDINGS line" \
+    || echo "warning: _per_file_coverage_check: could not record incomplete-file-coverage for $slug" >> "$log"
+  return 1
+}
+
 # _rework_extract_finding <review-log> [<pre-log-size>]  — set RWK_STRUCTURAL /
 # RWK_REGION / RWK_REF / RWK_TEXT for the FIRST halting finding in the review
 # output. Primary source is the §1 `FINDING_BEGIN .. FINDING_END` schema (TDD
@@ -1167,6 +1224,10 @@ _rework_loop() {  # <slug> <tdd> <rbase> <log>
   case "$step" in ''|*[!0-9]*) step=1 ;; esac
   local max="${THROUGHLINE_REWORK_MAX:-3}"; case "$max" in ''|*[!0-9]*) max=3 ;; esac
   local build_start="$rbase" cleared attempts rrc rs _retries_json
+  # §3c re-review state. Declared local so review_one sees REVIEW_ATTENTION_DIRECTIVE
+  # via dynamic scope only while this loop runs; RFIND_RE_REVIEW_DIRECTIVE is set by
+  # _per_file_coverage_check when coverage is incomplete.
+  local REVIEW_ATTENTION_DIRECTIVE="" RFIND_RE_REVIEW_DIRECTIVE=""
   # Seed `attempts` from the PERSISTED counter so a pause+resume preserves the
   # budget across invocations (TDD 0019 review-rerun finding 1). The pre-fix
   # `attempts=0` initialization shadowed the fragment's recorded count, so a
@@ -1185,6 +1246,7 @@ _rework_loop() {  # <slug> <tdd> <rbase> <log>
     pre_log_size="$(wc -c < "$log" 2>/dev/null || echo 0)"
     _retry_in_gate _review_one_gated "$gate" "$slug" "$log" "$tdd" "$rbase" "$log"
     rrc=$?
+    REVIEW_ATTENTION_DIRECTIVE=""          # consumed by the pass just run (§3c)
     [ "$rrc" -eq 2 ] && return 2          # transient pause (NFR-4: not a fail)
     # _review_one_gated returns 1 for BOTH "BLOCK verdict" and "claude crashed,
     # fatal-classified" — _retry_in_gate then returns 1 in both cases. The
@@ -1222,7 +1284,38 @@ _rework_loop() {  # <slug> <tdd> <rbase> <log>
     # with no halting finding synthesizes `inconsistent-review-output`. Returns
     # 0 = clear, 1 = halt → fall through to finding classification + rework.
     if _review_halt_boundary "$log" "$pre_log_size" "$slug" "review:$step" "$rs"; then
-      return 0
+      # PASS + zero halting findings. TDD 0021 §3c / issue #35: gate the clear on
+      # per-file coverage — every file in the diff must carry a disposition.
+      if _per_file_coverage_check "$log" "$pre_log_size" "$slug" "$rbase" "HEAD" "review:$step"; then
+        return 0   # complete coverage → genuinely clear
+      fi
+      # Incomplete coverage. _per_file_coverage_check recorded an
+      # `incomplete-file-coverage` finding (source runner-check) and set
+      # RFIND_RE_REVIEW_DIRECTIVE. Per §3c routing this is NOT a code-edit finding:
+      # do NOT call _rework_one. Spawn a FRESH review pass on the SAME range with
+      # the un-cited files as an attention directive, bounded by a SEPARATE
+      # re_review_attempts counter (cap THROUGHLINE_RE_REVIEW_MAX, default 2) so
+      # issue #35's multi-round Sisyphus loop collapses to ≤ 2 rounds. The
+      # rework_attempts budget is untouched (unrelated branch).
+      local re_max re_attempts
+      re_max="${THROUGHLINE_RE_REVIEW_MAX:-2}"; case "$re_max" in ''|*[!0-9]*) re_max=2 ;; esac
+      re_attempts="$(_re_review_attempt_count_peek "$slug" "$gate" "$step")"
+      case "$re_attempts" in ''|*[!0-9]*) re_attempts=0 ;; esac
+      if [ "$re_attempts" -ge "$re_max" ]; then
+        _rework_escalate "$slug" "$tdd" "$gate" "$step" rework-budget-exhausted "incomplete-file-coverage" "re-review-coverage" "${RFIND_RE_REVIEW_DIRECTIVE:-incomplete file coverage}"
+        _terminal_state "$slug" blocked "" "rework-budget-exhausted (re-review coverage) at $gate:$step (re-review budget $re_max)"
+        return 1
+      fi
+      # Persist the increment; fail loud if it cannot land (mirrors the rework
+      # counter guard — a lost increment would silently uncap the re-review loop).
+      if ! _re_review_attempt_count "$slug" "$gate" "$step" >/dev/null; then
+        printf 'error: _rework_loop: _re_review_attempt_count persist failed for %s at %s:%s (aborting before the re-review cap is bypassed)\n' \
+          "$slug" "$gate" "$step" | tee -a "$log" >&2
+        _terminal_state "$slug" failed "" "re-review counter persist failed at $gate:$step"
+        return 1
+      fi
+      REVIEW_ATTENTION_DIRECTIVE="${RFIND_RE_REVIEW_DIRECTIVE:-}"
+      continue   # re-run the review pass with the attention directive (no rework)
     fi
 
     # A halting finding (FR-58 blocker/major) → classify and act. Pass

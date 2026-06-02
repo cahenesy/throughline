@@ -13,6 +13,23 @@ not yours to re-evaluate (FR-57). Read {{TDD}} in full, read docs/PRD.md for the
 requirements it references, and read the accepted ADRs the TDD lists under "ADR
 constraints" for context, but raise findings ONLY against the scoped diff.
 
+{{ATTENTION_DIRECTIVE}}
+
+**Per-file disposition (REQUIRED before REVIEW_RESULT).** Compute
+`git diff --name-only {{SCOPE_BASE}}..{{SCOPE_HEAD}}` for this pass's scope. For
+EACH file in that list, before declaring `REVIEW_RESULT: PASS`, emit either:
+
+- ≥ 1 `FINDING_BEGIN..FINDING_END` block whose `region` field cites that file, OR
+- the literal line `FILE_REVIEWED_NO_FINDINGS: <file>`.
+
+Emit one of these for EVERY file in the diff range — no implicit "I looked but
+didn't comment" is allowed. This is not an invitation to manufacture findings:
+emit `FILE_REVIEWED_NO_FINDINGS: <file>` when the file is genuinely clean. A
+mechanical coverage pre-pass validates this before accepting the verdict; a
+`REVIEW_RESULT: PASS` that leaves any diff file with no disposition is converted
+to a blocking `incomplete-file-coverage` finding and the review is re-run with
+explicit attention to the skipped files (issue #35).
+
 ## Grounding (FR-70 / ADR 0006)
 
 Every fact you cite in a finding's `evidence` field MUST be reproducible from one

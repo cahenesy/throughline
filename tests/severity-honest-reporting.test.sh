@@ -636,8 +636,8 @@ EOF
   RESUME_GATES_DONE_0099_fix="build,test-first,verify,verify-runtime"; export RESUME_GATES_DONE_0099_fix
   _write_tdd_fragment 0099-fix 99 docs/tdd/0099-fix.md 1 reviewing review \
     1000 1000 "feat/0099-fix" "" "log" "" "" "build,test-first,verify,verify-runtime" "" "" "" "" "" "" ""
-  # A 2-file diff after build start so the coverage check has files to require.
-  printf 'b\n' > src/b.txt; printf 'c\n' > src/c.txt; git add -A; git commit -qm work >/dev/null
+  # Leaves HEAD at build start; the caller captures BS, then commits the 2-file
+  # diff the coverage check requires (so BS..HEAD is non-empty).
 }
 
 echo "[G1] §8: incomplete coverage → re-review (NOT rework) → second pass clears"
@@ -648,6 +648,7 @@ echo "[G1] §8: incomplete coverage → re-review (NOT rework) → second pass c
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
   _g_setup "$D/repo" || { bad "setup failed"; exit 0; }
   BS="$(git rev-parse master)"   # build start (before the 2-file work commit)
+  printf 'b\n' > src/b.txt; printf 'c\n' > src/c.txt; git add -A; git commit -qm work >/dev/null
   # pass 1: PASS but cites only src/b.txt → src/c.txt un-cited → incomplete.
   printf 'FINDING_BEGIN\nseverity: nit\nstructural: false\nregion: src/b.txt:1-1\nregion_lines: 1\npattern_tags: [style]\nsummary: s\nevidence: x\nFINDING_END\nREVIEW_RESULT: PASS\n' > "$D/repo/ctl/review.1"
   # pass 2: disposition for both files → complete → clears.
@@ -671,6 +672,7 @@ echo "[G2] §8b: persistent incomplete coverage → BLOCKED rework-budget-exhaus
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
   _g_setup "$D/repo" || { bad "setup failed"; exit 0; }
   BS="$(git rev-parse master)"
+  printf 'b\n' > src/b.txt; printf 'c\n' > src/c.txt; git add -A; git commit -qm work >/dev/null
   # every pass leaves src/c.txt un-cited → coverage never completes.
   printf 'FINDING_BEGIN\nseverity: nit\nstructural: false\nregion: src/b.txt:1-1\nregion_lines: 1\npattern_tags: [style]\nsummary: s\nevidence: x\nFINDING_END\nREVIEW_RESULT: PASS\n' > "$D/repo/ctl/review.last"
   printf 'echo "do_rework MUST NOT run" >&2; exit 9\n' > "$D/repo/ctl/do_rework"
