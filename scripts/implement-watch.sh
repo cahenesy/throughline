@@ -71,10 +71,22 @@ done
 LATEST="$LOGS_DIR/latest"
 logdir_abs="$(cd "$LATEST" 2>/dev/null && pwd -P)" || logdir_abs=""
 [ -z "$logdir_abs" ] && logdir_abs="$LATEST"
+# The line is a single whitespace-tokenized key=value record. A path may legally
+# contain spaces (the consumer recovers the trailing closed-vocabulary fields by
+# anchored key= match), but a raw CR/LF would inject a second line and split the
+# contract — collapse any to a space so the record stays exactly one line.
+logdir_abs="${logdir_abs//$'\n'/ }"; logdir_abs="${logdir_abs//$'\r'/ }"
+# Validate state against the known run-state vocabulary (state.sh's run.json
+# writer). Anything unexpected/malformed (whitespace, empty, corrupt run.json)
+# collapses to `unknown`, so the state= token is always a single clean word
+# (TDD §3 contract; §Failure-modes' "whatever the run left" passes through here).
 state="unknown"
 if [ -r "$LATEST/state.d/run.json" ]; then
   _s="$(sed -n 's/.*"state":"\([^"]*\)".*/\1/p' "$LATEST/state.d/run.json" | head -1)"
-  [ -n "$_s" ] && state="$_s"
+  case "$_s" in
+    running|done|paused|blocked|interrupted|failed) state="$_s" ;;
+    *) state="unknown" ;;
+  esac
 fi
 cl="no"; [ -f "$LATEST/candidate-learnings.json" ] && cl="yes"
 echo "IMPLEMENT_RUN_COMPLETE logdir=$logdir_abs state=$state candidate_learnings=$cl"
