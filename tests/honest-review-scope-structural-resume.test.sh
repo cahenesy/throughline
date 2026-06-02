@@ -239,6 +239,102 @@ echo "[§3a-mirror] status.sh renders a resume-blocked-integration-conflict paus
     && ok "the conflict cause label appears in the halt render" || bad "the conflict cause should render (got: $out)"
 ) || true
 
+# ===========================================================================
+# Shared fixture for §6–§8: a master (integration) + feat build branch carrying a
+# structural-finding halt whose tdd_rev fingerprint was recorded from the branch's
+# TDD copy. Leaves PWD on feat/<slug>. Echoes nothing; sets fragment + globals.
+#   <dir> <revise-integration?0|1> <conflict?0|1>
+_setup_structural_halt() {  # <dir> <revise> <conflict>
+  local d="$1" revise="$2" conflict="$3"
+  # state.d lives OUTSIDE the repo worktree so the fixture's `git add -A` / branch
+  # switches never sweep or delete the fragment (it is run-state, not repo content).
+  mkdir -p "$d/state.d" "$d/repo"; cd "$d/repo" || return 1
+  export STATE_DIR="$d/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" \
+         INTEGRATION="master" CHANGE="ci" LOGDIR="$d" RESUME=1
+  git init -q -b master; git config user.email t@t.t; git config user.name t
+  mkdir -p docs/tdd src
+  printf '# TDD 0031\nStatus: draft\n## Approach\nv1\n' > docs/tdd/0031-fix.md
+  printf 'orig\n' > src/a.txt
+  git add -A; git commit -qm "build start (TDD v1)" >/dev/null
+  git checkout -q -b feat/0031-fix
+  if [ "$conflict" = 1 ]; then
+    printf 'feat-version\n' > src/a.txt   # conflicts with master's edit below
+  else
+    printf 'build\n' >> src/a.txt          # a build-output commit, non-conflicting
+  fi
+  git add -A; git commit -qm "build output" >/dev/null
+  FEAT_HEAD="$(git rev-parse HEAD)"
+  # Record the structural halt: tdd_rev = the branch's (v1) TDD blob.
+  _write_tdd_fragment 0031-fix 31 docs/tdd/0031-fix.md 1 blocked review 1000 1000 \
+    "feat/0031-fix" "" log "" "" "build,test-first,verify,verify-runtime" "" "$FEAT_HEAD" "" "" "" "" "" "" "" "" ""
+  set_halt_cause 0031-fix structural-finding review:1 "(b)"
+  if [ "$revise" = 1 ]; then
+    git checkout -q master
+    printf '# TDD 0031\nStatus: draft\n## Approach\nv2 REVISED\n' > docs/tdd/0031-fix.md
+    [ "$conflict" = 1 ] && printf 'master-version\n' > src/a.txt
+    git add -A; git commit -qm "revise TDD (resolves the structural halt)" >/dev/null
+    git checkout -q feat/0031-fix
+  fi
+}
+
+# §6 (gap B): resume refused while the resolving TDD revision is UNMERGED. The
+# recorded tdd_rev equals integration's current blob for the TDD path → resuming
+# would re-halt identically; refuse, persist NOTHING (the fragment keeps its
+# accurate blocked/structural-finding state).
+echo "[§6] resume refused while the TDD revision is unmerged (tdd_rev == integration blob)"
+( TDDS=(); THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  _setup_structural_halt "$ROOT/s6" 0 0 || { bad "setup failed"; exit 0; }
+  F="$STATE_DIR/0031-fix.json"; before="$(cat "$F")"
+  RESUME_REFUSE_CAUSE=""
+  _resume_from 0031-fix; rc=$?
+  [ "$rc" -eq 3 ] && ok "resume refused (rc=3) while the TDD is unrevised" || bad "should refuse rc=3 (got $rc)"
+  [ "${RESUME_REFUSE_CAUSE:-}" = "resume-blocked-tdd-unrevised" ] \
+    && ok "RESUME_REFUSE_CAUSE=resume-blocked-tdd-unrevised" || bad "cause should be tdd-unrevised (got '${RESUME_REFUSE_CAUSE:-}')"
+  [ "$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$F" | head -1)" = "blocked" ] \
+    && ok "fragment stays blocked (not flipped to paused)" || bad "fragment should stay blocked"
+  [ "$(cat "$F")" = "$before" ] && ok "fragment byte-identical (refusal persists nothing)" || bad "fragment must be unchanged on refusal"
+) || true
+
+# §7 (gap B): resume accepted after the revision is merged to integration. The
+# blobs differ → accept; merge integration into the build branch so the resumed
+# gates read the REVISED TDD; advance branch_head_at_pause to the post-merge head.
+echo "[§7] resume accepted after revision: integration merged into the build branch"
+( TDDS=(); THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  _setup_structural_halt "$ROOT/s7" 1 0 || { bad "setup failed"; exit 0; }
+  F="$STATE_DIR/0031-fix.json"
+  V2="$(git rev-parse master:docs/tdd/0031-fix.md)"
+  RESUME_REFUSE_CAUSE=""
+  _resume_from 0031-fix; rc=$?
+  [ "$rc" -eq 0 ] && ok "resume accepted (rc=0) after revision" || bad "should accept rc=0 (got $rc, cause=${RESUME_REFUSE_CAUSE:-})"
+  [ "$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$F" | head -1)" = "paused" ] \
+    && ok "fragment flipped to paused/transient" || bad "fragment should be paused"
+  [ "$(git rev-parse HEAD:docs/tdd/0031-fix.md)" = "$V2" ] \
+    && ok "worktree TDD content == integration's revised version (merge happened)" || bad "worktree TDD should equal the revised version"
+  post="$(git rev-parse refs/heads/feat/0031-fix)"
+  [ "$(_read_fragment_field "$F" branch_head_at_pause)" = "$post" ] \
+    && ok "branch_head_at_pause advanced to the post-merge head" || bad "branch_head_at_pause should equal the post-merge head"
+) || true
+
+# §8 (gap B): the integration merge conflicts → abort, persist
+# resume-blocked-integration-conflict, leave the worktree clean (no in-progress
+# merge, no conflict markers), return 3.
+echo "[§8] integration merge conflict refuses cleanly with a persisted cause"
+( TDDS=(); THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  _setup_structural_halt "$ROOT/s8" 1 1 || { bad "setup failed"; exit 0; }
+  F="$STATE_DIR/0031-fix.json"
+  RESUME_REFUSE_CAUSE=""
+  _resume_from 0031-fix; rc=$?
+  [ "$rc" -eq 3 ] && ok "merge conflict refuses (rc=3)" || bad "should refuse rc=3 (got $rc)"
+  [ "${RESUME_REFUSE_CAUSE:-}" = "resume-blocked-integration-conflict" ] \
+    && ok "RESUME_REFUSE_CAUSE=resume-blocked-integration-conflict" || bad "cause should be integration-conflict (got '${RESUME_REFUSE_CAUSE:-}')"
+  [ "$(sed -n 's/.*"paused_cause":"\([^"]*\)".*/\1/p' "$F" | head -1)" = "resume-blocked-integration-conflict" ] \
+    && ok "paused_cause persisted == resume-blocked-integration-conflict" || bad "paused_cause should be persisted (got: $(grep -o '"paused_cause":[^,]*' "$F"))"
+  git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1 \
+    && bad "an in-progress merge was left behind (abort failed)" || ok "no in-progress merge (git merge --abort ran)"
+  grep -q '^<<<<<<<' src/a.txt 2>/dev/null \
+    && bad "conflict markers left on disk" || ok "no conflict markers on disk (worktree clean)"
+) || true
+
 # --- report ----------------------------------------------------------------
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
