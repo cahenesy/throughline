@@ -150,8 +150,15 @@ _resume_from() {
       # TDD 0030 §2 / FR-39 (gap 2): an orphaned-unclean fragment — the runner
       # died mid-gate (the verdict-write SIGPIPE in the observed incident),
       # leaving this TDD non-terminal. Accept it exactly as a recoverable blocked
-      # fragment: flip to paused/transient, then fall through to validation.
-      _accept_blocked_as_paused "$slug" "$_stage_now" || true
+      # fragment: the SAME atomic flip to paused/transient, then fall through to
+      # the existing validation. The branch-head derivation below supplies the
+      # null branch_head_at_pause from the branch ref (the unclean death never
+      # wrote it). Same refuse-on-write-failure contract as the blocked arm.
+      if ! _accept_blocked_as_paused "$slug" "$_stage_now"; then
+        echo "error: _resume_from $slug: could not flip $fragment_status->paused for resume; refusing" >&2
+        RESUME_REFUSE_CAUSE="resume-blocked-state-write-failed"
+        return 3
+      fi
     else
       return 0
     fi

@@ -508,7 +508,10 @@ if [ "$CHECK_PAUSED" -eq 1 ]; then
       # run: a live runner's fragments are NEVER reported. A run that died before
       # recording its pid (pid absent/null → empty) is, by definition, not alive.
       _runpid="$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$RUNDIR/state.d/run.json" 2>/dev/null | head -1)"
-      if [ -z "$_runpid" ] || ! kill -0 "$_runpid" 2>/dev/null; then
+      # pid 0 is never a valid runner pid; `kill -0 0` signals the caller's whole
+      # process group (spuriously "alive"), so treat 0 — like an absent/null pid
+      # — as not-alive so orphan detection is not suppressed.
+      if [ -z "$_runpid" ] || [ "$_runpid" = "0" ] || ! kill -0 "$_runpid" 2>/dev/null; then
         printf 'slug=%s gate=%s cause=unclean-exit resumable=orphaned\n' "$slug" "${stage:--}"
       fi
     fi
