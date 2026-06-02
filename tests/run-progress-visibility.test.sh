@@ -55,7 +55,20 @@ if printf '%s' "$prompt" | grep -q 'INDEPENDENT runtime-verification gate'; then
   exit 0
 fi
 if printf '%s' "$prompt" | grep -q 'INDEPENDENT review gate'; then
-  cat "$STUBDIR/review-$slug" 2>/dev/null || echo "REVIEW_RESULT: PASS"
+  if [ -f "$STUBDIR/review-$slug" ]; then
+    cat "$STUBDIR/review-$slug"
+  else
+    # TDD 0021 §3b/§3c: a bare PASS is now converted to an incomplete-file-coverage
+    # block unless every file in the review's diff scope carries a per-file
+    # disposition. Disposition each touched file (the review prompt renders the
+    # scope as `--name-only <base>..<head>`) so a stubbed clean review still clears
+    # under the new coverage gate.
+    rbase="$(printf '%s' "$prompt" | grep -oE 'name-only[[:space:]]+[0-9a-f]{7,40}' | head -1 | grep -oE '[0-9a-f]{7,40}')"
+    [ -n "$rbase" ] && git diff --name-only "$rbase"..HEAD 2>/dev/null | while IFS= read -r f; do
+      [ -n "$f" ] && echo "FILE_REVIEWED_NO_FINDINGS: $f"
+    done
+    echo "REVIEW_RESULT: PASS"
+  fi
   exit 0
 fi
 if [ ! -f "$STUBDIR/no-test-first-$slug" ]; then

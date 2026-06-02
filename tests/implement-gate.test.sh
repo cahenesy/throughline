@@ -62,7 +62,20 @@ if printf '%s' "$prompt" | grep -q 'INDEPENDENT runtime-verification gate'; then
   exit 0
 fi
 if printf '%s' "$prompt" | grep -q 'INDEPENDENT review gate'; then
-  cat "$STUBDIR/review-$slug" 2>/dev/null || echo "REVIEW_RESULT: PASS"
+  if [ -f "$STUBDIR/review-$slug" ]; then
+    cat "$STUBDIR/review-$slug"
+  else
+    # TDD 0021 §3b/§3c: a bare PASS is now converted to an incomplete-file-coverage
+    # block unless every file in the review's diff scope carries a per-file
+    # disposition. Disposition each touched file (the review prompt renders the
+    # scope as `--name-only <base>..<head>`) so a stubbed clean review still clears
+    # under the new coverage gate.
+    rbase="$(printf '%s' "$prompt" | grep -oE 'name-only[[:space:]]+[0-9a-f]{7,40}' | head -1 | grep -oE '[0-9a-f]{7,40}')"
+    [ -n "$rbase" ] && git diff --name-only "$rbase"..HEAD 2>/dev/null | while IFS= read -r f; do
+      [ -n "$f" ] && echo "FILE_REVIEWED_NO_FINDINGS: $f"
+    done
+    echo "REVIEW_RESULT: PASS"
+  fi
   exit 0
 fi
 # TDD 0019 bounded rework loop: a review BLOCK triggers a rework pass. The
@@ -472,4 +485,16 @@ if [ -f "$HRS" ]; then
   bash "$HRS" || HRS_FAIL=1
 fi
 
-[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ] && [ "$SMS_FAIL" -eq 0 ] && [ "$PRM_FAIL" -eq 0 ] && [ "$GRM_FAIL" -eq 0 ] && [ "$BRL_FAIL" -eq 0 ] && [ "$RR_FAIL" -eq 0 ] && [ "$BCL_FAIL" -eq 0 ] && [ "$BO_FAIL" -eq 0 ] && [ "$IDP_FAIL" -eq 0 ] && [ "$RES_FAIL" -eq 0 ] && [ "$CVR_FAIL" -eq 0 ] && [ "$HRS_FAIL" -eq 0 ]
+# Run the severity-honest-reporting eval (TDD 0021 / FR-58, FR-60, FR-70, FR-71 +
+# issues #35, #28A, #28B) as part of the same suite so the findings-schema state
+# I/O, the review/build prompt edits, the diff-vs-narrative + finding-block
+# parsers, and the per-file coverage check are regression-gated by ci-checks,
+# not orphaned from the aggregator. Same rationale as the sibling evals above.
+SHR="$(dirname "$0")/severity-honest-reporting.test.sh"
+SHR_FAIL=0
+if [ -f "$SHR" ]; then
+  echo
+  bash "$SHR" || SHR_FAIL=1
+fi
+
+[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ] && [ "$SMS_FAIL" -eq 0 ] && [ "$PRM_FAIL" -eq 0 ] && [ "$GRM_FAIL" -eq 0 ] && [ "$BRL_FAIL" -eq 0 ] && [ "$RR_FAIL" -eq 0 ] && [ "$BCL_FAIL" -eq 0 ] && [ "$BO_FAIL" -eq 0 ] && [ "$IDP_FAIL" -eq 0 ] && [ "$RES_FAIL" -eq 0 ] && [ "$CVR_FAIL" -eq 0 ] && [ "$HRS_FAIL" -eq 0 ] && [ "$SHR_FAIL" -eq 0 ]

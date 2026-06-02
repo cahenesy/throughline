@@ -102,6 +102,21 @@ _read_fragment_cleared_log() {  # <file>
   [ "$raw" = "[]" ] && return 0
   printf '%s' "$raw"
 }
+# Read the findings array (TDD 0021 §6). Like cleared_step_log it nests objects,
+# so the flat _read_fragment_raw_array regex would truncate it at the first `]`.
+# findings is NOT the last field (self_review_count / re_review_attempts /
+# last_cleared_review_sha / cleared_step_log follow it), so we anchor the greedy
+# array match on the field that immediately follows — `,"self_review_count":`,
+# which appears exactly once — instead of the fragment's closing brace. INVARIANT:
+# findings must remain immediately before self_review_count in _write_tdd_fragment's
+# printf. Empty/`[]`/absent → empty (matching the other readers' "no value yet"
+# default).
+_read_fragment_findings() {  # <file>
+  local f="$1" raw
+  raw="$(sed -n 's/.*"findings":\(\[.*\]\),"self_review_count":.*/\1/p' "$f" | head -1)"
+  [ "$raw" = "[]" ] && return 0
+  printf '%s' "$raw"
+}
 
 # Escape a string for safe inclusion as a JSON string value. Free-text fields
 # (note/branch/pr_url/log) ride through this; structural fields are integers or
@@ -147,9 +162,30 @@ json_escape() {
 #   cleared_step_log          a complete JSON array literal (or empty → []);
 #                             per-cleared-step objects {step_id, base_sha,
 #                             head_sha, pattern_tags[], cleared_at}
+# The three params 26..28 (TDD 0021 / FR-58, FR-60, FR-70, FR-71; §6) are
+# CUMULATIVE-by-default. Unlike every field above (which a caller omitting the
+# param resets to its empty default), these three are PRESERVED from the
+# on-disk fragment when the param is ABSENT (arg count < 26/27/28). This is a
+# deliberate convention shift: the cumulative findings ledger + self-review
+# counter + re-review counter must survive every status/halt/rework transition,
+# and there are EIGHT carry-forward writers (set_tdd_state, set_tdd_meta,
+# set_halt_cause, _rewrite_fragment_rework, _record_cleared_step, the two
+# pause-retry writers, the resume writer) — threading three new reads + args
+# through all eight is error-prone and one missed site silently wipes findings.
+# Preserve-on-absent makes them safe-by-construction: a writer that does not
+# manage them just omits the params and they round-trip. The new §6 setters
+# (_record_finding, _incr_self_review_count, _re_review_attempt_count) pass them
+# EXPLICITLY (arg count ≥ 26), which overrides the preserve. Their JSON is
+# placed BEFORE last_cleared_review_sha so cleared_step_log remains the LAST
+# field (the _read_fragment_cleared_log greedy-anchor invariant).
+#   findings           a complete JSON array literal (param ≥26 wins; else
+#                      preserved from disk; fresh/absent → [])
+#   self_review_count  an int (param ≥27 wins; else preserved; fresh → 0)
+#   re_review_attempts a complete JSON object literal keyed "<gate>:<step>" → int
+#                      (param ≥28 wins; else preserved; fresh → {})
 # Callers that do not need them omit them; the existing twelve-, sixteen-,
-# twenty-, and twenty-three-param call sites continue to work unchanged (the new
-# fields default to null/[]/{}).
+# twenty-, twenty-three-, and twenty-five-param call sites continue to work
+# unchanged (24/25 default to null/[]; 26..28 preserve-or-default).
 _write_tdd_fragment() {
   local slug="$1" n="$2" path="$3" qp="$4" status="$5" stage="$6" sta="$7" upd="$8"
   local branch="$9" pr_url="${10}" log="${11}" note="${12}"
@@ -157,10 +193,17 @@ _write_tdd_fragment() {
   local halt_cause="${17:-}" halt_finding="${18:-}" halt_actions_csv="${19:-}" halt_detail="${20:-}"
   local rework_attempts="${21:-}" rework_log="${22:-}" build_attempt="${23:-}"
   local last_cleared_sha="${24:-}" cleared_step_log="${25:-}"
+  local argc="$#"
   local stage_lit cause_lit head_lit gates_lit retries_lit
   local halt_cause_lit halt_finding_lit halt_actions_lit halt_detail_lit
   local rework_attempts_lit rework_log_lit build_attempt_lit
   local last_cleared_sha_lit cleared_step_log_lit
+  local findings_lit self_review_lit re_review_lit
+  # TDD 0021 §6: $f is needed up-front so the preserve-on-absent reads (below)
+  # can pull the cumulative findings / self_review_count / re_review_attempts
+  # from the CURRENT on-disk fragment when the caller omits params 26..28.
+  local f tmp
+  f="$STATE_DIR/$slug.json"
   if [ -z "$stage" ]; then stage_lit='null'
   else stage_lit="\"$(json_escape "$stage")\""; fi
   if [ -z "$paused_cause" ]; then cause_lit='null'
@@ -220,12 +263,24 @@ _write_tdd_fragment() {
   else last_cleared_sha_lit="\"$(json_escape "$last_cleared_sha")\""; fi
   if [ -z "$cleared_step_log" ]; then cleared_step_log_lit='[]'
   else cleared_step_log_lit="$cleared_step_log"; fi
-  # Split the `local` declaration: under bash 5.3 `set -u`, a single
-  # `local f="..." tmp="$f..."` raises 'f: unbound variable' because the
-  # `tmp` initializer references `$f` before the local declaration has bound
-  # it. Two separate assignments avoid the ordering issue.
-  local f tmp
-  f="$STATE_DIR/$slug.json"
+  # TDD 0021 §6: findings / self_review_count / re_review_attempts. Param ≥26/27/28
+  # wins; otherwise PRESERVE the on-disk value (cumulative-by-default — see the
+  # header). A fresh fragment (file absent) or an explicitly-empty value falls
+  # back to the type's empty literal ([] / 0 / {}).
+  if [ "$argc" -ge 26 ]; then findings_lit="${26}"
+  elif [ -f "$f" ]; then findings_lit="$(_read_fragment_findings "$f")"
+  else findings_lit=""; fi
+  [ -z "$findings_lit" ] && findings_lit='[]'
+  local _srv
+  if [ "$argc" -ge 27 ]; then _srv="${27}"
+  elif [ -f "$f" ]; then _srv="$(sed -n 's/.*"self_review_count":\([0-9]*\).*/\1/p' "$f" | head -1)"
+  else _srv=""; fi
+  case "$_srv" in ''|*[!0-9]*) _srv=0 ;; esac
+  self_review_lit="$_srv"
+  if [ "$argc" -ge 28 ]; then re_review_lit="${28}"
+  elif [ -f "$f" ]; then re_review_lit="$(_read_fragment_raw_object "$f" re_review_attempts)"
+  else re_review_lit=""; fi
+  [ -z "$re_review_lit" ] && re_review_lit='{}'
   tmp="$f.tmp.$$"
   # TDD 0011 / iter-3 MAJOR-5: detect printf or mv failure. A disk-full
   # or permission failure on `printf > $tmp` under set -uo pipefail (no -e)
@@ -233,7 +288,7 @@ _write_tdd_fragment() {
   # fragment with a corrupted/empty one, and subsequent reads would
   # round-trip empty values back. Bail loudly instead so the run is
   # halted while data is still recoverable.
-  if ! printf '{"n":%d,"slug":"%s","path":"%s","queue_pos":%d,"status":"%s","stage":%s,"started_at":%d,"updated_at":%d,"branch":"%s","pr_url":"%s","log":"%s","note":"%s","paused_cause":%s,"gates_completed":%s,"retries":%s,"branch_head_at_pause":%s,"halt_cause":%s,"halt_triggering_finding_ref":%s,"halt_next_actions":%s,"halt_cause_detail":%s,"rework_attempts":%s,"rework_log":%s,"build_attempt":%s,"last_cleared_review_sha":%s,"cleared_step_log":%s}\n' \
+  if ! printf '{"n":%d,"slug":"%s","path":"%s","queue_pos":%d,"status":"%s","stage":%s,"started_at":%d,"updated_at":%d,"branch":"%s","pr_url":"%s","log":"%s","note":"%s","paused_cause":%s,"gates_completed":%s,"retries":%s,"branch_head_at_pause":%s,"halt_cause":%s,"halt_triggering_finding_ref":%s,"halt_next_actions":%s,"halt_cause_detail":%s,"rework_attempts":%s,"rework_log":%s,"build_attempt":%s,"findings":%s,"self_review_count":%s,"re_review_attempts":%s,"last_cleared_review_sha":%s,"cleared_step_log":%s}\n' \
     "$n" "$(json_escape "$slug")" "$(json_escape "$path")" "$qp" \
     "$(json_escape "$status")" "$stage_lit" \
     "$sta" "$upd" \
@@ -242,6 +297,7 @@ _write_tdd_fragment() {
     "$cause_lit" "$gates_lit" "$retries_lit" "$head_lit" \
     "$halt_cause_lit" "$halt_finding_lit" "$halt_actions_lit" "$halt_detail_lit" \
     "$rework_attempts_lit" "$rework_log_lit" "$build_attempt_lit" \
+    "$findings_lit" "$self_review_lit" "$re_review_lit" \
     "$last_cleared_sha_lit" "$cleared_step_log_lit" \
     > "$tmp"; then
     echo "error: _write_tdd_fragment printf failed for $slug (disk full? perm?); fragment NOT updated" >&2
@@ -277,6 +333,20 @@ _rework_config_json() {
   case "$factor" in ''|*[!0-9]*) echo "warning: THROUGHLINE_REWORK_SCOPE_FACTOR='$factor' not numeric; using 3" >&2; factor=3 ;; esac
   printf '{"model":"%s","max":%d,"scope_floor":%d,"scope_factor":%d}' \
     "$(json_escape "$model")" "$max" "$floor" "$factor"
+}
+
+# _re_review_config_json — emit the §6 re-review-config snapshot from the
+# THROUGHLINE_RE_REVIEW_MAX knob (TDD 0021 §3c; default 2). Recorded in run.json's
+# config snapshot (parallel to _rework_config_json) so any rework-budget-exhausted
+# halt that a `runner-check` re-review triggered is reproducible from run-state
+# alone (ADR 0006). The cap is deliberately tighter than THROUGHLINE_REWORK_MAX:
+# the issue #35 collapse expectation is "round 1 may miss files; round 2 forced by
+# per-file coverage sweeps them," so 2 is the tight cap. Non-numeric input falls
+# back to the default + warn, matching _rework_config_json's discipline.
+_re_review_config_json() {
+  local max="${THROUGHLINE_RE_REVIEW_MAX:-2}"
+  case "$max" in ''|*[!0-9]*) echo "warning: THROUGHLINE_RE_REVIEW_MAX='$max' not numeric; using 2" >&2; max=2 ;; esac
+  printf '{"max":%d}' "$max"
 }
 
 # _gate_timeout_json — emit the gate-child watchdog ceiling (TDD 0027 §1, the
@@ -338,13 +408,15 @@ _write_run_fragment() {
   fi
   # TDD 0011 / iter-3 MAJOR-5: same printf+mv failure handling as
   # _write_tdd_fragment.
-  local rework_config_lit; rework_config_lit="$(_rework_config_json)"
-  local gate_timeout_lit; gate_timeout_lit="$(_gate_timeout_json)"
-  if ! printf '{"schema":1,"started_at":%d,"updated_at":%d,"pid":%d,"integration_branch":"%s","mode":"%s","change":"%s","logdir":"%s","total":%d,"completed":%d,"failed":%d,"blocked":%d,"skipped":%d,"paused":%d,"state":"%s","pause_started_at":%s,"config":{"rework_config":%s,"gate_timeout":%s}}\n' \
+  local rework_config_lit re_review_config_lit gate_timeout_lit
+  rework_config_lit="$(_rework_config_json)"
+  re_review_config_lit="$(_re_review_config_json)"
+  gate_timeout_lit="$(_gate_timeout_json)"
+  if ! printf '{"schema":1,"started_at":%d,"updated_at":%d,"pid":%d,"integration_branch":"%s","mode":"%s","change":"%s","logdir":"%s","total":%d,"completed":%d,"failed":%d,"blocked":%d,"skipped":%d,"paused":%d,"state":"%s","pause_started_at":%s,"config":{"rework_config":%s,"re_review_config":%s,"gate_timeout":%s}}\n' \
     "$STATE_STARTED_AT" "$(date +%s)" "$$" \
     "$(json_escape "$INTEGRATION")" "$STATE_MODE" "$(json_escape "$CHANGE")" "$(json_escape "$LOGDIR")" \
     "$total" "$completed" "$failed" "$blocked" "$skipped" "$paused" \
-    "$(json_escape "$state")" "$pause_started_lit" "$rework_config_lit" "$gate_timeout_lit" \
+    "$(json_escape "$state")" "$pause_started_lit" "$rework_config_lit" "$re_review_config_lit" "$gate_timeout_lit" \
     > "$tmp"; then
     echo "error: _write_run_fragment printf failed; run.json NOT updated" >&2
     rm -f "$tmp" 2>/dev/null || true
@@ -398,6 +470,17 @@ state_init() {
     # gain. Following the TDD-0018 precedent, the schema stays at 1; the
     # directive is satisfied in spirit (the change IS recorded — here) without
     # the resume-breaking literal bump.
+    #
+    # TDD 0021 (severity / honest reporting / self-review) §6 likewise says
+    # "Schema-version bumped by one from TDD 0020's value." The SAME analysis
+    # applies a third time: the new fragment fields (findings[], self_review_count,
+    # re_review_attempts) and run.json's config.re_review_config are ADDITIVE —
+    # an older paused fragment lacks them and every reader defaults ([] / 0 / {}),
+    # so an old paused run resumes fine under the new code; _write_tdd_fragment's
+    # preserve-on-absent (params 26..28) round-trips them on every rewrite.
+    # Bumping under this `== 1` refusal gate would break resume of every pre-0021
+    # paused run for no correctness gain. Schema stays at 1; the directive is
+    # recorded here, not honored as a resume-breaking literal bump.
     local _resume_schema
     _resume_schema="$(sed -n 's/.*"schema":\([0-9]*\).*/\1/p' "$STATE_DIR/run.json" | head -1)"
     # TDD 0011 / iter-6 MAJOR-3: an absent/empty schema field is NOT
@@ -1224,4 +1307,217 @@ _record_cleared_step() {  # <slug> <step-id> <base-sha> <head-sha> <pattern-tags
     echo "error: _record_cleared_step: could not write $slug fragment (step $step_id)" >&2
     return 1
   fi
+}
+
+# --- §6 findings ledger + self-review counter + re-review counter (TDD 0021) --
+# These four writers mutate ONLY the §6 fields; every other field is read from
+# the existing fragment and round-tripped unchanged. _rewrite_fragment_findings
+# is the shared read-all/write-with-new-§6-literals core (the same pattern
+# _rewrite_fragment_rework uses for the rework fields), so the public mutators
+# stay small. It passes all 28 args EXPLICITLY (so the §6 preserve-on-absent does
+# not shadow an intended override) — including last_cleared_review_sha (24) and
+# cleared_step_log (25), which it carries forward unchanged.
+
+# _rewrite_fragment_findings <slug> <findings_lit> <self_review_lit> <re_review_lit>
+_rewrite_fragment_findings() {
+  local slug="$1" findings_lit="$2" srv_lit="$3" rr_lit="$4"
+  local f="${STATE_DIR:-}/$slug.json"
+  # SOURCE_ONLY / no-run path (STATE_DIR unset) → graceful no-op success, matching
+  # the other fragment writers. But when STATE_DIR IS set and the fragment is
+  # missing (e.g. a TOCTOU removal after the caller's top-of-function existence
+  # check), this is a genuine can't-persist: return NON-ZERO so the §6 counter
+  # setters (_re_review_attempt_count / _incr_self_review_count) propagate the
+  # failure instead of reporting a persisted increment that never landed — a
+  # silent persist failure would let a later _re_review_attempt_count_peek read a
+  # stale count and bypass the THROUGHLINE_RE_REVIEW_MAX budget.
+  [ -z "${STATE_DIR:-}" ] && return 0
+  if [ ! -f "$f" ]; then
+    echo "error: _rewrite_fragment_findings: no fragment $f; refusing to report a §6 write that cannot land" >&2
+    return 1
+  fi
+  local n qp path status stage sta branch pr_url log note now
+  local paused_cause gates_csv retries_json branch_head
+  local halt_cause halt_finding halt_actions_csv halt_detail
+  local rework_attempts rework_log build_attempt last_cleared_sha cleared_step_log
+  n="$(sed -n 's/.*"n":\([0-9]*\).*/\1/p'            "$f" | head -1)"
+  qp="$(sed -n 's/.*"queue_pos":\([0-9]*\).*/\1/p'   "$f" | head -1)"
+  path="$(sed -n 's/.*"path":"\([^"]*\)".*/\1/p'     "$f" | head -1)"
+  status="$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+  if grep -q '"stage":null' "$f" 2>/dev/null; then stage=""
+  else stage="$(sed -n 's/.*"stage":"\([^"]*\)".*/\1/p' "$f" | head -1)"; fi
+  sta="$(sed -n 's/.*"started_at":\([0-9]*\).*/\1/p' "$f" | head -1)"
+  branch="$(sed -n 's/.*"branch":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+  pr_url="$(sed -n 's/.*"pr_url":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+  log="$(sed -n 's/.*"log":"\([^"]*\)".*/\1/p'       "$f" | head -1)"
+  note="$(sed -n 's/.*"note":"\([^"]*\)".*/\1/p'     "$f" | head -1)"
+  paused_cause="$(_read_fragment_field "$f" paused_cause)"
+  gates_csv="$(_read_fragment_array_csv "$f" gates_completed)"
+  retries_json="$(_read_fragment_raw_array "$f" retries)"
+  branch_head="$(_read_fragment_field "$f" branch_head_at_pause)"
+  halt_cause="$(_read_fragment_field "$f" halt_cause)"
+  halt_finding="$(_read_fragment_field "$f" halt_triggering_finding_ref)"
+  halt_actions_csv="$(_read_fragment_array_csv "$f" halt_next_actions)"
+  halt_detail="$(_read_fragment_field "$f" halt_cause_detail)"
+  rework_attempts="$(_read_fragment_raw_object "$f" rework_attempts)"
+  rework_log="$(_read_fragment_raw_array "$f" rework_log)"
+  build_attempt="$(_read_fragment_raw_object "$f" build_attempt)"
+  last_cleared_sha="$(_read_fragment_field "$f" last_cleared_review_sha)"
+  cleared_step_log="$(_read_fragment_cleared_log "$f")"
+  now=$(date +%s)
+  if ! _write_tdd_fragment "$slug" "${n:-0}" "$path" "${qp:-0}" "$status" "$stage" \
+    "${sta:-$now}" "$now" "$branch" "$pr_url" "$log" "$note" \
+    "$paused_cause" "$gates_csv" "$retries_json" "$branch_head" \
+    "$halt_cause" "$halt_finding" "$halt_actions_csv" "$halt_detail" \
+    "$rework_attempts" "$rework_log" "$build_attempt" \
+    "$last_cleared_sha" "$cleared_step_log" \
+    "$findings_lit" "$srv_lit" "$rr_lit"; then
+    echo "error: _rewrite_fragment_findings: could not write $slug fragment" >&2
+    return 1
+  fi
+}
+
+# _record_finding <slug> <source> <pass_id> <severity> <structural> <region>
+#                 <region_lines> <pattern_tags_csv> <summary> <evidence>
+# Append one finding object (the §6 shape) to findings[]. <source> ∈
+# {review, self-review, runner-check}; <structural> is "true"/"false";
+# <region_lines> is an int; <pattern_tags_csv> is a comma-separated tag list (or
+# empty → []). Every finding is reproducible from `git diff` of its region (ADR
+# 0006); addressed_at / addressed_by_sha start null (a later rework stamps them).
+_record_finding() {  # <slug> <source> <pass_id> <severity> <structural> <region> <region_lines> <tags_csv> <summary> <evidence>
+  local slug="$1" source="$2" pass_id="$3" severity="$4" structural="$5"
+  local region="$6" region_lines="$7" tags_csv="${8:-}" summary="${9:-}" evidence="${10:-}"
+  local f="${STATE_DIR:-}/$slug.json"
+  if [ -z "${STATE_DIR:-}" ] || [ ! -f "$f" ]; then
+    echo "error: _record_finding: no state fragment for $slug ($f)" >&2
+    return 1
+  fi
+  case "$region_lines" in ''|*[!0-9]*) region_lines=0 ;; esac
+  local struct_lit='false'; [ "$structural" = "true" ] && struct_lit='true'
+  local tags_lit t first=1
+  if [ -z "$tags_csv" ]; then tags_lit='[]'
+  else
+    tags_lit='['
+    local IFS=','; for t in $tags_csv; do
+      if [ -n "$t" ]; then
+        if [ "$first" -eq 1 ]; then tags_lit+="\"$(json_escape "$t")\""; first=0
+        else tags_lit+=",\"$(json_escape "$t")\""; fi
+      fi
+    done
+    tags_lit+=']'
+  fi
+  local entry
+  entry="{\"source\":\"$(json_escape "$source")\",\"pass_id\":\"$(json_escape "$pass_id")\",\"severity\":\"$(json_escape "$severity")\",\"structural\":$struct_lit,\"region\":\"$(json_escape "$region")\",\"region_lines\":$region_lines,\"pattern_tags\":$tags_lit,\"summary\":\"$(json_escape "$summary")\",\"evidence\":\"$(json_escape "$evidence")\",\"addressed_at\":null,\"addressed_by_sha\":null}"
+  local existing new
+  existing="$(_read_fragment_findings "$f")"
+  if [ -z "$existing" ]; then
+    # An empty reader result is AMBIGUOUS: either the ledger is genuinely empty
+    # (`"findings":[]` / field absent), or it holds findings the greedy reader
+    # could not parse (a corrupt/truncated array, or evidence text that defeats
+    # the anchor). Resetting to "[$entry]" in the latter case would silently
+    # DISCARD the accumulated FR-71 honest-reporting audit trail. Distinguish by
+    # the raw literal: start fresh ONLY when findings is literally [] or absent;
+    # otherwise fail loud and preserve the on-disk state for forensics.
+    if grep -q '"findings":\[\]' "$f" 2>/dev/null || ! grep -q '"findings":' "$f" 2>/dev/null; then
+      new="[$entry]"
+    else
+      echo "error: _record_finding: findings present but unparseable for $slug; refusing to overwrite and lose prior findings" >&2
+      return 1
+    fi
+  elif [ "${existing: -1}" != ']' ]; then
+    # Defensive: _read_fragment_findings only ever returns a ]-terminated capture,
+    # so this is normally unreachable — but keep the fail-loud guard rather than a
+    # silent reset in case the reader's contract ever changes.
+    echo "error: _record_finding: findings ledger for $slug is malformed (no closing ']'); refusing to write and lose prior findings" >&2
+    return 1
+  else
+    new="${existing%]},$entry]"
+  fi
+  local srv rr
+  srv="$(sed -n 's/.*"self_review_count":\([0-9]*\).*/\1/p' "$f" | head -1)"; case "$srv" in ''|*[!0-9]*) srv=0 ;; esac
+  rr="$(_read_fragment_raw_object "$f" re_review_attempts)"; [ -z "$rr" ] && rr='{}'
+  if ! _rewrite_fragment_findings "$slug" "$new" "$srv" "$rr"; then
+    echo "error: _record_finding: could not append finding for $slug" >&2
+    return 1
+  fi
+}
+
+# _incr_self_review_count <slug> [<delta>]  — add <delta> (default 1) to the
+# fragment's self_review_count (FR-60 telemetry: self-review findings emitted
+# across the build's lifetime). Other §6 fields carried forward unchanged.
+_incr_self_review_count() {  # <slug> [<delta>]
+  local slug="$1" delta="${2:-1}"
+  local f="${STATE_DIR:-}/$slug.json"
+  if [ -z "${STATE_DIR:-}" ] || [ ! -f "$f" ]; then
+    echo "error: _incr_self_review_count: no state fragment for $slug ($f)" >&2
+    return 1
+  fi
+  case "$delta" in ''|*[!0-9]*) delta=1 ;; esac
+  local cur new findings rr
+  cur="$(sed -n 's/.*"self_review_count":\([0-9]*\).*/\1/p' "$f" | head -1)"; case "$cur" in ''|*[!0-9]*) cur=0 ;; esac
+  new=$((cur + delta))
+  findings="$(_read_fragment_findings "$f")"; [ -z "$findings" ] && findings='[]'
+  rr="$(_read_fragment_raw_object "$f" re_review_attempts)"; [ -z "$rr" ] && rr='{}'
+  if ! _rewrite_fragment_findings "$slug" "$findings" "$new" "$rr"; then
+    echo "error: _incr_self_review_count: could not persist counter for $slug" >&2
+    return 1
+  fi
+}
+
+# _re_review_attempt_count_peek <slug> <gate> <step>  — read-only count of the
+# `runner-check` re-review attempts for the given key (0 if absent/no fragment),
+# WITHOUT incrementing. Parallel to _rework_attempt_count_peek; the §3c routing
+# seeds its budget check from this so a pause+resume preserves the cap.
+_re_review_attempt_count_peek() {  # <slug> <gate> <step>
+  local slug="$1" gate="$2" step="$3"
+  # Validate gate/step BEFORE building $key — it is interpolated raw into sed/grep
+  # patterns below, so a metacharacter (`.` `*` `[` `\` `/`) would corrupt the
+  # match. gate is an identifier; step is numeric. Reject anything else rather
+  # than rely on the caller (matches the codebase's numeric-guard discipline).
+  case "$gate" in ''|*[!a-zA-Z0-9_-]*) echo "error: _re_review_attempt_count_peek: invalid gate '$gate'" >&2; return 1 ;; esac
+  case "$step" in ''|*[!0-9]*)         echo "error: _re_review_attempt_count_peek: invalid step '$step'" >&2; return 1 ;; esac
+  local f="${STATE_DIR:-}/$slug.json" key="$gate:$step" obj cur
+  if [ -z "${STATE_DIR:-}" ] || [ ! -f "$f" ]; then echo 0; return 0; fi
+  obj="$(_read_fragment_raw_object "$f" re_review_attempts)"
+  [ -z "$obj" ] && { echo 0; return 0; }
+  cur="$(printf '%s' "$obj" | sed -n "s/.*\"$key\":\\([0-9]*\\).*/\\1/p" | head -1)"
+  [ -z "$cur" ] && cur=0
+  echo "$cur"
+}
+
+# _re_review_attempt_count <slug> <gate> <step>  — increment the per-(gate,step)
+# `runner-check` re-review counter and echo the NEW value. Parallel to
+# _rework_attempt_count; the §3c branch enforces THROUGHLINE_RE_REVIEW_MAX (FR-58
+# scope-tightening for issue #35) against it.
+_re_review_attempt_count() {  # <slug> <gate> <step>
+  local slug="$1" gate="$2" step="$3"
+  # Validate gate/step BEFORE building $key — it is interpolated raw into the
+  # sed/grep/sed-replace patterns below (a metacharacter would corrupt the match
+  # or, in the sed replacement, mis-edit the object). gate is an identifier; step
+  # is numeric. Reject anything else rather than rely on the caller.
+  case "$gate" in ''|*[!a-zA-Z0-9_-]*) echo "error: _re_review_attempt_count: invalid gate '$gate'" >&2; return 1 ;; esac
+  case "$step" in ''|*[!0-9]*)         echo "error: _re_review_attempt_count: invalid step '$step'" >&2; return 1 ;; esac
+  local f="${STATE_DIR:-}/$slug.json"
+  if [ -z "${STATE_DIR:-}" ] || [ ! -f "$f" ]; then
+    echo "error: _re_review_attempt_count: no state fragment for $slug ($f)" >&2
+    return 1
+  fi
+  local key="$gate:$step" obj cur new new_obj findings srv
+  obj="$(_read_fragment_raw_object "$f" re_review_attempts)"; [ -z "$obj" ] && obj='{}'
+  cur="$(printf '%s' "$obj" | sed -n "s/.*\"$key\":\\([0-9]*\\).*/\\1/p" | head -1)"
+  [ -z "$cur" ] && cur=0
+  new=$((cur + 1))
+  if [ "$obj" = '{}' ]; then
+    new_obj="{\"$key\":$new}"
+  elif printf '%s' "$obj" | grep -q "\"$key\":[0-9]"; then
+    new_obj="$(printf '%s' "$obj" | sed "s/\"$key\":[0-9]*/\"$key\":$new/")"
+  else
+    new_obj="${obj%\}},\"$key\":$new}"
+  fi
+  findings="$(_read_fragment_findings "$f")"; [ -z "$findings" ] && findings='[]'
+  srv="$(sed -n 's/.*"self_review_count":\([0-9]*\).*/\1/p' "$f" | head -1)"; case "$srv" in ''|*[!0-9]*) srv=0 ;; esac
+  if ! _rewrite_fragment_findings "$slug" "$findings" "$srv" "$new_obj"; then
+    echo "error: _re_review_attempt_count: could not persist counter for $slug ($key)" >&2
+    return 1
+  fi
+  printf '%s' "$new"
 }

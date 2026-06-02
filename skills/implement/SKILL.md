@@ -179,6 +179,18 @@ each implementation), lint/typecheck enforced at edit time, updates any docs the
 change makes stale IN THE SAME COMMIT
 (supersede accepted ADRs/design docs; edit evergreen docs in place), and commits.
 
+Before its final `BATCH_RESULT:` line the build also runs an **author
+self-review** (FR-60): it gives its own diff a critical pass against the same
+checklist the independent reviewer uses and emits a `SELF_REVIEW` block
+(`SELF_REVIEW_BEGIN..SELF_REVIEW_END`, findings in the §1 finding schema)
+immediately before BATCH_RESULT, addressing any halting self-review finding
+first — an unaddressed one is caught by the consolidated review as a
+`self-review-ignored` finding. The build prompt also carries two unattended-mode
+guards: it must NEVER call `AskUserQuestion` (the build is a headless `claude -p`
+subprocess; it emits `BATCH_RESULT: BLOCKED` for human-needed cases instead), and
+it uses `git commit --no-verify` for the `test(failing):` commit specifically so a
+repo's pre-commit test hook cannot reject the deliberately-red commit.
+
 The build runs as a multi-turn `claude -p` coprocess (TDD 0020 §1). At the end of
 each Sequencing item, the build emits a `STEP_COMMIT: <step-id> <sha>` sentinel
 naming the integer step index and the implementation-finishing commit, then

@@ -578,10 +578,13 @@ echo "[E1] single fixable finding → rework ships → re-review PASS → flippe
   printf 'build-output\n' >> src/a.txt; git add -A; git commit -qm "build: simulated output past build-start" >/dev/null
   printf 'REVIEW_FINDING: severity=major structural=false region_lines=8 ref=review-1:1 | src/a.txt has a real bug\nREVIEW_RESULT: BLOCK found a real bug\n' > "$D/repo/ctl/review.out"
   # rework: small in-scope fix, then the finding is resolved (review now PASS).
+  # The PASS must carry a per-file disposition for the reworked file (TDD 0021
+  # §3b/§3c): a bare PASS that leaves a diff file un-dispositioned is now converted
+  # to an incomplete-file-coverage finding and re-reviewed.
   cat > "$D/repo/ctl/do_rework" <<EOF
 printf 'fixed\n' > src/a.txt
 git add -A >/dev/null 2>&1; git commit -q -m "rework: fix src/a.txt bug" >/dev/null 2>&1
-printf 'REVIEW_RESULT: PASS\n' > "$D/repo/ctl/review.out"
+printf 'FILE_REVIEWED_NO_FINDINGS: src/a.txt\nREVIEW_RESULT: PASS\n' > "$D/repo/ctl/review.out"
 EOF
   st="$(gate_one docs/tdd/0099-fix.md "$BS" "$D/e1.log")"; rc=$?
   F="$STATE_DIR/0099-fix.json"

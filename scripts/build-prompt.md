@@ -81,6 +81,17 @@ Build discipline:
   review judges whether the tests are meaningful. Only a genuine no-new-behavior
   change (pure refactor/docs) may skip it — and then you MUST end with
   `TEST_FIRST: SKIPPED <reason>`.
+  - PRE-COMMIT HOOKS that reject `test(failing):` commits (issue #28B). Some
+    repos run the test suite in a pre-commit hook (e.g. `core.hooksPath =
+    scripts/git-hooks` with a pytest step). Your `test(failing): <behavior>`
+    commit's failing test will fail that hook and the commit will be rejected —
+    blocking the red→green discipline above. The escape: use `git commit
+    --no-verify` for the `test(failing):` commit SPECIFICALLY (not for the
+    green implementation commit, which must pass the hook normally). This does
+    NOT weaken verification: the runner's `ci-checks.sh` gate re-runs lint +
+    tests + typecheck on the build branch and the runtime-verify gate drives the
+    BUILT artifact, so the four-gate system still catches anything the local
+    hook would have.
 - After each step run the relevant tests and the typecheck; fix failures at the
   ROOT CAUSE — never suppress errors, never weaken assertions to go green.
 - The format-and-lint hook runs on each edit; resolve anything it reports.
@@ -90,6 +101,14 @@ Build discipline:
   design, not a snap decision at build time. If you find you need one, STOP and
   end with `BATCH_RESULT: BLOCKED new dependency needed: <name> (<why>)` so
   /tdd-author can weigh it and its alternatives and update the design.
+- NEVER call `AskUserQuestion` in this build (issue #28A). The build runs
+  unattended as a `claude -p` subprocess — nobody is on the other end of a
+  question. The runner passes `--disallowed-tools AskUserQuestion`, so the call
+  returns an "unavailable tool" error; if that restriction were somehow bypassed
+  it would hang the subprocess indefinitely with no diagnostic (and trip the
+  watchdogs). If you genuinely cannot proceed without human guidance, emit
+  `BATCH_RESULT: BLOCKED <reason>` instead — that routes via the BLOCKERS.md
+  path with a diagnostic the user will actually read.
 
 Build-phase boundaries (these belong to OTHER gates — your job is to write code
 and commit it, not to drive the running artifact):
@@ -144,6 +163,33 @@ Close:
   numbers. Do NOT open a PR, do NOT change the TDD's `Status:`, and do NOT run
   the final review yourself — the runner owns branches, PRs, the verify + review
   gates, and the flip to `implemented` (only after both gates pass).
+- AUTHOR SELF-REVIEW before BATCH_RESULT (FR-60). Ahead of your final
+  `BATCH_RESULT:` line, give your OWN diff a critical pass against the same
+  checklist the independent reviewer uses, and emit a `SELF_REVIEW_BEGIN ..
+  SELF_REVIEW_END` block immediately before the BATCH_RESULT line:
+
+  ```
+  SELF_REVIEW_BEGIN
+  checked_categories:
+    - test-first-discipline
+    - touched-file-scope
+    - per-file-bound
+    - failure-modes-coverage
+    - verification-plan-coverage
+    - diff-vs-tdd-claims
+  findings:
+    - <a FINDING_BEGIN..FINDING_END block (the review prompt's §1 shape:
+       severity / structural / region / region_lines / pattern_tags / summary /
+       evidence) for each issue you find in your OWN work — or none if clean>
+  SELF_REVIEW_END
+  ```
+
+  If `findings` contains any halting-severity entry (`blocker`/`major`), you
+  MUST address it — commit the fix — BEFORE emitting `BATCH_RESULT: OK`. Do not
+  emit BATCH_RESULT with an unaddressed halting self-review finding: the runner's
+  consolidated review pass detects that as a `major` `self-review-ignored`
+  finding and halts the gate. An empty `findings` list (genuinely clean work) is
+  a valid, expected result — do not manufacture findings to look thorough.
 - End your final message with exactly `BATCH_RESULT: OK` on success,
   `BATCH_RESULT: FAIL <reason>` if you could not complete it, or
   `BATCH_RESULT: BLOCKED <reason>` for a design-level blocker.

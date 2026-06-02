@@ -222,7 +222,7 @@ prompt=""
 while [ $# -gt 0 ]; do case "$1" in -p) prompt="$2"; shift 2;; *) shift;; esac; done
 slug="$(printf '%s' "$prompt" | grep -oE 'docs/tdd/[0-9]+-[a-z]+' | head -1 | sed 's#docs/tdd/##')"
 if printf '%s' "$prompt" | grep -q 'INDEPENDENT runtime-verification gate'; then echo "VERIFY_RUNTIME: PASS"; exit 0; fi
-if printf '%s' "$prompt" | grep -q 'INDEPENDENT review gate'; then echo "REVIEW_RESULT: PASS"; exit 0; fi
+if printf '%s' "$prompt" | grep -q 'INDEPENDENT review gate'; then echo "FILE_REVIEWED_NO_FINDINGS: test-$slug.txt"; echo "FILE_REVIEWED_NO_FINDINGS: gen-$slug.txt"; echo "REVIEW_RESULT: PASS"; exit 0; fi
 echo "test for $slug" >> "test-$slug.txt"
 git add -A >/dev/null 2>&1; git commit -q -m "test(failing): $slug" >/dev/null 2>&1 || true
 echo "gen $(date +%s%N)" >> "gen-$slug.txt"
