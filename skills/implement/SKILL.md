@@ -102,6 +102,61 @@ that asks.
 
 The non-paused interactive flow continues at "Prepare" below.
 
+## Detect pending candidate learnings (TDD 0022 / FR-72)
+
+After a run completes, the runner mines the per-TDD findings for *recurring*
+categorical patterns (a finding class that recurred across more than one TDD or
+build step) and, when it finds any, writes `<logdir>/candidate-learnings.json`
+plus a `## Candidate learnings (pending review)` section in the run's
+`report.md`. The accept/discard prompt is forbidden in the headless runner, so it
+runs HERE, in this interactive session. It is surfaced two ways:
+
+- **Auto (primary).** When the watcher's harness-tracked background job
+  completes, the harness re-invokes this session with the watcher's stdout. Read
+  its `IMPLEMENT_RUN_COMPLETE logdir=<abs> state=<…> candidate_learnings=<yes|no>`
+  line. ALWAYS report run completion + `state` to the user (this is the status
+  side-benefit — no more manual polling). If `candidate_learnings=yes`, proceed
+  to **The review** below against that `logdir`.
+- **Fallback.** At the top of a fresh `/implement` invocation (immediately after
+  "Detect interrupted run", before "Prepare"), check the most recent completed
+  run's logdir (`docs/tdd/.implement-logs/latest`). If it holds an UNREVIEWED
+  `candidate-learnings.json` (no sibling `candidate-learnings.reviewed.json`), run
+  **The review** before showing the queue. This covers the case where the
+  session/watcher died and the auto callback was lost (FR-39 fallback).
+
+A run with no `candidate-learnings.json` skips this step silently.
+
+### The review
+
+1. Read `<logdir>/candidate-learnings.json` — a JSON array, one object per
+   recurring class (`class`, `distinct_tdds[]`, `severity_range`,
+   `was_structural`, `triggered_rework`, `subject_area_hints.{files,tags}`,
+   `summary`, `evidence`).
+2. Present ALL candidates in ONE `AskUserQuestion` with **`multiSelect: true`** —
+   one option per class, labeled with the class name, the TDDs it recurred in,
+   and its one-line summary. **Selected = accept, unselected = discard** (FR-72:
+   discarded candidates are NOT persisted).
+3. For each ACCEPTED class, persist it with `append_accepted_learning` (it
+   appends to `docs/tdd/LEARNINGS.md`, idempotently — a recurrence of an existing
+   class reinforces its entry rather than duplicating). Call it once per accepted
+   class; `<runid>` is the run logdir's basename:
+
+   ```
+   bash -c '
+     . "${CLAUDE_PLUGIN_ROOT}/scripts/lib/state.sh"
+     . "${CLAUDE_PLUGIN_ROOT}/scripts/lib/learnings.sh"
+     append_accepted_learning "$PWD" "<class>" "<files_csv>" "<tags_csv>" \
+       "<tdds_csv>" "<severity_min>–<severity_max>" "<summary>" "<evidence>" \
+       "<runid>" "<was_structural>" "<triggered_rework>"
+   '
+   ```
+
+4. Mark the report reviewed by renaming `candidate-learnings.json` →
+   `candidate-learnings.reviewed.json` (so neither the auto nor the fallback path
+   re-surfaces it).
+5. If the user CANCELS the `AskUserQuestion`, leave `candidate-learnings.json`
+   unreviewed (it re-surfaces next invocation) and persist nothing.
+
 ## Prepare
 1. Show the queue: the TDD(s) in scope and their Status. Confirm.
 2. Confirm mode:
@@ -121,41 +176,52 @@ The non-paused interactive flow continues at "Prepare" below.
    commands; for an unusual setup, export `CI_CHECKS_TEST_CMD` /
    `CI_CHECKS_TYPECHECK_CMD` / `CI_CHECKS_LINT_CMD` before launching.
 
-## Run (launch it yourself, detached)
+## Run (launch the watcher; it detaches the build)
 Implementation runs in separate `claude -p` processes, never in this session —
 fresh context per feature, and this session stays clean. Every mode also builds
 inside at least one DEDICATED git worktree (sequential/combined share one;
 parallel uses one per feature), so the detached runner never switches branches
 or commits in the working tree your live session is using — only the build
 branches it produces persist. After the user confirms the queue and mode (step
-1–2 above), LAUNCH the runner yourself as a detached background job and return
-control immediately. Do not print a command for the user to run.
+1–2 above), LAUNCH the build yourself and return control immediately. Do not
+print a command for the user to run.
 
-Launch with a single Bash call (adjust flags for the confirmed mode/scope).
-Append `--resume` when the user chose **Resume** at the "Detect interrupted
-run" step (TDD 0011 / FR-39); omit it for fresh starts.
+Launch the **watcher** (`scripts/implement-watch.sh`) — NOT `implement.sh`
+directly — with the Bash tool and **`run_in_background: true`** so the harness
+tracks it and re-invokes this session when it exits (that exit is what delivers
+the run-completion callback in the next step — TDD 0022 / FR-72). The watcher
+`nohup`s the real `implement.sh` itself, so the build still detaches and survives
+the session closing (TDD 0011 / FR-39); the watcher just polls for its completion
+and then exits. Pass the SAME flags you would have passed `implement.sh` (a TDD
+path, `--parallel`, `--combined`, `--resume`, …) — the watcher forwards `"$@"`
+verbatim. Append `--resume` when the user chose **Resume** at the "Detect
+interrupted run" step; omit it for fresh starts.
+
+Run this with the Bash tool, `run_in_background: true` (adjust flags for the
+confirmed mode/scope):
 
 ```
-mkdir -p docs/tdd/.implement-logs
-nohup bash "${CLAUDE_PLUGIN_ROOT}/scripts/implement.sh" \
-  > docs/tdd/.implement-logs/nohup.out 2>&1 &
-echo "launched pid $!"
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/implement-watch.sh"
 ```
 
-Resume variant (only when the user chose Resume above):
+Resume variant (only when the user chose Resume above) — append `--resume`:
 
 ```
-nohup bash "${CLAUDE_PLUGIN_ROOT}/scripts/implement.sh" --resume \
-  > docs/tdd/.implement-logs/nohup.out 2>&1 &
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/implement-watch.sh" --resume
 ```
 
-`nohup … &` survives the session closing and does not block, so the build runs
-unattended while the session stays free. Variants: append a TDD path to build
-one; add `--parallel` if the user selected Parallel mode.
+Variants: append a TDD path to build one; add `--parallel` or `--combined` for
+those modes. Launching the watcher as a harness-tracked background job (NOT a
+bare `nohup`) is what lets this session be re-invoked on completion; the build
+itself is still `nohup`-detached *inside* the watcher, so closing the session
+does not kill it (FR-39 preserved).
 
-After launching, report: the PID, that it is running detached, and the log
-location. The user can watch with `tail -f docs/tdd/.implement-logs/<ts>/report.md`
-or just wait.
+The watcher echoes one line to its stdout, `launched build pid <PID>`, where
+`<PID>` is the **build's** PID. After launching, report from that line: the build
+PID, that it is running detached, and the log location
+(`docs/tdd/.implement-logs/`). The user can watch with
+`tail -f docs/tdd/.implement-logs/<ts>/report.md` or just wait — when the build
+finishes, the watcher's exit re-invokes this session automatically (next step).
 
 ## Watching it
 - `/implement-status` — read-only progress snapshot of the active run
