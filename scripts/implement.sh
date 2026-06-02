@@ -213,6 +213,18 @@ else
   { echo "# Implement report — $(date)"; echo; } > "$REPORT"
 fi
 
+# TDD 0030 §4 (gap 4): snapshot BLOCKERS.md's line count at run start so the
+# run-end report prints the design-blocker pointer ONLY when THIS run appended to
+# it (growth), not merely because the file exists. Line count (not mtime/size) is
+# immune to `touch` and same-length edits; an absent file reads as 0.
+BLOCKERS_FILE="${MAINREPO:-$PWD}/docs/tdd/BLOCKERS.md"
+if [ -f "$BLOCKERS_FILE" ]; then
+  BLOCKERS_LINES_AT_START="$(wc -l < "$BLOCKERS_FILE" 2>/dev/null | tr -d '[:space:]')"
+else
+  BLOCKERS_LINES_AT_START=0
+fi
+BLOCKERS_LINES_AT_START="${BLOCKERS_LINES_AT_START:-0}"
+
 # Single-run lock: a second /implement on the same repo would double-build, so refuse
 # to start while another run is live. This is what lets you keep authoring PRDs/TDDs
 # in your session while a build runs detached — you can't accidentally launch a rival
@@ -583,8 +595,15 @@ if [ "${#PR_PLAN[@]}" -gt 0 ]; then
   } >>"$REPORT"
 fi
 
-if [ -f "${MAINREPO:-$PWD}/docs/tdd/BLOCKERS.md" ]; then
-  { echo; echo "Design blockers were recorded in docs/tdd/BLOCKERS.md — run /tdd-author to revise the design, then re-run /implement."; } >>"$REPORT"
+# TDD 0030 §4 (gap 4): print the BLOCKERS.md pointer only when THIS run grew the
+# ledger (line count rose above the run-start snapshot) — not whenever the file
+# merely exists. A deleted/shrunk file reads as ≤ the snapshot → no growth → no
+# phantom pointer (FR-64: name the actual next action, not a stale one).
+if [ -f "$BLOCKERS_FILE" ]; then
+  _blockers_lines_now="$(wc -l < "$BLOCKERS_FILE" 2>/dev/null | tr -d '[:space:]')"; _blockers_lines_now="${_blockers_lines_now:-0}"
+  if [ "$_blockers_lines_now" -gt "$BLOCKERS_LINES_AT_START" ]; then
+    { echo; echo "Design blockers were recorded in docs/tdd/BLOCKERS.md — run /tdd-author to revise the design, then re-run /implement."; } >>"$REPORT"
+  fi
 fi
 
 # Mark the run-state record as terminal (FR-27) so a later status.sh on this
