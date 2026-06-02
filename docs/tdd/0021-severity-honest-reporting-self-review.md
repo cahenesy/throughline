@@ -1,6 +1,6 @@
 # TDD 0021: Review severity triage + honest reporting + author self-review
 
-Status: draft
+Status: implemented
 PRD refs: FR-58, FR-60, FR-70, FR-71
 PRD-rev: a961955
 ADR constraints: 0003, 0004, 0005, 0006, 0007
