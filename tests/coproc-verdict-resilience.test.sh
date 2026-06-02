@@ -194,6 +194,80 @@ echo "[§5d] status.sh renders the 'did not exit cleanly' banner for an interrup
     && ok "banner points the user at /implement to resume" || bad "banner should point at /implement (got: $out)"
 ) || true
 
+# setup_impl_run <dir>: a minimal git project (PRD + ADR index + one ready TDD)
+# with a stub `claude` (build OK / runtime PASS / review PASS) and a controllable
+# ci-checks command, so `implement.sh --change ci` runs end-to-end with no model.
+# Leaves PWD in <dir>. Mirrors tests/implement-gate.test.sh's setup.
+setup_impl_run() {  # <dir>
+  local dir="$1"
+  mkdir -p "$dir"/{docs/tdd,docs/adr,.stub/bin}
+  cd "$dir" || return 1
+  git init -q; git config user.email t@t.t; git config user.name t
+  printf '# PRD\n## Requirements\n1. do the thing\n' > docs/PRD.md
+  printf '# ADR Index\n| # | Title | Status | Scope |\n|---|---|---|---|\n' > docs/adr/INDEX.md
+  printf '# TDD 0001: alpha\nStatus: ready\nPRD refs: 1\nPRD-rev: deadbee\nADR constraints: none\n\n## Approach\nstub\n' > docs/tdd/0001-alpha.md
+  git add -A; git commit -qm init >/dev/null
+  export STUBDIR="$dir/.stub"
+  printf '0\n' > "$STUBDIR/verify_rc"
+  cat > "$STUBDIR/verify_test.sh" <<EOF
+#!/usr/bin/env bash
+exit "\$(cat "$STUBDIR/verify_rc" 2>/dev/null || echo 0)"
+EOF
+  export CI_CHECKS_TEST_CMD="bash $STUBDIR/verify_test.sh"
+  export CI_CHECKS_TYPECHECK_CMD=""
+  cat > "$STUBDIR/bin/claude" <<'EOF'
+#!/usr/bin/env bash
+prompt=""
+while [ $# -gt 0 ]; do case "$1" in -p) prompt="$2"; shift 2;; *) shift;; esac; done
+slug="$(printf '%s' "$prompt" | grep -oE 'docs/tdd/[0-9]+-[a-z]+' | head -1 | sed 's#docs/tdd/##')"
+if printf '%s' "$prompt" | grep -q 'INDEPENDENT runtime-verification gate'; then echo "VERIFY_RUNTIME: PASS"; exit 0; fi
+if printf '%s' "$prompt" | grep -q 'INDEPENDENT review gate'; then echo "REVIEW_RESULT: PASS"; exit 0; fi
+echo "test for $slug" >> "test-$slug.txt"
+git add -A >/dev/null 2>&1; git commit -q -m "test(failing): $slug" >/dev/null 2>&1 || true
+echo "gen $(date +%s%N)" >> "gen-$slug.txt"
+git add -A >/dev/null 2>&1; git commit -q -m "stub build $slug" >/dev/null 2>&1 || true
+cat "$STUBDIR/build-$slug" 2>/dev/null || echo "BATCH_RESULT: OK"
+exit 0
+EOF
+  chmod +x "$STUBDIR/bin/claude"
+  export PATH="$STUBDIR/bin:$PATH"
+}
+_impl_report() { ls -t docs/tdd/.implement-logs/*/report.md 2>/dev/null | head -1; }
+
+# ===========================================================================
+# §6 (gap 4): truthful report tail. The BLOCKERS.md pointer must print ONLY when
+# THIS run appended to BLOCKERS.md (line-count growth), not merely because the
+# file exists — otherwise every run with a pre-existing ledger prints a phantom
+# "design blockers were recorded" pointer (FR-64: halt context names the actual
+# next action, not a stale one).
+echo "[§6a] a pre-existing BLOCKERS.md that does NOT grow this run -> NO boilerplate"
+( D="$ROOT/s6a"
+  setup_impl_run "$D" || { bad "setup failed"; exit 0; }
+  # A pre-existing ledger from some earlier run, untouched by this happy-path run.
+  printf '# Design blockers\n\n- 9999-old — some prior blocker\n' > docs/tdd/BLOCKERS.md
+  bash "$IMPL" --change ci >/dev/null 2>&1
+  R="$(_impl_report)"
+  if grep -q 'Design blockers were recorded in docs/tdd/BLOCKERS.md' "$R" 2>/dev/null; then
+    bad "report must NOT print the BLOCKERS pointer when the ledger did not grow"
+  else
+    ok "no phantom BLOCKERS pointer when the ledger was unchanged"
+  fi
+) || true
+
+echo "[§6b] a run that appends to BLOCKERS.md -> boilerplate IS printed"
+( D="$ROOT/s6b"
+  setup_impl_run "$D" || { bad "setup failed"; exit 0; }
+  # Build emits BATCH_RESULT: BLOCKED so record_blocker appends to BLOCKERS.md.
+  printf 'BATCH_RESULT: BLOCKED requirement needs a new ADR\n' > "$STUBDIR/build-0001-alpha"
+  bash "$IMPL" --change ci >/dev/null 2>&1
+  R="$(_impl_report)"
+  [ -f docs/tdd/BLOCKERS.md ] && grep -q '0001-alpha' docs/tdd/BLOCKERS.md \
+    && ok "the run appended a blocker entry to BLOCKERS.md" || bad "build BLOCKED should append to BLOCKERS.md"
+  grep -q 'Design blockers were recorded in docs/tdd/BLOCKERS.md' "$R" 2>/dev/null \
+    && ok "report prints the BLOCKERS pointer when the ledger grew" \
+    || bad "report should print the BLOCKERS pointer after an append (got tail: $(tail -3 "$R" 2>/dev/null))"
+) || true
+
 # ===========================================================================
 # §3 (gap 2): orphaned-fragment detection. A fragment stuck non-terminal whose
 # run has no live runner (run.json's pid is dead) is interrupted-unclean —
