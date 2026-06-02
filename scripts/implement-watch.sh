@@ -23,7 +23,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)" || {
 # production always resolves the real implement.sh beside this file.
 BUILD_SCRIPT="${THROUGHLINE_WATCH_BUILD_SCRIPT:-$SCRIPT_DIR/implement.sh}"
 LOGS_DIR="$PWD/docs/tdd/.implement-logs"
-mkdir -p "$LOGS_DIR" 2>/dev/null || true
+# Fail loud: the logs dir is load-bearing for the PID file, the nohup redirect,
+# and the run-state read. A swallowed failure here would cascade silently into a
+# false IMPLEMENT_RUN_COMPLETE with no build ever running, so abort instead of
+# `|| true` (FR-74 norm #1).
+if ! mkdir -p "$LOGS_DIR" 2>/dev/null; then
+  echo "FATAL: implement-watch.sh: cannot create logs dir $LOGS_DIR (perms? a non-dir in the path?)" >&2
+  exit 1
+fi
 PIDFILE="$LOGS_DIR/.watch.pid"
 
 # Poll cadence + hard ceiling (≥ the build watchdog so a wedged build can't pin
@@ -39,7 +46,12 @@ case "$MAX"  in ''|*[!0-9]*) echo "warning: THROUGHLINE_WATCH_MAX_SECS='$MAX' no
 WOKEN=0
 trap 'WOKEN=1' USR1
 trap 'rm -f "$PIDFILE" 2>/dev/null' EXIT
-printf '%s\n' "$$" > "$PIDFILE" 2>/dev/null || true
+# A PID-write failure is non-fatal BY DESIGN: an absent .watch.pid just means the
+# run-end hook's `kill -USR1` no-ops under its `kill -0` guard and we fall back to
+# poll-only completion detection (TDD §Failure-modes) — but surface it so the lost
+# USR1 shortcut isn't silent (FR-74 #1).
+printf '%s\n' "$$" > "$PIDFILE" 2>/dev/null \
+  || echo "warning: implement-watch.sh: could not write $PIDFILE; falling back to poll-only completion detection" >&2
 
 # Detach the real build (nohup → survives session close). "$@" forwards the
 # skill's flags verbatim. Capture the child PID; it is the PID the skill reports.
@@ -59,6 +71,9 @@ while :; do
   [ "$elapsed" -ge "$MAX" ] && break
   sleep "$POLL" & SLEEP_PID=$!
   wait "$SLEEP_PID" 2>/dev/null
+  # Best-effort cleanup of the sleep child: on a normal `wait` it has already
+  # exited (kill fails harmlessly); on a SIGUSR1-interrupted wait this reaps the
+  # still-running sleep. Either outcome is fine, hence || true (FR-74 #1).
   kill "$SLEEP_PID" 2>/dev/null || true
   WOKEN_NOW="$WOKEN"
   elapsed=$((elapsed + POLL))
@@ -91,5 +106,7 @@ fi
 cl="no"; [ -f "$LATEST/candidate-learnings.json" ] && cl="yes"
 echo "IMPLEMENT_RUN_COMPLETE logdir=$logdir_abs state=$state candidate_learnings=$cl"
 
+# Benign: the file may already be gone (EXIT trap) or never written; nothing
+# downstream depends on the removal succeeding (FR-74 #1).
 rm -f "$PIDFILE" 2>/dev/null || true
 exit 0
