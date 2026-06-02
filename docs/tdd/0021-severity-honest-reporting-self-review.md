@@ -398,12 +398,12 @@ concern.
    for unattended mode (issue #28A); (b) `git commit --no-verify`
    escape for pre-commit-hook-blocked `test(failing):` commits
    (issue #28B).
-5b. **Extend the review prompt** with §3b's per-file disposition
+6. **Extend the review prompt** with §3b's per-file disposition
    requirement (issue #35) and implement §3c's
    `_per_file_coverage_check` helper in `scripts/lib/gates.sh`. Wire
    the check between the reviewer's stream end and the runner's
    verdict acceptance.
-6. **Extend the runner's BATCH_RESULT parser** to extract the
+7. **Extend the runner's BATCH_RESULT parser** to extract the
    `SELF_REVIEW` block; record its findings onto the fragment with
    `source: "self-review"`; increment `self_review_count`. **Multi-turn
    timing (TDD 0020 dependency):** in TDD 0020's stream-json multi-turn
