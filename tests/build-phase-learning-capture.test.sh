@@ -480,6 +480,59 @@ EOF
   kill "$HPID" 2>/dev/null
 ) || true
 
+echo "[S21] run-end hook PAUSED branch: .run-complete=paused, watcher woken, detection skipped (both branches / done-only detect)"
+( d="$ROOT/S21"; mkdir -p "$d"/{docs/tdd,docs/adr,.stub/bin}
+  cd "$d"
+  git init -q; git config user.email t@t.t; git config user.name t
+  printf '# PRD\n## Requirements\n1. do the thing\n' > docs/PRD.md
+  printf '# ADR Index\n| # | Title | Status | Scope |\n|---|---|---|---|\n' > docs/adr/INDEX.md
+  printf '# TDD 0001: alpha\nStatus: ready\nPRD refs: 1\nPRD-rev: deadbee\nADR constraints: none\n\n## Approach\nstub\n' > docs/tdd/0001-alpha.md
+  git add -A; git commit -qm init
+  export CI_CHECKS_TEST_CMD="true" CI_CHECKS_TYPECHECK_CMD="" CI_CHECKS_LINT_CMD=""
+  # Build emits a rate-limit token and FAILS → the runner classifies it recoverable
+  # and (with GATE_RETRIES=1, no backoff) pauses the TDD immediately.
+  cat > "$d/.stub/bin/claude" <<'EOF'
+#!/usr/bin/env bash
+echo "Error: 429 too many requests (rate_limit)"
+exit 1
+EOF
+  chmod +x "$d/.stub/bin/claude"; export PATH="$d/.stub/bin:$PATH"
+  export THROUGHLINE_GATE_RETRIES=1 THROUGHLINE_GATE_BACKOFF_BASE=0
+  SENT="$d/woken.sentinel"
+  cat > "$d/helper.sh" <<EOF
+#!/usr/bin/env bash
+trap 'touch "$SENT"; exit 0' USR1
+while :; do sleep 0.2; done
+EOF
+  mkdir -p docs/tdd/.implement-logs
+  bash "$d/helper.sh" >/dev/null 2>&1 & HPID=$!
+  trap 'kill "$HPID" 2>/dev/null' EXIT
+  echo "$HPID" > docs/tdd/.implement-logs/.watch.pid
+  timeout 90 bash "$IMPL" --change ci >/dev/null 2>&1
+  LC="docs/tdd/.implement-logs/latest/.run-complete"
+  [ "$(cat "$LC" 2>/dev/null)" = "paused" ] && ok ".run-complete=paused on a paused run" || bad ".run-complete should be 'paused' (got: $(cat "$LC" 2>/dev/null))"
+  i=0; while [ ! -f "$SENT" ] && [ "$i" -lt 25 ]; do sleep 0.2; i=$((i+1)); done
+  [ -f "$SENT" ] && ok "watcher woken via SIGUSR1 in the paused branch" || bad "paused branch must also SIGUSR1 the watcher (§4 both branches)"
+  [ ! -f "docs/tdd/.implement-logs/latest/candidate-learnings.json" ] && ok "detection skipped in the paused branch" || bad "detection must NOT run in the paused branch (done-only)"
+  kill "$HPID" 2>/dev/null
+) || true
+
+echo "[S22] run-end watcher-wake PID guard rejects 0 / negative / non-numeric (no SIGUSR1 process-group broadcast)"
+( TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" 2>/dev/null || true
+  if type _valid_watch_pid >/dev/null 2>&1; then
+    _valid_watch_pid 0      && bad "pid 0 must be rejected (kill -USR1 0 broadcasts to the whole process group)" || ok "pid 0 rejected"
+    _valid_watch_pid "-5"   && bad "negative pid must be rejected (targets a process group)"                     || ok "negative pid rejected"
+    _valid_watch_pid abc    && bad "non-numeric pid must be rejected"                                            || ok "non-numeric pid rejected"
+    _valid_watch_pid ""     && bad "empty pid must be rejected"                                                  || ok "empty pid rejected"
+    _valid_watch_pid 0123   && bad "leading-zero pid must be rejected"                                           || ok "leading-zero pid rejected"
+    _valid_watch_pid 12345  && ok "a plain positive pid is accepted"                                            || bad "a valid positive pid must be accepted"
+  else
+    bad "_valid_watch_pid must exist (run-end hook PID guard)"
+    bad "_valid_watch_pid must exist (run-end hook PID guard)"
+  fi
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
