@@ -542,15 +542,24 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
   model="${MODEL:-}"
   errlog="${log%.log}.build.err"; [ "$errlog" = "$log" ] && errlog="$log.build.err"
   start=$(date +%s)
-  # Overall watchdog (issue #28A): 0/unlimited/non-numeric handling. A real
-  # build that streams steadily but never converges to BATCH_RESULT is killed at
-  # the wall-clock cap regardless of inter-event activity.
-  local -a tocmd=()
+  # TDD 0030 §5 (gap 5): THROUGHLINE_BUILD_TIMEOUT is now the ACTIVE build-seconds
+  # budget — the runner accounts only time the build SPENDS streaming between
+  # sentinels, excluding the synchronous per-step review waits (a budget that
+  # counted review time would be dishonest: a long review consuming the build's
+  # budget killed a finished build in the observed incident). `overall_active` is
+  # that budget; the `timeout` wrapper is demoted to a BACKSTOP at 2× the budget
+  # that only covers runner-accounting bugs (firing it is a defect, logged
+  # distinguishably). 0/unlimited/non-numeric handling preserved.
+  local overall_active backstop
   case "$overall" in
-    0|unlimited|'') : ;;
-    *[!0-9]*) tocmd=(timeout 7200) ;;
-    *) tocmd=(timeout "$overall") ;;
+    0|unlimited|'') overall_active=0; backstop=0 ;;
+    *[!0-9]*)       overall_active=7200; backstop=14400 ;;
+    *)              overall_active="$overall"; backstop=$((2 * overall)) ;;
   esac
+  local -a tocmd=()
+  if [ "$backstop" -gt 0 ] && command -v timeout >/dev/null 2>&1; then
+    tocmd=(timeout "$backstop")
+  fi
   # --disallowed-tools AskUserQuestion (issue #28A): runner-level belt-and-
   # suspenders for the prompt-level prohibition — the unattended build cannot
   # hang on a question nobody will answer.
@@ -580,13 +589,34 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
   # `while read; do …; done` would read the WHILE loop's status (0 on normal
   # exit), NOT the failing read's — so a `read -t` timeout (>128) would be
   # indistinguishable from EOF and the deadlock path (§8) would never fire.
+  # TDD 0030 §5: active-time accounting. The clock RUNS while the build streams
+  # between sentinels (interval_start marks the current active interval's start);
+  # it PAUSES across the synchronous per-step review and STOPS after BATCH_RESULT.
+  # build_active_seconds accumulates committed intervals; _active_exceeded flags an
+  # active-budget kill for the post-loop classifier.
   local evt text step_id sha verdict read_rc=0
+  local build_active_seconds=0 interval_start clock_active=1 _active_exceeded=0 _now _active
+  interval_start=$(date +%s)   # the spawn → first-STEP_COMMIT interval begins now
   while :; do
     # Capture read's OWN status directly — NOT via `if ! read; then read_rc=$?`,
     # where `$?` would be the negated `!` result (0 when read failed), hiding the
     # >128 timeout code the deadlock path (§8) needs.
     IFS= read -r -t "$inter" evt <&"${build_out}"; read_rc=$?
     [ "$read_rc" -ne 0 ] && break
+    # Active-time watchdog (TDD 0030 §5): while the clock is running, kill the
+    # build once accumulated active seconds exceed the budget. The clock is paused
+    # across the review (the loop blocks inside _run_per_step_review, so no check
+    # runs there — review waits never count). Caught at every event, so a build
+    # streaming non-sentinel output past the budget is killed promptly (the
+    # backstop is only for accounting bugs).
+    if [ "$clock_active" -eq 1 ] && [ "$overall_active" -gt 0 ]; then
+      _now=$(date +%s); _active=$((build_active_seconds + _now - interval_start))
+      if [ "$_active" -gt "$overall_active" ]; then
+        kill "$bpid" 2>/dev/null || true
+        _active_exceeded=1
+        break
+      fi
+    fi
     printf '%s\n' "$evt" >> "$log"
     case "$evt" in
       *"STEP_COMMIT: "*|*"BATCH_RESULT: "*)
@@ -596,6 +626,9 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
             step_id="$(printf '%s' "$text" | grep -aoE 'STEP_COMMIT:[[:space:]]+[0-9]+[[:space:]]+[^[:space:]]+' | tail -1 | awk '{print $2}')"
             sha="$(printf '%s' "$text"     | grep -aoE 'STEP_COMMIT:[[:space:]]+[0-9]+[[:space:]]+[^[:space:]]+' | tail -1 | awk '{print $3}')"
             if [ -n "$step_id" ] && [ -n "$sha" ]; then
+              # TDD 0030 §5: PAUSE the active clock — commit the streaming interval
+              # up to this sentinel read, then run the review off the clock.
+              build_active_seconds=$((build_active_seconds + $(date +%s) - interval_start))
               verdict="$(_run_per_step_review "$slug" "$tdd" "$step_id" "$sha" "$build_start" "$log")"
               printf '%s\n' "$verdict" >> "$log"
               # TDD 0030 §1 / FR-42: the review may have run long enough for the
@@ -611,6 +644,9 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
                   "$step_id" "$(printf '%s' "$verdict" | grep -aoE 'PASS|BLOCK' | head -1)" >> "$log"
                 break
               fi
+              # TDD 0030 §5: RESTART the active clock — the verdict write completed,
+              # so the next active interval (to the next sentinel) begins now.
+              interval_start=$(date +%s)
             fi
             ;;
           *"BATCH_RESULT: "*)
@@ -624,6 +660,10 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
             # the inter-event watchdog kills it (143 → transient → pause).
             # Continue (no `break`) — the read loop drains any tail events
             # until the build's stdout closes naturally.
+            # TDD 0030 §5: commit the final active interval and STOP the clock —
+            # the build is done; remaining drain time is free.
+            build_active_seconds=$((build_active_seconds + $(date +%s) - interval_start))
+            clock_active=0
             exec {build_in}>&- 2>/dev/null || true
             exec {BUILD[1]}>&- 2>/dev/null || true
             ;;
@@ -655,11 +695,22 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
   if [ -n "${STATE_DIR:-}" ] && [ -f "$STATE_DIR/$slug.json" ]; then
     _set_build_attempt_token_spend "$slug" "$(_extract_token_spend "$(_last_session_path "$start")")"
   fi
-  # Overall watchdog fired: `timeout` exits 124. Record build-overall-timeout so
-  # triage and _classify_cause (via the "timed out" token) route it to transient,
-  # not fatal (§11). No BATCH_RESULT is fabricated; the branch keeps its commits.
+  # TDD 0030 §5: the active-time watchdog fired (the runner killed the coproc when
+  # accumulated active build-seconds exceeded the budget). Record build-overall-
+  # timeout — the "timed out" token routes _classify_cause to transient (§11) — and
+  # return 124, the existing overall-timeout code. No BATCH_RESULT is fabricated;
+  # the branch keeps its commits.
+  if [ "$_active_exceeded" -eq 1 ]; then
+    printf 'THROUGHLINE_BUILD_TIMEOUT: build timed out — active build-seconds budget %ss exceeded (build-overall-timeout) (transient)\n' "$overall_active" >> "$log"
+    return 124
+  fi
+  # Backstop fired: the `timeout` wrapper (2× the active budget) exits 124. This
+  # should NOT happen if the active accounting is correct — firing it is a runner-
+  # accounting defect, logged distinguishably (THROUGHLINE_BUILD_BACKSTOP, never
+  # conflated with the active timeout above) while still carrying "timed out" +
+  # build-overall-timeout so the classification + triage path is unchanged.
   if [ "$wrc" = "124" ]; then
-    printf 'THROUGHLINE_BUILD_TIMEOUT: build timed out at the overall watchdog (build-overall-timeout) (transient)\n' >> "$log"
+    printf 'THROUGHLINE_BUILD_BACKSTOP: hard backstop fired at %ss — build timed out (runner accounting bug?) (build-overall-timeout) (transient)\n' "$backstop" >> "$log"
     return 124
   fi
   # Deadlock kill path: surface a SIGTERM-equivalent code → transient.
