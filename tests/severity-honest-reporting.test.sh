@@ -352,6 +352,9 @@ echo "[D8] review_one checks _diff_vs_narrative_facts' exit code and proceeds wi
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
   cd "$D"; git init -q; git config user.email t@t.t; git config user.name t
   printf 'base\n' > seed.txt; git add -A; git commit -qm base; BASE="$(git rev-parse HEAD)"
+  # Non-empty review scope: TDD 0031's empty-scope fail-closed check (merged from
+  # master) refuses base==HEAD before the facts path under test here can run.
+  printf 'work\n' > work.txt; git add -A; git commit -qm work
   # Stub the collaborators so review_one runs without a model call.
   _diff_vs_narrative_facts() { return 7; }            # force the helper to fail
   _review_prior_patterns_csv() { printf ''; }

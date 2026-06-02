@@ -257,6 +257,12 @@ echo "[B6] review_one renders a scoped prompt carrying base..HEAD, branch, and p
   mkdir -p docs/tdd
   printf '# TDD 0020\nStatus: draft\n' > docs/tdd/0020-x.md
   git add -A; git commit -qm base >/dev/null
+  BS="$(git rev-parse HEAD)"
+  # A build-output commit PAST the build-start base so the review scope BS..HEAD is
+  # non-empty and BS is a resolvable ref — TDD 0031 §2's empty-scope guard fails
+  # closed on an empty/unresolvable scope (the old literal "deadbeef" base no longer
+  # resolves). The reviewer stub echoes the prompt regardless of diff content.
+  printf 'work\n' >> docs/tdd/0020-x.md; git add -A; git commit -qm "build output" >/dev/null
   # Fragment with a prior cleared step carrying a pattern tag.
   printf '{"slug":"0020-x","cleared_step_log":[{"step_id":1,"pattern_tags":["prior-tag-x"]}]}\n' > "$D/state.d/0020-x.json"
   cat > "$D/bin/claude" <<EOF
@@ -267,9 +273,9 @@ printf '%s' "\$prompt" > "$D/captured"
 echo "REVIEW_RESULT: PASS"
 EOF
   chmod +x "$D/bin/claude"; export PATH="$D/bin:$PATH"
-  review_one docs/tdd/0020-x.md "deadbeef" "$D/r.log" >/dev/null 2>&1
-  grep -q 'deadbeef..HEAD' "$D/captured" 2>/dev/null \
-    && ok "review_one scopes the prompt to <base>..HEAD" || bad "review_one prompt should scope deadbeef..HEAD"
+  review_one docs/tdd/0020-x.md "$BS" "$D/r.log" >/dev/null 2>&1
+  grep -q "$BS..HEAD" "$D/captured" 2>/dev/null \
+    && ok "review_one scopes the prompt to <base>..HEAD" || bad "review_one prompt should scope $BS..HEAD"
   grep -q 'prior-tag-x' "$D/captured" 2>/dev/null \
     && ok "review_one interpolates the prior pattern tags (FR-59)" || bad "review_one should interpolate prior-tag-x"
   grep -q 'REVIEW_RESULT: PASS' "$D/r.log" 2>/dev/null \
@@ -388,6 +394,12 @@ echo "[C1] sentinel handshake: 3 STEP_COMMITs -> 3 STEP_REVIEW PASS -> 3 cleared
   setup_step_repo "$D/repo" || { bad "setup failed"; exit 0; }
   _write_tdd_fragment 0020-fix 20 docs/tdd/0020-fix.md 1 building build 1000 1000 "feat/0020-fix" "" log "" "" "" "" "" "" "" "" "" "" "" ""
   cat > "$D/repo/ctl/build_plan" <<'EOF'
+# Consume the runner's initial user-turn prompt first (the runner writes it on
+# stdin before the loop, matching real `claude -p --input-format stream-json`).
+# Without this, every per-STEP_COMMIT reply read is off by one and the build
+# exits one verdict early — leaving the final verdict write hitting a dead
+# coprocess (TDD 0030 §1). The init read keeps the handshake aligned.
+IFS= read -r _init || true
 for i in 1 2 3; do
   echo "line $i" >> src/a.txt
   git add -A >/dev/null 2>&1; git commit -q -m "step($i): work" >/dev/null 2>&1
@@ -419,6 +431,7 @@ echo "[C2] scoped diff: step 2's review base = step 1's cleared head (not build 
   setup_step_repo "$D/repo" || { bad "setup failed"; exit 0; }
   _write_tdd_fragment 0020-fix 20 docs/tdd/0020-fix.md 1 building build 1000 1000 "feat/0020-fix" "" log "" "" "" "" "" "" "" "" "" "" "" ""
   cat > "$D/repo/ctl/build_plan" <<'EOF'
+IFS= read -r _init || true   # consume the runner's initial prompt (TDD 0030 §1) so reply reads stay aligned
 for i in 1 2; do
   echo "line $i" >> src/a.txt
   git add -A >/dev/null 2>&1; git commit -q -m "step($i): work" >/dev/null 2>&1
@@ -445,6 +458,7 @@ echo "[C3+C4] pattern tags recorded on clear; step 2 review prompt shows the pri
   # step 1's review PASSes but emits a (minor) finding with a pattern tag.
   printf 'minor: src/a.txt:1 nit\npattern_tags: [unchecked-fragment-write-return]\nREVIEW_RESULT: PASS\n' > "$D/repo/ctl/review.out"
   cat > "$D/repo/ctl/build_plan" <<'EOF'
+IFS= read -r _init || true   # consume the runner's initial prompt (TDD 0030 §1) so reply reads stay aligned
 for i in 1 2; do
   echo "line $i" >> src/a.txt
   git add -A >/dev/null 2>&1; git commit -q -m "step($i): work" >/dev/null 2>&1
@@ -587,10 +601,12 @@ echo "[E1] consolidated review_one sees prior patterns from _per_step_review_loo
   TDDS=()
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
   setup_step_repo "$D/repo" || { bad "setup failed"; exit 0; }
+  BS="$(git rev-parse HEAD)"   # build-start (before the per-step loop commits step 1) — the consolidated review base
   _write_tdd_fragment 0020-fix 20 docs/tdd/0020-fix.md 1 building build 1000 1000 "feat/0020-fix" "" log "" "" "" "" "" "" "" "" "" "" "" ""
   # Per-step review records a pattern tag on step 1's clear (mirrors C3+C4).
   printf 'minor: nit\npattern_tags: [step5-marker-tag]\nREVIEW_RESULT: PASS\n' > "$D/repo/ctl/review.out"
   cat > "$D/repo/ctl/build_plan" <<'EOF'
+IFS= read -r _init || true   # consume the runner's initial prompt (TDD 0030 §1) so the reply read stays aligned
 echo "line 1" >> src/a.txt
 git add -A >/dev/null 2>&1; git commit -q -m "step(1): work" >/dev/null 2>&1
 echo "STEP_COMMIT: 1 $(git rev-parse HEAD)"
@@ -609,7 +625,7 @@ echo "REVIEW_RESULT: PASS"
 EOF
   chmod +x "$D/bin/claude"; export PATH="$D/bin:$PATH"
   cd "$D/repo"
-  review_one "$STATE_DIR/../0020-fix.md" "deadbeef" "$D/consolidated.log" >/dev/null 2>&1
+  review_one "$STATE_DIR/../0020-fix.md" "$BS" "$D/consolidated.log" >/dev/null 2>&1
   grep -q 'step5-marker-tag' "$D/captured-consolidated" 2>/dev/null \
     && ok "consolidated review prompt carries the per-step cleared pattern tag" \
     || bad "step 5: review_one (consolidated) should see step1's recorded pattern_tag"

@@ -68,6 +68,27 @@ fi
   exit 1
 }
 
+# _reclaim_stale_worktree <workroot> <report> (TDD 0027 §2 / FR-43)
+# A kill -9 (or any unclean death) skips the EXIT trap that removes the build
+# worktree, so the path is left on disk + registered; the next launch then FATALs
+# on `git worktree add` because the path exists. Reclaim it: remove the
+# registration + the directory so the caller falls through to a fresh add. Build
+# branches (the durable output) live in refs, not in the worktree, so removing a
+# stale worktree never discards committed work; uncommitted edits in a stale
+# worktree are intentionally discarded per the existing non-goal ("Recovering
+# uncommitted edits in a build worktree"). A path that is NOT a git worktree
+# (random dir) makes `git worktree remove` fail → the `|| rm -rf` fallback clears
+# it; if even that fails (permissions), the caller's FATAL on `git worktree add`
+# still fires, so we never silently build inside an unknown directory. Defined
+# above the SOURCE_ONLY guard so the test suite can drive it in isolation.
+_reclaim_stale_worktree() {  # <workroot> <report>
+  local workroot="$1" report="$2"
+  [ -d "$workroot" ] || return 0
+  echo "Reclaiming stale build worktree at $workroot (prior unclean exit)" >>"$report"
+  git worktree remove --force "$workroot" >>"$report" 2>&1 || rm -rf "$workroot"
+  git worktree prune >>"$report" 2>&1
+}
+
 # THROUGHLINE_SOURCE_ONLY=1 lets the test suite source this script to call
 # helpers in isolation. Runtime side effects (arg parsing, lock, drivers,
 # report) live below the guard; helpers are defined unconditionally above.
@@ -191,6 +212,18 @@ if [ "$RESUME" -eq 1 ] && [ -f "$REPORT" ]; then
 else
   { echo "# Implement report — $(date)"; echo; } > "$REPORT"
 fi
+
+# TDD 0030 §4 (gap 4): snapshot BLOCKERS.md's line count at run start so the
+# run-end report prints the design-blocker pointer ONLY when THIS run appended to
+# it (growth), not merely because the file exists. Line count (not mtime/size) is
+# immune to `touch` and same-length edits; an absent file reads as 0.
+BLOCKERS_FILE="${MAINREPO:-$PWD}/docs/tdd/BLOCKERS.md"
+if [ -f "$BLOCKERS_FILE" ]; then
+  BLOCKERS_LINES_AT_START="$(wc -l < "$BLOCKERS_FILE" 2>/dev/null | tr -d '[:space:]')"
+else
+  BLOCKERS_LINES_AT_START=0
+fi
+BLOCKERS_LINES_AT_START="${BLOCKERS_LINES_AT_START:-0}"
 
 # Single-run lock: a second /implement on the same repo would double-build, so refuse
 # to start while another run is live. This is what lets you keep authoring PRDs/TDDs
@@ -354,7 +387,10 @@ if [ "$PARALLEL" -eq 1 ]; then
           exit 0
         fi
       fi
-      pre="$(git rev-parse HEAD)"
+      # TDD 0031 §1 (gap A): the HONEST build-start base, not gate-entry HEAD.
+      # Parallel stacks on $BASE; the merge-base equals branch creation on a
+      # fresh build and the true build start on a resumed branch.
+      pre="$(_review_base "$BASE")"
       st="$(gate_one "$tdd" "$pre" "$abslog")"; rc=$?
       printf 'PARSTATUS::%s\n' "$st" >>"$abslog"
       if [ "$rc" -eq 0 ] && [ "$HASGH" -eq 1 ]; then
@@ -385,6 +421,9 @@ else
   # worktree can't be created, refuse rather than fall back to the live tree.
   git worktree prune >/dev/null 2>&1 || true
   WORKROOT="$(dirname "$MAINREPO")/$(basename "$MAINREPO")-wt-$(printf '%s' "$CHANGE" | tr '/ :' '---')"
+  # TDD 0027 §2 / FR-43: reclaim a worktree left registered by a prior unclean
+  # exit before adding, so a forcible kill of the prior run doesn't block this one.
+  _reclaim_stale_worktree "$WORKROOT" "$REPORT"
   if ! git worktree add --detach "$WORKROOT" "$BASE" >>"$REPORT" 2>&1; then
     { echo "FATAL: could not create isolated worktree at $WORKROOT (base '$BASE')."
       echo "Refusing to build in the live working tree; clear the error and re-run."; } | tee -a "$REPORT" >&2
@@ -434,7 +473,9 @@ else
           continue
         fi
       fi
-      pre="$(git rev-parse HEAD 2>/dev/null || echo "$BASE")"
+      # TDD 0031 §1 (gap A): honest build-start base (merge-base of the combined
+      # branch's stacking base $BASE and HEAD), not gate-entry HEAD.
+      pre="$(_review_base "$BASE")"
       echo ">>> $slug"; st="$(gate_one "$tdd" "$pre" "$log")"; rc=$?
       echo "  $st"; echo "- $slug — $st (log: $log)" >>"$REPORT"
       case "$rc" in
@@ -515,7 +556,11 @@ else
           paused_halt=1; continue
         fi
       fi
-      pre="$(git rev-parse HEAD)"
+      # TDD 0031 §1 (gap A): honest build-start base. Sequential stacks each TDD
+      # on $prev; the merge-base of $prev and HEAD equals branch creation on a
+      # fresh build and the true build start on a resumed branch (where the old
+      # `git rev-parse HEAD` returned the tip, collapsing review to HEAD..HEAD).
+      pre="$(_review_base "$prev")"
       echo ">>> $slug (off $prev)"; st="$(gate_one "$tdd" "$pre" "$log")"; rc=$?; echo "  $st"
       case "$rc" in
         0)
@@ -559,8 +604,15 @@ if [ "${#PR_PLAN[@]}" -gt 0 ]; then
   } >>"$REPORT"
 fi
 
-if [ -f "${MAINREPO:-$PWD}/docs/tdd/BLOCKERS.md" ]; then
-  { echo; echo "Design blockers were recorded in docs/tdd/BLOCKERS.md — run /tdd-author to revise the design, then re-run /implement."; } >>"$REPORT"
+# TDD 0030 §4 (gap 4): print the BLOCKERS.md pointer only when THIS run grew the
+# ledger (line count rose above the run-start snapshot) — not whenever the file
+# merely exists. A deleted/shrunk file reads as ≤ the snapshot → no growth → no
+# phantom pointer (FR-64: name the actual next action, not a stale one).
+if [ -f "$BLOCKERS_FILE" ]; then
+  _blockers_lines_now="$(wc -l < "$BLOCKERS_FILE" 2>/dev/null | tr -d '[:space:]')"; _blockers_lines_now="${_blockers_lines_now:-0}"
+  if [ "$_blockers_lines_now" -gt "$BLOCKERS_LINES_AT_START" ]; then
+    { echo; echo "Design blockers were recorded in docs/tdd/BLOCKERS.md — run /tdd-author to revise the design, then re-run /implement."; } >>"$REPORT"
+  fi
 fi
 
 # Mark the run-state record as terminal (FR-27) so a later status.sh on this
@@ -569,6 +621,12 @@ fi
 # Re-roll the fragments to see if any are paused; rerun parser is fragment-by-
 # fragment because the loop-level `paused_halt` variable is scoped to the
 # specific driver block.
+#
+# TDD 0030 §3 (gap 3): the requested paused/done below is only the BASE state.
+# set_run_state runs the authoritative run-end fragment scan and upgrades it per
+# precedence blocked > interrupted > paused > done — so a fragment left
+# non-terminal (the runner died mid-gate) writes `interrupted`, never `done`,
+# even though this site still passes "done". No duplicate scan is needed here.
 _any_paused=0
 if [ -d "$STATE_DIR" ]; then
   for f in "$STATE_DIR"/*.json; do

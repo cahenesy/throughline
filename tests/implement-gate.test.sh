@@ -450,6 +450,41 @@ if [ -f "$IDP" ]; then
   bash "$IDP" || IDP_FAIL=1
 fi
 
+# Run the runner-resilience eval (TDD 0027 / FR-39, FR-41, FR-42, FR-43, NFR-4)
+# as part of the same suite — it pins the gate-child watchdog, worktree reclaim,
+# fast-forward + blocked-state resume, and verdict-before-exit-code ordering, all
+# runner-adjacent resilience gates that belong with the other evals above.
+RES="$(dirname "$0")/runner-resilience.test.sh"
+RES_FAIL=0
+if [ -f "$RES" ]; then
+  echo
+  bash "$RES" || RES_FAIL=1
+fi
+
+# Run the coproc-verdict-resilience eval (TDD 0030 / FR-39, FR-42, FR-44, FR-30,
+# FR-64, NFR-4) as part of the same suite — it pins the SIGPIPE-safe verdict
+# write, unclean-death (orphan) detection + resume, the honest `interrupted`
+# rollup, the truthful BLOCKERS.md report tail, and the active-time build
+# watchdog, all runner-adjacent resilience gates that belong with the evals above.
+CVR="$(dirname "$0")/coproc-verdict-resilience.test.sh"
+CVR_FAIL=0
+if [ -f "$CVR" ]; then
+  echo
+  bash "$CVR" || CVR_FAIL=1
+fi
+
+# Run the honest-review-scope-structural-resume eval (TDD 0031 / FR-15, FR-39,
+# FR-40, FR-57, FR-63, FR-64, FR-67, NFR-4) as part of the same suite — it pins
+# the honest consolidated-review base + empty-scope fail-closed (gap A) and the
+# revision-resolved structural-halt resume (gap B), all runner-adjacent gates
+# that belong with the other evals above.
+HRS="$(dirname "$0")/honest-review-scope-structural-resume.test.sh"
+HRS_FAIL=0
+if [ -f "$HRS" ]; then
+  echo
+  bash "$HRS" || HRS_FAIL=1
+fi
+
 # Run the severity-honest-reporting eval (TDD 0021 / FR-58, FR-60, FR-70, FR-71 +
 # issues #35, #28A, #28B) as part of the same suite so the findings-schema state
 # I/O, the review/build prompt edits, the diff-vs-narrative + finding-block
@@ -462,4 +497,4 @@ if [ -f "$SHR" ]; then
   bash "$SHR" || SHR_FAIL=1
 fi
 
-[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ] && [ "$SMS_FAIL" -eq 0 ] && [ "$PRM_FAIL" -eq 0 ] && [ "$GRM_FAIL" -eq 0 ] && [ "$BRL_FAIL" -eq 0 ] && [ "$RR_FAIL" -eq 0 ] && [ "$BCL_FAIL" -eq 0 ] && [ "$BO_FAIL" -eq 0 ] && [ "$IDP_FAIL" -eq 0 ] && [ "$SHR_FAIL" -eq 0 ]
+[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ] && [ "$SMS_FAIL" -eq 0 ] && [ "$PRM_FAIL" -eq 0 ] && [ "$GRM_FAIL" -eq 0 ] && [ "$BRL_FAIL" -eq 0 ] && [ "$RR_FAIL" -eq 0 ] && [ "$BCL_FAIL" -eq 0 ] && [ "$BO_FAIL" -eq 0 ] && [ "$IDP_FAIL" -eq 0 ] && [ "$RES_FAIL" -eq 0 ] && [ "$CVR_FAIL" -eq 0 ] && [ "$HRS_FAIL" -eq 0 ] && [ "$SHR_FAIL" -eq 0 ]

@@ -349,6 +349,22 @@ _re_review_config_json() {
   printf '{"max":%d}' "$max"
 }
 
+# _gate_timeout_json — emit the gate-child watchdog ceiling (TDD 0027 §1, the
+# THROUGHLINE_GATE_TIMEOUT knob read by _claude_call) as a JSON number for the
+# run.json config snapshot, so a timeout-driven halt is reproducible from
+# run-state alone (ADR 0006). Mirrors _claude_call's resolution: 0/unlimited/empty
+# → 0 (disabled), non-numeric → the 3600 default, numeric → as-is. Self-contained
+# (reads env with the default) like _rework_config_json, so it is correct under
+# the THROUGHLINE_SOURCE_ONLY test path too.
+_gate_timeout_json() {
+  local to="${THROUGHLINE_GATE_TIMEOUT:-3600}"
+  case "$to" in
+    0|unlimited|'') printf '0' ;;
+    *[!0-9]*)       printf '3600' ;;
+    *)              printf '%s' "$to" ;;
+  esac
+}
+
 # Re-roll the run-level rollup from per-TDD fragments and rewrite run.json.
 # state ∈ {running, done, paused}. Called by state_init (running), at run end
 # (done), and by _enter_paused (paused). When state is paused, pause_started_at
@@ -392,14 +408,15 @@ _write_run_fragment() {
   fi
   # TDD 0011 / iter-3 MAJOR-5: same printf+mv failure handling as
   # _write_tdd_fragment.
-  local rework_config_lit re_review_config_lit
+  local rework_config_lit re_review_config_lit gate_timeout_lit
   rework_config_lit="$(_rework_config_json)"
   re_review_config_lit="$(_re_review_config_json)"
-  if ! printf '{"schema":1,"started_at":%d,"updated_at":%d,"pid":%d,"integration_branch":"%s","mode":"%s","change":"%s","logdir":"%s","total":%d,"completed":%d,"failed":%d,"blocked":%d,"skipped":%d,"paused":%d,"state":"%s","pause_started_at":%s,"config":{"rework_config":%s,"re_review_config":%s}}\n' \
+  gate_timeout_lit="$(_gate_timeout_json)"
+  if ! printf '{"schema":1,"started_at":%d,"updated_at":%d,"pid":%d,"integration_branch":"%s","mode":"%s","change":"%s","logdir":"%s","total":%d,"completed":%d,"failed":%d,"blocked":%d,"skipped":%d,"paused":%d,"state":"%s","pause_started_at":%s,"config":{"rework_config":%s,"re_review_config":%s,"gate_timeout":%s}}\n' \
     "$STATE_STARTED_AT" "$(date +%s)" "$$" \
     "$(json_escape "$INTEGRATION")" "$STATE_MODE" "$(json_escape "$CHANGE")" "$(json_escape "$LOGDIR")" \
     "$total" "$completed" "$failed" "$blocked" "$skipped" "$paused" \
-    "$(json_escape "$state")" "$pause_started_lit" "$rework_config_lit" "$re_review_config_lit" \
+    "$(json_escape "$state")" "$pause_started_lit" "$rework_config_lit" "$re_review_config_lit" "$gate_timeout_lit" \
     > "$tmp"; then
     echo "error: _write_run_fragment printf failed; run.json NOT updated" >&2
     rm -f "$tmp" 2>/dev/null || true
@@ -579,15 +596,31 @@ state_init() {
 # (the caller passes "paused" in that case). This keeps the existing run-end
 # call sites (set_run_state "paused" / "done") correct without their needing to
 # know about blocked.
+#
+# TDD 0030 §3 (gap 3): a fragment left in a NON-terminal status
+# (building/verifying/reviewing) at run-end means the run did NOT finish cleanly
+# — the runner exited while that TDD was mid-gate (the observed incident left a
+# `building` fragment a plain re-run would silently rebuild). Such a run is
+# `interrupted`, never `done` (NFR-4 / FR-30: `done` is never written when work
+# did not finish). Precedence: blocked > interrupted > paused > done — a single
+# fragment scan with explicit ordering, so the run-end call sites still just pass
+# their requested paused/done and this helper upgrades as the fragments dictate.
 set_run_state() {
-  local derived="$1" f
+  local derived="$1" f _nonterminal=0
   if [ -n "${STATE_DIR:-}" ] && [ -d "$STATE_DIR" ]; then
     for f in "$STATE_DIR"/*.json; do
       [ -f "$f" ] || continue
       [ "$(basename "$f")" = "run.json" ] && continue
+      # `blocked` outranks everything; the moment one is seen, stop scanning.
       if grep -q '"status":"blocked"' "$f" 2>/dev/null; then derived="blocked"; break; fi
+      # A non-terminal fragment marks the run interrupted, but DON'T break — a
+      # later fragment may be `blocked`, which still outranks `interrupted`.
+      if grep -qE '"status":"(building|verifying|reviewing)"' "$f" 2>/dev/null; then _nonterminal=1; fi
     done
   fi
+  # blocked already won above (it broke the loop). Otherwise a non-terminal
+  # fragment upgrades the requested paused/done to interrupted.
+  if [ "$derived" != "blocked" ] && [ "$_nonterminal" -eq 1 ]; then derived="interrupted"; fi
   _write_run_fragment "$derived"
 }
 
@@ -753,6 +786,113 @@ set_tdd_meta() {
   fi
 }
 
+# _update_branch_head_at_pause <slug> <sha> (TDD 0027 §3b / FR-41)
+# Mutate just the branch_head_at_pause field of a fragment, preserving every other
+# field — the round-trip-and-mutate-one-field shape of _update_paused_cause
+# (resume.sh). Used by the resume divergence guard when the branch fast-forwarded
+# past the recorded SHA (commits added, none rewritten): the recorded head is
+# advanced to the current head so the accepted continuation is recorded honestly.
+# Lives in state.sh (sourced before resume.sh) because it is a state-write
+# primitive, not resume orchestration. Fails loudly on a missing fragment so a
+# stray caller can never silently lose state.
+_update_branch_head_at_pause() {  # <slug> <sha>
+  local slug="$1" new_head="$2"
+  local f="${STATE_DIR:-}/$slug.json"
+  if [ -z "${STATE_DIR:-}" ] || [ ! -f "$f" ]; then
+    echo "error: _update_branch_head_at_pause cannot update $slug: state fragment missing ($f)" >&2
+    return 1
+  fi
+  local n qp path status stage sta branch pr_url log_f note paused_cause
+  local gates_csv retries_json
+  local halt_cause halt_finding halt_actions_csv halt_detail
+  local rework_attempts rework_log build_attempt last_cleared_sha cleared_step_log
+  n="$(sed -n 's/.*"n":\([0-9]*\).*/\1/p'            "$f" | head -1)"
+  qp="$(sed -n 's/.*"queue_pos":\([0-9]*\).*/\1/p'   "$f" | head -1)"
+  path="$(sed -n 's/.*"path":"\([^"]*\)".*/\1/p'     "$f" | head -1)"
+  status="$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+  if grep -q '"stage":null' "$f" 2>/dev/null; then stage=""
+  else stage="$(sed -n 's/.*"stage":"\([^"]*\)".*/\1/p' "$f" | head -1)"; fi
+  sta="$(sed -n 's/.*"started_at":\([0-9]*\).*/\1/p' "$f" | head -1)"
+  branch="$(sed -n 's/.*"branch":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+  pr_url="$(sed -n 's/.*"pr_url":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+  log_f="$(sed -n 's/.*"log":"\([^"]*\)".*/\1/p'     "$f" | head -1)"
+  note="$(sed -n 's/.*"note":"\([^"]*\)".*/\1/p'     "$f" | head -1)"
+  paused_cause="$(_read_fragment_field "$f" paused_cause)"
+  gates_csv="$(_read_fragment_array_csv "$f" gates_completed)"
+  retries_json="$(_read_fragment_raw_array "$f" retries)"
+  halt_cause="$(_read_fragment_field "$f" halt_cause)"
+  halt_finding="$(_read_fragment_field "$f" halt_triggering_finding_ref)"
+  halt_actions_csv="$(_read_fragment_array_csv "$f" halt_next_actions)"
+  halt_detail="$(_read_fragment_field "$f" halt_cause_detail)"
+  rework_attempts="$(_read_fragment_raw_object "$f" rework_attempts)"
+  rework_log="$(_read_fragment_raw_array "$f" rework_log)"
+  build_attempt="$(_read_fragment_raw_object "$f" build_attempt)"
+  last_cleared_sha="$(_read_fragment_field "$f" last_cleared_review_sha)"
+  cleared_step_log="$(_read_fragment_cleared_log "$f")"
+  if ! _write_tdd_fragment "$slug" "${n:-0}" "$path" "${qp:-0}" "$status" "$stage" \
+    "${sta:-$(date +%s)}" "$(date +%s)" "$branch" "$pr_url" "$log_f" "$note" \
+    "$paused_cause" "$gates_csv" "$retries_json" "$new_head" \
+    "$halt_cause" "$halt_finding" "$halt_actions_csv" "$halt_detail" \
+    "$rework_attempts" "$rework_log" "$build_attempt" \
+    "$last_cleared_sha" "$cleared_step_log"; then
+    echo "error: _update_branch_head_at_pause: could not write $slug fragment (head=$new_head)" >&2
+    return 1
+  fi
+}
+
+# _accept_blocked_as_paused <slug> [<stage>] (TDD 0027 §3c / FR-39)
+# Atomically convert a blocked-but-recoverable fragment into a resumable paused
+# one: status→paused AND paused_cause→transient in a SINGLE _write_tdd_fragment
+# call (temp-file + mv), preserving every other field (incl. halt metadata).
+# Atomicity is the point: a two-step flip (set status, then set cause) has a
+# window where the status write lands but the cause write fails, leaving
+# status=paused with a null paused_cause — indistinguishable from a normal paused
+# fragment, which the NEXT resume invocation silently accepts. One write means
+# the fragment is EITHER still blocked (on failure, untouched) OR fully
+# paused+transient — never a half-written mix. Fails loudly + non-zero on a
+# missing fragment or write failure so the caller refuses the resume.
+_accept_blocked_as_paused() {  # <slug> [<stage>]
+  local slug="$1" stage="${2:-}"
+  local f="${STATE_DIR:-}/$slug.json"
+  if [ -z "${STATE_DIR:-}" ] || [ ! -f "$f" ]; then
+    echo "error: _accept_blocked_as_paused cannot update $slug: state fragment missing ($f)" >&2
+    return 1
+  fi
+  local n qp path sta branch pr_url log_f note
+  local gates_csv retries_json branch_head
+  local halt_cause halt_finding halt_actions_csv halt_detail
+  local rework_attempts rework_log build_attempt last_cleared_sha cleared_step_log
+  n="$(sed -n 's/.*"n":\([0-9]*\).*/\1/p'            "$f" | head -1)"
+  qp="$(sed -n 's/.*"queue_pos":\([0-9]*\).*/\1/p'   "$f" | head -1)"
+  path="$(sed -n 's/.*"path":"\([^"]*\)".*/\1/p'     "$f" | head -1)"
+  sta="$(sed -n 's/.*"started_at":\([0-9]*\).*/\1/p' "$f" | head -1)"
+  branch="$(sed -n 's/.*"branch":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+  pr_url="$(sed -n 's/.*"pr_url":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+  log_f="$(sed -n 's/.*"log":"\([^"]*\)".*/\1/p'     "$f" | head -1)"
+  note="$(sed -n 's/.*"note":"\([^"]*\)".*/\1/p'     "$f" | head -1)"
+  gates_csv="$(_read_fragment_array_csv "$f" gates_completed)"
+  retries_json="$(_read_fragment_raw_array "$f" retries)"
+  branch_head="$(_read_fragment_field "$f" branch_head_at_pause)"
+  halt_cause="$(_read_fragment_field "$f" halt_cause)"
+  halt_finding="$(_read_fragment_field "$f" halt_triggering_finding_ref)"
+  halt_actions_csv="$(_read_fragment_array_csv "$f" halt_next_actions)"
+  halt_detail="$(_read_fragment_field "$f" halt_cause_detail)"
+  rework_attempts="$(_read_fragment_raw_object "$f" rework_attempts)"
+  rework_log="$(_read_fragment_raw_array "$f" rework_log)"
+  build_attempt="$(_read_fragment_raw_object "$f" build_attempt)"
+  last_cleared_sha="$(_read_fragment_field "$f" last_cleared_review_sha)"
+  cleared_step_log="$(_read_fragment_cleared_log "$f")"
+  if ! _write_tdd_fragment "$slug" "${n:-0}" "$path" "${qp:-0}" paused "$stage" \
+    "${sta:-$(date +%s)}" "$(date +%s)" "$branch" "$pr_url" "$log_f" "$note" \
+    transient "$gates_csv" "$retries_json" "$branch_head" \
+    "$halt_cause" "$halt_finding" "$halt_actions_csv" "$halt_detail" \
+    "$rework_attempts" "$rework_log" "$build_attempt" \
+    "$last_cleared_sha" "$cleared_step_log"; then
+    echo "error: _accept_blocked_as_paused: could not write $slug fragment" >&2
+    return 1
+  fi
+}
+
 # --- Halt-cause taxonomy (TDD 0018 / FR-63, FR-64; ADR 0007) ------------------
 # The closed enum of human-needed halt causes, the deterministic cause→next-
 # actions mapping, and the writer (set_halt_cause) that enforces both. This is
@@ -779,11 +919,20 @@ _next_actions_for_cause() {
     rework-scope-exceeded)
       echo "resume (retries with stricter scope),revise TDD bounds via /tdd-author" ;;
     structural-finding)
-      echo "revise TDD via /tdd-author,see docs/tdd/BLOCKERS.md" ;;
+      # TDD 0031 §3a: the middle entry begins with `resume`, the machine-readable
+      # marker status.sh --check-paused and _resume_from's blocked arm key on — so
+      # a structural halt becomes resumable ONCE its resolving TDD revision is
+      # merged (the §3c guard enforces the precondition). FR-67 reaffirmed: the
+      # halt still BLOCKs and still cites BLOCKERS.md.
+      echo "revise TDD via /tdd-author,resume after revision (re-runs the halted gate against the revised declarations),see docs/tdd/BLOCKERS.md" ;;
     design-escalation)
       echo "revise TDD via /tdd-author,/adr-new if a constraint is being challenged" ;;
     external-blocker)
       echo "resolve external dependency,see docs/tdd/BLOCKERS.md" ;;
+    resume-blocked-integration-conflict)
+      # TDD 0031 §3c: a structural-resume merge of integration into the build
+      # branch conflicted; the human resolves it, then re-runs /implement.
+      echo "resolve the integration merge conflict on the build branch manually,then re-run /implement with resume" ;;
     *) return 1 ;;
   esac
 }
@@ -795,6 +944,7 @@ _is_paused_cause() {
   case "$1" in
     ratelimit|usage-limit|transient) return 0 ;;
     resume-blocked-build-state-missing|resume-blocked-branch-missing|resume-blocked-branch-divergence) return 0 ;;
+    resume-blocked-integration-conflict) return 0 ;;   # TDD 0031 §3c
     *) return 1 ;;
   esac
 }
@@ -851,6 +1001,23 @@ set_halt_cause() {
   last_cleared_sha="$(_read_fragment_field "$f" last_cleared_review_sha)"
   cleared_step_log="$(_read_fragment_cleared_log "$f")"
   if _is_paused_cause "$cause"; then paused_cause="$cause"; else paused_cause=""; fi
+  # TDD 0031 §3b: a structural-finding halt carries a revision fingerprint inside
+  # the free-text detail field so the §3c resume guard can tell whether the
+  # resolving TDD revision has been merged to integration. Derive the TDD blob at
+  # the halt-time HEAD (the build worktree cwd) from the fragment's own `path`.
+  # If the blob cannot be derived (path missing from the branch, empty blob), the
+  # detail is written verbatim with no token and the resume guard degrades to
+  # accept-with-warning. Rides in detail deliberately: no new fragment field, no
+  # schema concern, no change to _write_tdd_fragment's positional signature.
+  if [ "$cause" = "structural-finding" ] && [ -n "$path" ]; then
+    # --verify --quiet: resolve to exactly one object or yield empty (rc≠0). A
+    # bare `git rev-parse HEAD:<missing>` echoes the unresolved arg back to stdout
+    # (and exits non-zero), which `|| true` would capture as a bogus "blob".
+    local tdd_blob
+    if tdd_blob="$(git rev-parse --verify --quiet "HEAD:$path" 2>/dev/null)" && [ -n "$tdd_blob" ]; then
+      if [ -n "$detail" ]; then detail="$detail tdd_rev=$tdd_blob"; else detail="tdd_rev=$tdd_blob"; fi
+    fi
+  fi
   now=$(date +%s)
   if ! _write_tdd_fragment "$slug" "${n:-0}" "$path" "${qp:-0}" "$status" "$stage" \
     "${sta:-$now}" "$now" "$branch" "$pr_url" "$log" "$note" \

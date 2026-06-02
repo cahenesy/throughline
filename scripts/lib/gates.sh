@@ -20,12 +20,42 @@
 # $STATE_DIR, …), which the runner sets before these functions are called.
 # Shared scope is deliberate for this dogfood slice, matching lib/state.sh.
 
+# _claude_call <log> <args...> — run a single-shot `claude` call under the child
+# watchdog (TDD 0027 §1 / FR-42). On timeout, GNU `timeout` SIGTERMs the child
+# and ITSELF exits 124 — a code _classify_cause's signal arm does NOT handle (it
+# handles the child's 137/143, and `timeout` writes no "timed out" text for the
+# log-pattern arm to match). So the wrapper does two things on 124: (a) appends an
+# explicit `THROUGHLINE_GATE_TIMEOUT: …(transient)` line to the log — which
+# _classify_cause's existing `timed[- ]out` pattern DOES match — and (b) returns
+# 124 unchanged so the caller's rc capture still sees the timeout distinctly. Belt
+# and suspenders: the log line is the classification mechanism; the distinct rc is
+# the triage signal. THROUGHLINE_GATE_TIMEOUT=0/unlimited/'' disables the wrap
+# (matching THROUGHLINE_BUILD_TIMEOUT); a non-numeric value falls back to 3600.
+# When `timeout` is absent (minimal container) tocmd stays empty → the call runs
+# un-wrapped, exactly today's behavior (degraded, never broken).
+_claude_call() {  # <log> <args...>
+  local log="$1"; shift
+  local to="${THROUGHLINE_GATE_TIMEOUT:-3600}"
+  local -a tocmd=()
+  case "$to" in
+    0|unlimited|'') : ;;
+    *[!0-9]*) to=3600; command -v timeout >/dev/null 2>&1 && tocmd=(timeout 3600) ;;
+    *) command -v timeout >/dev/null 2>&1 && tocmd=(timeout "$to") ;;
+  esac
+  "${tocmd[@]}" claude "$@" >>"$log" 2>&1
+  local rc=$?
+  if [ "$rc" = "124" ]; then
+    printf 'THROUGHLINE_GATE_TIMEOUT: gate child timed out after %ss (transient)\n' "$to" >> "$log"
+  fi
+  return "$rc"
+}
+
 # --- per-TDD primitives (cwd = the repo or worktree they run in) ---------------
 build_one() {  # <tdd> <log>
   local tdd="$1" log="$2" prompt; prompt="$(sed "s#{{TDD}}#${tdd}#g" "$TMPL")"
   local args=(-p "$prompt" --permission-mode auto); [ -n "$MODEL" ] && args+=(--model "$MODEL")
   local start _rc; start=$(date +%s); _rc=0
-  claude "${args[@]}" >>"$log" 2>&1; _rc=$?
+  _claude_call "$log" "${args[@]}"; _rc=$?   # TDD 0027 §1: under the gate watchdog
   record_session_pointer "$log" "$start"
   # TDD 0019 / FR-68: record the original-build token spend on the fragment so
   # the rework-vs-original comparison is derivable from run-state alone. Reads
@@ -243,11 +273,46 @@ _diff_vs_narrative_facts() {  # <build-log> <build-start-sha>
   printf '=== end facts ===\n'
 }
 
+# _review_base <fallback-ref> (TDD 0031 §1 / gap A) — the HONEST consolidated-
+# review base: `git merge-base <fallback-ref> HEAD`, the branch's fork point from
+# its stacking base. On a FRESH build this equals the branch tip at creation
+# (what the drivers' old `git rev-parse HEAD` produced); on a RESUMED build the
+# old form returned the branch TIP, collapsing the consolidated review to
+# HEAD..HEAD (a provably empty diff → a vacuous PASS). The merge-base is the same
+# build-start value regardless of how many commits or integration merges the
+# branch accumulated. If no merge-base resolves (detached fixture repos, deleted
+# refs), echo the passed ref unchanged + warn — the pre-0031 behavior, never
+# worse. Pure derivation; no persistence.
+_review_base() {  # <fallback-ref>
+  local fallback="$1" mb
+  if mb="$(git merge-base "$fallback" HEAD 2>/dev/null)" && [ -n "$mb" ]; then
+    printf '%s\n' "$mb"
+  else
+    echo "warning: _review_base: no merge-base for '$fallback'..HEAD; using '$fallback' as the review base (pre-0031 fallback)" >&2
+    printf '%s\n' "$fallback"
+  fi
+}
+
 review_one() {  # <tdd> <base-ref> <log>
   local tdd="$1" base="$2" log="$3" slug branch prior prompt facts
   slug="$(basename "$tdd" .md)"
   branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
   prior="$(_review_prior_patterns_csv "$slug")"
+  # Empty-scope fail-closed (TDD 0031 §2 / gap A; NFR-4). A consolidated review
+  # with nothing to review is always a runner bug (a build that committed nothing
+  # has nothing to flip) — surface it instead of laundering it into a PASS.
+  # Refuse BEFORE rendering the prompt or spawning a reviewer.
+  local _dq
+  git diff --quiet "$base"..HEAD 2>/dev/null; _dq=$?
+  if [ "$_dq" -eq 0 ]; then
+    echo "THROUGHLINE_REVIEW_SCOPE_EMPTY: review base $base equals HEAD — nothing to review; failing closed (NFR-4: ambiguity is never a false PASS)" >>"$log"
+    return 1
+  elif [ "$_dq" -gt 1 ]; then
+    # rc > 1: bad ref / corrupt repo — the scope is unverifiable, so never
+    # proceed to a reviewer (ADR 0006: verdicts rest on verifiable artifacts).
+    echo "THROUGHLINE_REVIEW_SCOPE_EMPTY: git diff $base..HEAD failed (rc=$_dq; git-diff-failed) — scope unverifiable; failing closed (NFR-4: ambiguity is never a false PASS)" >>"$log"
+    return 1
+  fi
   # FR-71 / §3: pre-extract the diff-vs-narrative facts from the SHARED gate log
   # (the build's BATCH_RESULT + narrative live there; gate_one passes one log
   # through build → review) so the reviewer's honesty check is grounded in
@@ -269,7 +334,7 @@ review_one() {  # <tdd> <base-ref> <log>
   fi
   local args=(-p "$prompt" --permission-mode auto); [ -n "$REVIEW_MODEL" ] && args+=(--model "$REVIEW_MODEL")
   local start _rc; start=$(date +%s); _rc=0
-  claude "${args[@]}" >>"$log" 2>&1; _rc=$?
+  _claude_call "$log" "${args[@]}"; _rc=$?   # TDD 0027 §1: under the gate watchdog
   record_session_pointer "$log" "$start"
   return "$_rc"   # TDD 0011 / BL-2: preserve claude's exit code
 }
@@ -365,7 +430,7 @@ verify_runtime_one() {  # <tdd> <base-ref> <log>
   local args=(-p "$prompt" --permission-mode auto)
   [ -n "$vm" ] && args+=(--model "$vm")
   local start _rc; start=$(date +%s); _rc=0
-  claude "${args[@]}" >>"$log" 2>&1; _rc=$?
+  _claude_call "$log" "${args[@]}"; _rc=$?   # TDD 0027 §1: under the gate watchdog
   record_session_pointer "$log" "$start"
   return "$_rc"   # TDD 0011 / BL-2: preserve claude's exit code
 }
@@ -508,6 +573,46 @@ _user_turn_json() {  # <text>
   printf '{"type":"user","message":{"role":"user","content":"%s"}}' "$(json_escape "$1")"
 }
 
+# _coproc_write <fd> <text> (TDD 0030 §1 / FR-42) — write <text>\n to the build
+# coprocess's stdin <fd> without risking a SIGPIPE that would kill the runner's
+# worker subshell (the observed incident: the coproc died to the overall watchdog
+# while a per-step review ran, then the verdict write at the broken pipe raised
+# SIGPIPE under the shell's default disposition — terminating the worker BEFORE
+# `|| true` could matter). Two guards:
+#   1. Liveness check — if the coproc PID `$bpid` (read from the caller's scope,
+#      matching this module's shared-scope idiom) is known-dead, return non-zero
+#      WITHOUT writing.
+#   2. SIGPIPE immunity for the TOCTOU window (coproc dies between the check and
+#      the write): `trap '' PIPE` makes a write to a broken pipe return EPIPE as
+#      an ordinary error instead of terminating the process, so the `2>/dev/null`
+#      redirection + the non-zero return genuinely cover it; the trap is restored
+#      immediately after so no other pipeline in the runner changes semantics
+#      (scoped, not process-wide — see the rejected global-trap alternative).
+# Returns non-zero whenever the coproc is gone (dead pid or EPIPE on write); the
+# caller decides whether that is best-effort (initial prompt write) or a
+# COPROC_DEAD halt (verdict write).
+# _kill_pid <pid> (TDD 0030 §5) — SIGTERM <pid>, but ONLY when it is a real,
+# non-zero pid. A bare `kill 0` / `kill ""` signals the caller's WHOLE process
+# group (which would kill the runner itself), so guard the pid-zero / empty edge
+# before signalling. Returns non-zero (no signal sent) when <pid> is empty or 0.
+_kill_pid() {  # <pid>
+  local pid="${1:-}"
+  [ -n "$pid" ] && [ "$pid" != "0" ] || return 1
+  kill "$pid" 2>/dev/null || true
+}
+
+_coproc_write() {  # <fd> <text>
+  local fd="$1" text="$2" _rc
+  if [ -n "${bpid:-}" ] && ! kill -0 "$bpid" 2>/dev/null; then
+    return 1
+  fi
+  trap '' PIPE
+  printf '%s\n' "$text" 1>&"$fd" 2>/dev/null
+  _rc=$?
+  trap - PIPE
+  return "$_rc"
+}
+
 # _run_per_step_review <slug> <tdd> <step-id> <sha> <build-start-sha> <main-log>
 # Run ONE scoped review pass for a step commit. Diff range = the TDD's
 # last_cleared_review_sha (or the build-start SHA if none cleared yet) to <sha>
@@ -533,7 +638,7 @@ _run_per_step_review() {  # <slug> <tdd> <step-id> <sha> <build-start-sha> <main
   local args=(-p "$prompt" --permission-mode auto); [ -n "${REVIEW_MODEL:-}" ] && args+=(--model "$REVIEW_MODEL")
   start=$(date +%s)
   printf '=== per-step review: step %s scope %s..%s ===\n' "$step_id" "$base" "$sha" >> "$rlog"
-  claude "${args[@]}" >>"$rlog" 2>&1
+  _claude_call "$rlog" "${args[@]}"   # TDD 0027 §1: under the gate watchdog
   record_session_pointer "$rlog" "$start"
   rs="$(review_status "$rlog")"
   case "$rs" in
@@ -583,14 +688,23 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
   model="${MODEL:-}"
   errlog="${log%.log}.build.err"; [ "$errlog" = "$log" ] && errlog="$log.build.err"
   start=$(date +%s)
-  # Overall watchdog (issue #28A): 0/unlimited/non-numeric handling. A real
-  # build that streams steadily but never converges to BATCH_RESULT is killed at
-  # the wall-clock cap regardless of inter-event activity.
-  local -a tocmd=()
+  # TDD 0030 §5 (gap 5, rev1): THROUGHLINE_BUILD_TIMEOUT is now the ACTIVE
+  # build-seconds budget — the runner accounts only time the build SPENDS
+  # streaming between sentinels, excluding the synchronous per-step review waits
+  # (a budget that counted review time would be dishonest: a long review
+  # consuming the build's budget killed a finished build in the observed
+  # incident). `overall_active` is that budget; the BACKSTOP is an INLINE check
+  # at 2× the budget against the SAME active-seconds counter — there is NO
+  # wall-clock `timeout` wrapper (rev1: any wall-clock bound counts review-wait
+  # time, so it can fire on a correct build under heavy review load while
+  # claiming "runner accounting bug?" — review M1). Firing the backstop is a
+  # defect (the 1× check should always fire first), logged distinguishably.
+  # 0/unlimited/non-numeric handling preserved.
+  local overall_active backstop
   case "$overall" in
-    0|unlimited|'') : ;;
-    *[!0-9]*) tocmd=(timeout 7200) ;;
-    *) tocmd=(timeout "$overall") ;;
+    0|unlimited|'') overall_active=0; backstop=0 ;;
+    *[!0-9]*)       overall_active=7200; backstop=14400 ;;
+    *)              overall_active="$overall"; backstop=$((2 * overall)) ;;
   esac
   # --disallowed-tools AskUserQuestion (issue #28A): runner-level belt-and-
   # suspenders for the prompt-level prohibition — the unattended build cannot
@@ -602,7 +716,7 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
   # unaffected.
   local -a ccmd=(claude -p "$prompt" --input-format stream-json --output-format stream-json --verbose --permission-mode auto --disallowed-tools AskUserQuestion)
   [ -n "$model" ] && ccmd+=(--model "$model")
-  coproc BUILD { "${tocmd[@]}" "${ccmd[@]}" 2>>"$errlog"; }
+  coproc BUILD { "${ccmd[@]}" 2>>"$errlog"; }
   local bpid="$BUILD_PID" build_in build_out
   exec {build_in}>&"${BUILD[1]}"
   exec {build_out}<&"${BUILD[0]}"
@@ -613,19 +727,56 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
   # events with no assistant turn, killed by the inter-event watchdog). Older
   # CLI versions passed `$prompt` through as a text fallback; 2.1.158 does not.
   # Best-effort write (the coproc may have died at argv-parse already; the read
-  # loop classifies that case via wait()'s rc).
-  printf '%s\n' "$(_user_turn_json "$prompt")" >&"${build_in}" 2>/dev/null || true
+  # loop classifies that case via wait()'s rc). TDD 0030 §1: routed through
+  # _coproc_write for SIGPIPE immunity, same as the verdict write; a non-zero
+  # return here is benign (the loop's next read hits EOF and classifies via wait).
+  _coproc_write "${build_in}" "$(_user_turn_json "$prompt")" || true
   # NOTE: capture read's status INSIDE the loop. `read_rc=$?` after a
   # `while read; do …; done` would read the WHILE loop's status (0 on normal
   # exit), NOT the failing read's — so a `read -t` timeout (>128) would be
   # indistinguishable from EOF and the deadlock path (§8) would never fire.
+  # TDD 0030 §5: active-time accounting. The clock RUNS while the build streams
+  # between sentinels (interval_start marks the current active interval's start);
+  # it PAUSES across the synchronous per-step review and STOPS after BATCH_RESULT.
+  # build_active_seconds accumulates committed intervals; _active_exceeded flags an
+  # active-budget kill and _backstop_exceeded an inline-backstop kill for the
+  # post-loop classifier.
   local evt text step_id sha verdict read_rc=0
+  local build_active_seconds=0 interval_start clock_active=1 _active_exceeded=0 _backstop_exceeded=0 _now _active
+  interval_start=$(date +%s)   # the spawn → first-STEP_COMMIT interval begins now
   while :; do
     # Capture read's OWN status directly — NOT via `if ! read; then read_rc=$?`,
     # where `$?` would be the negated `!` result (0 when read failed), hiding the
     # >128 timeout code the deadlock path (§8) needs.
     IFS= read -r -t "$inter" evt <&"${build_out}"; read_rc=$?
     [ "$read_rc" -ne 0 ] && break
+    # Active-time watchdog (TDD 0030 §5): while the clock is running, kill the
+    # build once accumulated active seconds exceed the budget. The clock is paused
+    # across the review (the loop blocks inside _run_per_step_review, so no check
+    # runs there — review waits never count). Caught at every event, so a build
+    # streaming non-sentinel output past the budget is killed promptly (the
+    # backstop is only for accounting bugs).
+    if [ "$clock_active" -eq 1 ] && [ "$overall_active" -gt 0 ]; then
+      _now=$(date +%s); _active=$((build_active_seconds + _now - interval_start))
+      if [ "$_active" -gt "$overall_active" ]; then
+        # Guard the pid-zero / empty edge: a bare `kill "$bpid"` with bpid 0/empty
+        # would SIGTERM the runner's own process group (TDD 0030 §5).
+        _kill_pid "$bpid"
+        _active_exceeded=1
+        break
+      fi
+      # TDD 0030 §5 (rev1): inline 2× backstop — same counter, same accumulation
+      # point. Reachable ONLY if the primary 1× check above failed to fire (a
+      # threshold-comparison regression); firing it is a runner defect. Review
+      # waits can never reach it: the clock is paused across reviews, so unlike
+      # a wall-clock wrapper this cannot fire on a correct build under heavy
+      # review load (review M1).
+      if [ "$backstop" -gt 0 ] && [ "$_active" -gt "$backstop" ]; then
+        _kill_pid "$bpid"
+        _backstop_exceeded=1
+        break
+      fi
+    fi
     printf '%s\n' "$evt" >> "$log"
     case "$evt" in
       *"STEP_COMMIT: "*|*"BATCH_RESULT: "*)
@@ -635,9 +786,27 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
             step_id="$(printf '%s' "$text" | grep -aoE 'STEP_COMMIT:[[:space:]]+[0-9]+[[:space:]]+[^[:space:]]+' | tail -1 | awk '{print $2}')"
             sha="$(printf '%s' "$text"     | grep -aoE 'STEP_COMMIT:[[:space:]]+[0-9]+[[:space:]]+[^[:space:]]+' | tail -1 | awk '{print $3}')"
             if [ -n "$step_id" ] && [ -n "$sha" ]; then
+              # TDD 0030 §5: PAUSE the active clock — commit the streaming interval
+              # up to this sentinel read, then run the review off the clock.
+              build_active_seconds=$((build_active_seconds + $(date +%s) - interval_start))
               verdict="$(_run_per_step_review "$slug" "$tdd" "$step_id" "$sha" "$build_start" "$log")"
               printf '%s\n' "$verdict" >> "$log"
-              printf '%s\n' "$(_user_turn_json "$verdict")" 1>&"${build_in}" 2>/dev/null || true
+              # TDD 0030 §1 / FR-42: the review may have run long enough for the
+              # overall watchdog to kill the coproc (the observed incident). Write
+              # the verdict through _coproc_write so a dead coproc never SIGPIPE-
+              # kills this worker. If the coproc is gone, the cleared step the
+              # review just recorded is already preserved; log COPROC_DEAD and
+              # break so the post-loop `wait` collects the dead coproc's status and
+              # _classify_cause routes the return code (124 + timeout log, or 143)
+              # to the transient/pause path — exactly as a clean watchdog kill.
+              if ! _coproc_write "${build_in}" "$(_user_turn_json "$verdict")"; then
+                printf 'THROUGHLINE_COPROC_DEAD: build coprocess exited before verdict delivery (step %s verdict was %s); cleared work is preserved (transient)\n' \
+                  "$step_id" "$(printf '%s' "$verdict" | grep -aoE 'PASS|BLOCK' | head -1)" >> "$log"
+                break
+              fi
+              # TDD 0030 §5: RESTART the active clock — the verdict write completed,
+              # so the next active interval (to the next sentinel) begins now.
+              interval_start=$(date +%s)
             fi
             ;;
           *"BATCH_RESULT: "*)
@@ -651,6 +820,10 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
             # the inter-event watchdog kills it (143 → transient → pause).
             # Continue (no `break`) — the read loop drains any tail events
             # until the build's stdout closes naturally.
+            # TDD 0030 §5: commit the final active interval and STOP the clock —
+            # the build is done; remaining drain time is free.
+            build_active_seconds=$((build_active_seconds + $(date +%s) - interval_start))
+            clock_active=0
             exec {build_in}>&- 2>/dev/null || true
             exec {BUILD[1]}>&- 2>/dev/null || true
             ;;
@@ -682,11 +855,23 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
   if [ -n "${STATE_DIR:-}" ] && [ -f "$STATE_DIR/$slug.json" ]; then
     _set_build_attempt_token_spend "$slug" "$(_extract_token_spend "$(_last_session_path "$start")")"
   fi
-  # Overall watchdog fired: `timeout` exits 124. Record build-overall-timeout so
-  # triage and _classify_cause (via the "timed out" token) route it to transient,
-  # not fatal (§11). No BATCH_RESULT is fabricated; the branch keeps its commits.
-  if [ "$wrc" = "124" ]; then
-    printf 'THROUGHLINE_BUILD_TIMEOUT: build timed out at the overall watchdog (build-overall-timeout) (transient)\n' >> "$log"
+  # TDD 0030 §5: the active-time watchdog fired (the runner killed the coproc when
+  # accumulated active build-seconds exceeded the budget). Record build-overall-
+  # timeout — the "timed out" token routes _classify_cause to transient (§11) — and
+  # return 124, the existing overall-timeout code. No BATCH_RESULT is fabricated;
+  # the branch keeps its commits.
+  if [ "$_active_exceeded" -eq 1 ]; then
+    printf 'THROUGHLINE_BUILD_TIMEOUT: build timed out — active build-seconds budget %ss exceeded (build-overall-timeout) (transient)\n' "$overall_active" >> "$log"
+    return 124
+  fi
+  # Backstop fired: the INLINE 2× active-time check (rev1 — no wall-clock
+  # wrapper) killed the coproc. This should NOT happen if the 1× check is
+  # correct — firing it is a runner-accounting defect, logged distinguishably
+  # (THROUGHLINE_BUILD_BACKSTOP, never conflated with the active timeout above)
+  # while still carrying "timed out" + build-overall-timeout so the
+  # classification + triage path is unchanged.
+  if [ "$_backstop_exceeded" -eq 1 ]; then
+    printf 'THROUGHLINE_BUILD_BACKSTOP: hard backstop fired at %ss active — build timed out (runner accounting bug?) (build-overall-timeout) (transient)\n' "$backstop" >> "$log"
     return 124
   fi
   # Deadlock kill path: surface a SIGTERM-equivalent code → transient.
@@ -737,21 +922,34 @@ _build_one_gated() {  # <tdd> <log>
   fi
   return 1
 }
+# TDD 0027 §4 / NFR-4: parse the verdict from the log FIRST; only a verdict-less
+# child is classified by exit code. So an honest verdict wins even when the child
+# exits non-zero — e.g. a child killed by the gate timeout (§1) AFTER emitting its
+# verdict, or one that crashes on exit having already decided. This is the same
+# bug shape _build_one_gated had pre-[[0025]]; that wrapper is NOT the model here
+# (its verdict-bearing exit is guaranteed clean by 0025's stdin-close lifecycle,
+# so its rc!=0 genuinely means no-verdict) and is intentionally left untouched.
 _verify_runtime_one_gated() {  # <tdd> <rbase> <log>
   local tdd="$1" rbase="$2" log="$3" rvs _rc
   verify_runtime_one "$tdd" "$rbase" "$log"; _rc=$?
-  [ "$_rc" -ne 0 ] && return "$_rc"
   rvs="$(verify_runtime_status "$log")"
-  case "$rvs" in *PASS*|*SKIP*) return 0 ;; esac
-  return 1
+  case "$rvs" in
+    *PASS*|*SKIP*) return 0 ;;        # honest verdict wins, even if rc!=0
+    *FAIL*|*BLOCKED*) return 1 ;;     # honest FAIL is a gate failure, not transient
+  esac
+  [ "$_rc" -ne 0 ] && return "$_rc"   # no verdict at all → classify by rc
+  return 1                            # clean exit, no verdict → NFR-4: resolve to FAIL
 }
 _review_one_gated() {  # <tdd> <rbase> <log>
   local tdd="$1" rbase="$2" log="$3" rs _rc
   review_one "$tdd" "$rbase" "$log"; _rc=$?
-  [ "$_rc" -ne 0 ] && return "$_rc"
   rs="$(review_status "$log")"
-  case "$rs" in *PASS*) return 0 ;; esac
-  return 1
+  case "$rs" in
+    *PASS*)  return 0 ;;              # honest verdict wins, even if rc!=0
+    *BLOCK*) return 1 ;;              # honest BLOCK is a gate failure, not transient
+  esac
+  [ "$_rc" -ne 0 ] && return "$_rc"   # no verdict at all → classify by rc
+  return 1                            # clean exit, no verdict → NFR-4: resolve to FAIL
 }
 
 # === Bounded rework loop (TDD 0019 / FR-61, FR-62, FR-65, FR-66, FR-67) ========
@@ -969,7 +1167,7 @@ _rework_one() {  # <tdd> <log> <finding-ref> <finding-text> <cap>
   # "rework invocation failed" diagnostic path catches both failure modes
   # uniformly. On success we still echo HEAD so the caller can detect
   # empty-vs-shipped reworks via $new_head comparison.
-  claude "${args[@]}" >>"$log" 2>&1; _rc=$?
+  _claude_call "$log" "${args[@]}"; _rc=$?   # TDD 0027 §1: under the gate watchdog
   record_session_pointer "$log" "$start"
   if [ "$_rc" -ne 0 ]; then
     echo "warning: _rework_one: claude subprocess exited rc=$_rc (no rework commit; caller will treat as invocation failure)" >>"$log"

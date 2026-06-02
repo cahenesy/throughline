@@ -60,10 +60,13 @@ Build discipline:
          outside the finding's region), commit the fix on top, emit a fresh
          `STEP_COMMIT: <step-id> <new-sha>` for the SAME `<step-id>`, and
          block again. The overall-build watchdog (`THROUGHLINE_BUILD_TIMEOUT`,
-         default 7200s wall-clock) bounds this BLOCK→re-emit loop's wall-clock
-         duration; per-step rework attempts are NOT counted separately. TDD
-         0019's bounded rework loop runs against the CONSOLIDATED final review
-         after `BATCH_RESULT: OK`, not against per-step BLOCK verdicts.
+         default 7200) bounds the build's ACTIVE seconds — time you spend
+         streaming between sentinels (TDD 0030 §5). Time blocked awaiting
+         STEP_REVIEW, including these BLOCK→re-emit review cycles, is EXCLUDED
+         from that budget; per-step rework attempts are NOT counted separately.
+         (A 2× backstop covers runner-accounting bugs only.) TDD 0019's bounded
+         rework loop runs against the CONSOLIDATED final review after
+         `BATCH_RESULT: OK`, not against per-step BLOCK verdicts.
   Do NOT start the next Sequencing item until you receive `STEP_REVIEW: PASS`.
   Doing so would let uncleared code accumulate, defeating the per-step review
   premise.

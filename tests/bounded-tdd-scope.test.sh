@@ -69,15 +69,17 @@ Total expected diff: 40 lines across 1 file.
 EOF
 }
 
-# A TDD whose body (first `## ` heading → EOF) is exactly 500 lines, with all
-# other bounds satisfied so ONLY tdd-doc-size fires.
+# A TDD whose body (first `## ` heading → EOF) is exactly 600 lines — over the
+# 500-line default cap (raised from 350 in the post-0014 cap-raise; see
+# tdd-lint.sh THROUGHLINE_TDD_MAX_LINES) — with all other bounds satisfied so
+# ONLY tdd-doc-size fires.
 make_oversize() {  # <path>
   {
     printf '# TDD 9002: oversize fixture\nStatus: draft\nPRD refs: FR-53\nPRD-rev: deadbee\nADR constraints: none\n\n'
     printf '## Approach\n'
-    # 482 pad lines + the 18 non-pad body lines below == 500 body lines.
+    # 582 pad lines + the 18 non-pad body lines below == 600 body lines.
     local i
-    for ((i=1;i<=482;i++)); do printf 'pad line %d\n' "$i"; done
+    for ((i=1;i<=582;i++)); do printf 'pad line %d\n' "$i"; done
     printf '\n## Touched files\n- scripts/foo.sh — small change\n'
     printf '\n## Expected diff size\n- scripts/foo.sh — 10 lines\n'
     printf '\nTotal expected diff: 10 lines across 1 file.\n'
@@ -232,14 +234,14 @@ echo "[bounds-clean] in-bounds TDD: --bounds exits 0 with no PRECHECK_FAIL"
     || ok "no PRECHECK_FAIL on clean fixture"
 )
 
-echo "[bounds-docsize] oversize body emits 'tdd-doc-size 500 > 350'"
+echo "[bounds-docsize] oversize body emits 'tdd-doc-size 600 > 500'"
 (
   TMP="$(mktemp -d)"; f="$TMP/oversize.md"; make_oversize "$f"
   out="$(bash "$LINT" --bounds "$f" 2>/dev/null)"; rc=$?
   rm -rf "$TMP"
-  printf '%s\n' "$out" | grep -qF 'PRECHECK_FAIL: tdd-doc-size 500 > 350' \
-    && ok "emits 'PRECHECK_FAIL: tdd-doc-size 500 > 350'" \
-    || bad "expected /PRECHECK_FAIL: tdd-doc-size 500 > 350/ (got: $out)"
+  printf '%s\n' "$out" | grep -qF 'PRECHECK_FAIL: tdd-doc-size 600 > 500' \
+    && ok "emits 'PRECHECK_FAIL: tdd-doc-size 600 > 500'" \
+    || bad "expected /PRECHECK_FAIL: tdd-doc-size 600 > 500/ (got: $out)"
   [ "$rc" -ne 0 ] && ok "non-zero exit on doc-size violation (rc=$rc)" || bad "expected non-zero exit (got $rc)"
 )
 

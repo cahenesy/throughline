@@ -570,6 +570,12 @@ echo "[E1] single fixable finding → rework ships → re-review PASS → flippe
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
   setup_loop_repo "$D/repo" || { bad "setup failed"; exit 0; }
   BS="$(git rev-parse HEAD)"
+  # Build output committed PAST the build-start base, so the consolidated review
+  # scope BS..HEAD is non-empty — what a real build always produces (TDD 0031 §2's
+  # empty-scope guard fails closed on a HEAD..HEAD scope). The reviewer stub returns
+  # the canned review.out regardless of diff content, so the loop's behavior is
+  # unchanged; this only keeps the scope realistic.
+  printf 'build-output\n' >> src/a.txt; git add -A; git commit -qm "build: simulated output past build-start" >/dev/null
   printf 'REVIEW_FINDING: severity=major structural=false region_lines=8 ref=review-1:1 | src/a.txt has a real bug\nREVIEW_RESULT: BLOCK found a real bug\n' > "$D/repo/ctl/review.out"
   # rework: small in-scope fix, then the finding is resolved (review now PASS).
   # The PASS must carry a per-file disposition for the reworked file (TDD 0021
@@ -595,6 +601,12 @@ echo "[E2] reviewer-tagged structural(c) → no rework, BLOCKED + BLOCKERS (c)"
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
   setup_loop_repo "$D/repo" || { bad "setup failed"; exit 0; }
   BS="$(git rev-parse HEAD)"
+  # Build output committed PAST the build-start base, so the consolidated review
+  # scope BS..HEAD is non-empty — what a real build always produces (TDD 0031 §2's
+  # empty-scope guard fails closed on a HEAD..HEAD scope). The reviewer stub returns
+  # the canned review.out regardless of diff content, so the loop's behavior is
+  # unchanged; this only keeps the scope realistic.
+  printf 'build-output\n' >> src/a.txt; git add -A; git commit -qm "build: simulated output past build-start" >/dev/null
   printf 'REVIEW_FINDING: severity=major structural=true region_lines=8 ref=review-1:3 | cross-module refactor needed\nREVIEW_RESULT: BLOCK structural\n' > "$D/repo/ctl/review.out"
   printf 'echo "do_rework should NOT run" >&2; exit 9\n' > "$D/repo/ctl/do_rework"
   st="$(gate_one docs/tdd/0099-fix.md "$BS" "$D/e2.log")"; rc=$?
@@ -613,6 +625,13 @@ echo "[E3] oversized rework → rejected pre-ship → reset + rework-scope-excee
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
   setup_loop_repo "$D/repo" || { bad "setup failed"; exit 0; }
   BS="$(git rev-parse HEAD)"
+  # Build output committed PAST the build-start base, so the consolidated review
+  # scope BS..HEAD is non-empty — what a real build always produces (TDD 0031 §2's
+  # empty-scope guard fails closed on a HEAD..HEAD scope). The reviewer stub returns
+  # the canned review.out regardless of diff content, so the loop's behavior is
+  # unchanged; this only keeps the scope realistic.
+  printf 'build-output\n' >> src/a.txt; git add -A; git commit -qm "build: simulated output past build-start" >/dev/null
+  CLEARED_HEAD="$(git rev-parse HEAD)"   # the last-cleared SHA the oversized rework is reset back to
   printf 'REVIEW_FINDING: severity=major structural=false region_lines=8 ref=review-1:1 | small bug\nREVIEW_RESULT: BLOCK bug\n' > "$D/repo/ctl/review.out"
   cat > "$D/repo/ctl/do_rework" <<'EOF'
 seq 1 200 > src/a.txt
@@ -623,7 +642,7 @@ EOF
   [ "$rc" -ne 0 ] && ok "gate_one returns non-zero (scope-rejected)" || bad "oversized rework should block (rc=$rc)"
   grep -q '"outcome":"rejected:rework-scope-exceeded"' "$F" 2>/dev/null && ok "rework_log records rejected:rework-scope-exceeded" || bad "should record rejected:rework-scope-exceeded (got: $(_read_fragment_raw_array "$F" rework_log))"
   grep -q '"halt_cause":"rework-scope-exceeded"' "$F" 2>/dev/null && ok "halt_cause=rework-scope-exceeded" || bad "halt_cause should be rework-scope-exceeded"
-  [ "$(git -C "$D/repo" rev-parse HEAD)" = "$BS" ] && ok "build branch HEAD reset to the prior cleared SHA" || bad "HEAD should be hard-reset to $BS (got $(git -C "$D/repo" rev-parse HEAD))"
+  [ "$(git -C "$D/repo" rev-parse HEAD)" = "$CLEARED_HEAD" ] && ok "build branch HEAD reset to the prior cleared SHA" || bad "HEAD should be hard-reset to $CLEARED_HEAD (got $(git -C "$D/repo" rev-parse HEAD))"
 ) || true
 
 echo "[E4] rework edits out-of-set file → structural(a) BLOCKED"
@@ -634,6 +653,12 @@ echo "[E4] rework edits out-of-set file → structural(a) BLOCKED"
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
   setup_loop_repo "$D/repo" || { bad "setup failed"; exit 0; }
   BS="$(git rev-parse HEAD)"
+  # Build output committed PAST the build-start base, so the consolidated review
+  # scope BS..HEAD is non-empty — what a real build always produces (TDD 0031 §2's
+  # empty-scope guard fails closed on a HEAD..HEAD scope). The reviewer stub returns
+  # the canned review.out regardless of diff content, so the loop's behavior is
+  # unchanged; this only keeps the scope realistic.
+  printf 'build-output\n' >> src/a.txt; git add -A; git commit -qm "build: simulated output past build-start" >/dev/null
   printf 'REVIEW_FINDING: severity=major structural=false region_lines=8 ref=review-1:1 | bug\nREVIEW_RESULT: BLOCK bug\n' > "$D/repo/ctl/review.out"
   cat > "$D/repo/ctl/do_rework" <<'EOF'
 printf 'x\n' > src/out_of_scope.txt
@@ -656,6 +681,12 @@ echo "[E5] budget exhaustion → 3 ships then rework-budget-exhausted"
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
   setup_loop_repo "$D/repo" || { bad "setup failed"; exit 0; }
   BS="$(git rev-parse HEAD)"
+  # Build output committed PAST the build-start base, so the consolidated review
+  # scope BS..HEAD is non-empty — what a real build always produces (TDD 0031 §2's
+  # empty-scope guard fails closed on a HEAD..HEAD scope). The reviewer stub returns
+  # the canned review.out regardless of diff content, so the loop's behavior is
+  # unchanged; this only keeps the scope realistic.
+  printf 'build-output\n' >> src/a.txt; git add -A; git commit -qm "build: simulated output past build-start" >/dev/null
   # review ALWAYS blocks; each rework ships a clean small commit that does not
   # resolve the finding (a new distinct line each call).
   printf 'REVIEW_FINDING: severity=major structural=false region_lines=8 ref=review-1:1 | persistent bug\nREVIEW_RESULT: BLOCK persistent\n' > "$D/repo/ctl/review.out"

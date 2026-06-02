@@ -185,6 +185,7 @@ _halt_is_paused_cause() {  # <cause>
   case "$1" in
     ratelimit|usage-limit|transient) return 0 ;;
     resume-blocked-build-state-missing|resume-blocked-branch-missing|resume-blocked-branch-divergence) return 0 ;;
+    resume-blocked-integration-conflict) return 0 ;;   # TDD 0031 §3c (mirrors state.sh:_is_paused_cause)
     *) return 1 ;;
   esac
 }
@@ -197,6 +198,7 @@ _halt_cause_known() {  # <cause>
     resume-blocked-branch-missing|resume-blocked-branch-divergence) return 0 ;;
     rework-budget-exhausted|rework-scope-exceeded|structural-finding) return 0 ;;
     design-escalation|external-blocker) return 0 ;;
+    resume-blocked-integration-conflict) return 0 ;;   # TDD 0031 §3c (mirrors state.sh enum)
     *) return 1 ;;
   esac
 }
@@ -297,8 +299,35 @@ render_snapshot() {
   fi
   case "$_state" in
     paused|blocked|failed) render_halt "$sd" "$_state"; return ;;
+    interrupted) render_interrupted "$sd"; return ;;
   esac
   render_table "$sd"
+}
+
+# render_interrupted <state.d> — TDD 0030 §3 (gap 3) / FR-44, NFR-4. The run did
+# not exit cleanly: the runner died while ≥1 TDD was mid-gate, leaving an
+# orphaned non-terminal fragment a plain re-run would silently rebuild. Name each
+# orphaned TDD + gate and point the user at /implement --resume, so a `building`
+# fragment in a dead run reads honestly as interrupted — never in-progress, never
+# done.
+render_interrupted() {
+  local sd="$1"
+  local runid; runid="$(basename "$(dirname "$sd")")"
+  _clip "Run $runid  •  interrupted: the run did not exit cleanly" 80; printf '\n'
+  local f st slug stage
+  for f in "$sd"/*.json; do
+    [ -f "$f" ] || continue
+    [ "$(basename "$f")" = "run.json" ] && continue
+    st="$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+    case "$st" in building|verifying|reviewing) : ;; *) continue ;; esac
+    slug="$(sed -n 's/.*"slug":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+    if grep -q '"stage":null' "$f" 2>/dev/null; then stage="-"
+    else stage="$(sed -n 's/.*"stage":"\([^"]*\)".*/\1/p' "$f" | head -1)"; fi
+    _clip "TDD: $slug  •  Gate: ${stage:--}  •  orphaned (unclean-exit)" 80; printf '\n'
+  done
+  printf '\n'
+  _clip "The runner exited without finishing. Re-run /implement to resume." 80; printf '\n'
+  printf 'Resume: /implement --resume %s\n' "$runid"
 }
 
 render_table() {
@@ -451,13 +480,43 @@ if [ "$CHECK_PAUSED" -eq 1 ]; then
     [ -f "$f" ] || continue
     case "$(basename "$f")" in run.json) continue ;; esac
     st="$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$f" | head -1)"
-    [ "$st" = "paused" ] || continue
     slug="$(sed -n 's/.*"slug":"\([^"]*\)".*/\1/p' "$f" | head -1)"
     if grep -q '"stage":null' "$f" 2>/dev/null; then stage="-"
     else stage="$(sed -n 's/.*"stage":"\([^"]*\)".*/\1/p' "$f" | head -1)"; fi
-    if grep -q '"paused_cause":null' "$f" 2>/dev/null; then cause="-"
-    else cause="$(sed -n 's/.*"paused_cause":"\([^"]*\)".*/\1/p' "$f" | head -1)"; fi
-    printf 'slug=%s gate=%s cause=%s\n' "$slug" "${stage:--}" "${cause:--}"
+    if [ "$st" = "paused" ]; then
+      if grep -q '"paused_cause":null' "$f" 2>/dev/null; then cause="-"
+      else cause="$(sed -n 's/.*"paused_cause":"\([^"]*\)".*/\1/p' "$f" | head -1)"; fi
+      # Plain paused lines stay exactly as they were (no marker) so existing
+      # consumers parse unchanged.
+      printf 'slug=%s gate=%s cause=%s\n' "$slug" "${stage:--}" "${cause:--}"
+    elif [ "$st" = "blocked" ]; then
+      # TDD 0027 §3a / FR-39: a blocked halt whose halt_next_actions array
+      # contains an entry beginning `resume` is recoverable — surface it with a
+      # trailing resumable=blocked marker (cause = the halt_cause, since
+      # paused_cause is null for a blocked fragment). Other blocked causes
+      # (design escalations) carry no resume prefix and stay unsurfaced.
+      acts="$(sed -n 's/.*\("halt_next_actions":\[[^]]*\]\).*/\1/p' "$f" | head -1)"
+      printf '%s' "$acts" | grep -qE '(\[|,)"resume' || continue
+      if grep -q '"halt_cause":null' "$f" 2>/dev/null; then cause="-"
+      else cause="$(sed -n 's/.*"halt_cause":"\([^"]*\)".*/\1/p' "$f" | head -1)"; fi
+      printf 'slug=%s gate=%s cause=%s resumable=blocked\n' "$slug" "${stage:--}" "${cause:--}"
+    elif [ "$st" = "building" ] || [ "$st" = "verifying" ] || [ "$st" = "reviewing" ]; then
+      # TDD 0030 §2 / FR-39 (gap 2): a fragment stuck non-terminal whose run has
+      # no live runner is an interrupted-unclean (orphaned) run — the runner died
+      # mid-gate (e.g. the verdict-write SIGPIPE in the observed incident) and a
+      # plain re-run would silently rebuild finished work. run.json records the
+      # runner pid; if that pid is not alive, every non-terminal fragment is
+      # orphaned. The pid-liveness guard makes this safe against a live-but-slow
+      # run: a live runner's fragments are NEVER reported. A run that died before
+      # recording its pid (pid absent/null → empty) is, by definition, not alive.
+      _runpid="$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$RUNDIR/state.d/run.json" 2>/dev/null | head -1)"
+      # pid 0 is never a valid runner pid; `kill -0 0` signals the caller's whole
+      # process group (spuriously "alive"), so treat 0 — like an absent/null pid
+      # — as not-alive so orphan detection is not suppressed.
+      if [ -z "$_runpid" ] || [ "$_runpid" = "0" ] || ! kill -0 "$_runpid" 2>/dev/null; then
+        printf 'slug=%s gate=%s cause=unclean-exit resumable=orphaned\n' "$slug" "${stage:--}"
+      fi
+    fi
   done
   exit 0
 fi
