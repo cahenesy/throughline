@@ -267,6 +267,56 @@ echo "[§4] _resume_from accepts an orphaned building fragment + derives branch_
   [ "${!rk:-}" = "build" ] && ok "RESUME_GATES_DONE carries the completed gates" || bad "resume hint should list build (got '${!rk:-}')"
 ) || true
 
+# §4-acceptfail (gap 2): if the orphan→paused flip write fails, _resume_from must
+# REFUSE the resume (rc=3 + RESUME_REFUSE_CAUSE) rather than fall through with a
+# half-written fragment — same no-false-success contract as the blocked arm.
+echo "[§4-acceptfail] orphan resume refuses (rc=3) when the building->paused flip write fails"
+( D="$ROOT/s4af"; mkdir -p "$D/state.d"; cd "$D" || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D" RESUME=1
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  _write_tdd_fragment 0030-orph 1 docs/tdd/0030-orph.md 1 building build 1000 1000 "feat/0030-orph" "" log "" "" "build" "" "" "" "" "" "" "" "" ""
+  F="$D/state.d/0030-orph.json"
+  _write_tdd_fragment() { return 1; }   # simulate the flip write failing
+  RESUME_REFUSE_CAUSE=""
+  _resume_from 0030-orph 2>/dev/null; rc=$?
+  [ "$rc" = "3" ] && ok "flip-write failure refuses the orphan resume (rc=3)" \
+    || bad "should refuse on flip-write failure (got $rc)"
+  [ -n "${RESUME_REFUSE_CAUSE:-}" ] && ok "RESUME_REFUSE_CAUSE set on refusal" \
+    || bad "RESUME_REFUSE_CAUSE should be set on refusal"
+  [ "$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$F" | head -1)" = "building" ] \
+    && ok "fragment left building (no half-written paused state)" \
+    || bad "fragment should remain building on refusal"
+  vC="$(_resume_gates_var 0030-orph)"
+  [ -z "${!vC:-}" ] && ok "no gates-done var set on refusal" || bad "no gates-done var should be set on refusal"
+) || true
+
+# §4-headfail (gap 2 / MAJOR-1): if the flip succeeds but the derived-branch-head
+# WRITE fails, _resume_from must NOT adopt the head in memory (which would run
+# the divergence guard against a never-persisted baseline). It accepts the resume
+# (the branch is still ground truth), leaves branch_head_at_pause null on disk,
+# and warns.
+echo "[§4-headfail] derived branch-head write failure: resume still accepted, head not adopted in memory"
+( D="$ROOT/s4hf"; mkdir -p "$D/state.d"; cd "$D" || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D" RESUME=1
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  git init -q -b master; git config user.email t@t.t; git config user.name t
+  printf 'x\n' > f.txt; git add -A; git commit -qm base >/dev/null
+  git checkout -q -b feat/0030-orph; printf 'y\n' >> f.txt; git add -A; git commit -qm step1 >/dev/null
+  _write_tdd_fragment 0030-orph 1 docs/tdd/0030-orph.md 1 building build 1000 1000 "feat/0030-orph" "" log "" "" "build" "" "" "" "" "" "" "" "" ""
+  F="$D/state.d/0030-orph.json"
+  _update_branch_head_at_pause() { return 1; }   # the flip succeeds; only the head-write fails
+  _resume_from 0030-orph 2>/dev/null; rc=$?
+  [ "$rc" != "3" ] && ok "head-write failure does NOT refuse the resume (the branch is ground truth)" \
+    || bad "head-write failure should not refuse (rc=$rc)"
+  [ "$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$F" | head -1)" = "paused" ] \
+    && ok "fragment still flipped to paused (the flip itself succeeded)" || bad "fragment should be paused"
+  bh="$(_read_fragment_field "$F" branch_head_at_pause)"
+  [ -z "$bh" ] && ok "branch_head_at_pause left null on disk (no never-persisted baseline adopted)" \
+    || bad "branch_head_at_pause should stay null when the write fails (got '$bh')"
+) || true
+
 # --- report ----------------------------------------------------------------
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
