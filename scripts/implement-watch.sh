@@ -53,30 +53,31 @@ trap 'rm -f "$PIDFILE" 2>/dev/null' EXIT
 printf '%s\n' "$$" > "$PIDFILE" 2>/dev/null \
   || echo "warning: implement-watch.sh: could not write $PIDFILE; falling back to poll-only completion detection" >&2
 
-# Fail loud BEFORE launch if there is no build script to run — otherwise we would
-# echo a phantom pid for a process that exec-fails on the spot (FR-74 #1).
+# Readiness is validated DETERMINISTICALLY, BEFORE launch — the watcher's own
+# launch machinery (the build script + the nohup.out redirect target) must be
+# usable, or we would echo a phantom pid for a build that exec-fails on the spot
+# and later emit a false IMPLEMENT_RUN_COMPLETE (FR-74 #1). We do NOT post-hoc
+# probe run-state: `latest` is relinked only at the END of state_init (state.sh),
+# so on a 2nd-or-later run a stale `latest` from the prior run would make such a
+# probe pass incorrectly. A build that genuinely STARTS and then dies fast (crash,
+# single-run-lock reject) is the runner's domain — the poll loop reports it as
+# state=unknown / whatever the run left per the TDD's failure-mode contract, not a
+# watcher launch failure.
 if [ ! -r "$BUILD_SCRIPT" ]; then
   echo "FATAL: implement-watch.sh: build script not found/readable: $BUILD_SCRIPT" >&2
+  exit 1
+fi
+# Pre-create (and so prove writable) the nohup.out redirect target. A failure
+# here is the redirect failure that would otherwise silently strand the build.
+if ! : > "$LOGS_DIR/nohup.out" 2>/dev/null; then
+  echo "FATAL: implement-watch.sh: cannot create the build-log redirect target $LOGS_DIR/nohup.out" >&2
   exit 1
 fi
 
 # Detach the real build (nohup → survives session close). "$@" forwards the
 # skill's flags verbatim. Capture the child PID; it is the PID the skill reports.
-nohup bash "$BUILD_SCRIPT" "$@" > "$LOGS_DIR/nohup.out" 2>&1 &
+nohup bash "$BUILD_SCRIPT" "$@" >> "$LOGS_DIR/nohup.out" 2>&1 &
 BUILD_PID=$!
-
-# Post-launch readiness probe (FR-74): a build that has already vanished AND left
-# no run-state record never actually started — a failed nohup.out redirect, an
-# exec failure, or an instant crash. Declaring it "complete" would emit a false
-# IMPLEMENT_RUN_COMPLETE with no build having run. state_init writes run.json at
-# the very start of a real run, so its absence on an already-dead child is the
-# discriminator (a genuinely fast build that DID write run-state passes). Fail
-# loud instead. A still-alive build (run.json not yet written) passes the probe.
-sleep 1
-if ! kill -0 "$BUILD_PID" 2>/dev/null && [ ! -r "$LOGS_DIR/latest/state.d/run.json" ]; then
-  echo "FATAL: implement-watch.sh: build process exited immediately and wrote no run-state (script: $BUILD_SCRIPT); see $LOGS_DIR/nohup.out" >&2
-  exit 1
-fi
 echo "launched build pid $BUILD_PID"
 
 # Poll: exit when the build process is gone (covers crash-without-signal) OR the
