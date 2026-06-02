@@ -194,6 +194,67 @@ echo "[§5d] status.sh renders the 'did not exit cleanly' banner for an interrup
     && ok "banner points the user at /implement to resume" || bad "banner should point at /implement (got: $out)"
 ) || true
 
+# ===========================================================================
+# §3 (gap 2): orphaned-fragment detection. A fragment stuck non-terminal whose
+# run has no live runner (run.json's pid is dead) is interrupted-unclean —
+# status.sh --check-paused must surface it as resumable=orphaned. A LIVE runner
+# pid is the guard: its fragments are never reported (no racing a slow run).
+echo "[§3] status.sh --check-paused surfaces an orphaned building fragment (dead runner pid)"
+( D="$ROOT/s3"; mkdir -p "$D/state.d"
+  deadpid="$(bash -c 'echo $$')"   # a pid that is definitely dead now
+  printf '{"schema":1,"pid":%s,"state":"interrupted","total":1}\n' "$deadpid" > "$D/state.d/run.json"
+  printf '{"schema":1,"n":1,"slug":"0030-orph","queue_pos":1,"status":"building","stage":"build","branch":"feat/0030-orph"}\n' > "$D/state.d/0030-orph.json"
+  out="$(bash "$REPO/scripts/status.sh" --logdir "$D" --check-paused 2>&1)"
+  printf '%s\n' "$out" | grep -qE 'slug=0030-orph .*cause=unclean-exit resumable=orphaned' \
+    && ok "orphaned fragment surfaced with cause=unclean-exit resumable=orphaned" \
+    || bad "should surface the orphaned fragment (got: '$out')"
+  printf '%s' "$out" | grep -q 'gate=build' \
+    && ok "orphaned line names the gate (stage)" || bad "orphaned line should carry gate=build (got: '$out')"
+) || true
+
+echo "[§3-neg] a LIVE runner pid is never reported as orphaned (no racing a slow run)"
+( D="$ROOT/s3n"; mkdir -p "$D/state.d"
+  printf '{"schema":1,"pid":%s,"state":"running","total":1}\n' "$$" > "$D/state.d/run.json"   # this test's own (alive) pid
+  printf '{"schema":1,"n":1,"slug":"0030-live","queue_pos":1,"status":"building","stage":"build","branch":"feat/0030-live"}\n' > "$D/state.d/0030-live.json"
+  out="$(bash "$REPO/scripts/status.sh" --logdir "$D" --check-paused 2>&1)"
+  [ -z "$out" ] && ok "no orphaned line printed when the runner pid is alive" \
+    || bad "a live-runner fragment must NOT be reported (got: '$out')"
+) || true
+
+# ===========================================================================
+# §4 (gap 2): orphaned resume accepted with a derived branch head. An orphaned
+# building fragment (branch_head_at_pause:null — the unclean death never wrote
+# it) must resume the same way a recoverable blocked fragment does: flip to
+# paused/transient, derive branch_head from the branch ref (FR-40: committed
+# history is the source of truth), preserve gates_completed, and NOT refuse.
+echo "[§4] _resume_from accepts an orphaned building fragment + derives branch_head from the branch ref"
+( D="$ROOT/s4"; mkdir -p "$D/state.d"; cd "$D" || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D" RESUME=1
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  git init -q -b master; git config user.email t@t.t; git config user.name t
+  printf 'x\n' > f.txt; git add -A; git commit -qm base >/dev/null
+  git checkout -q -b feat/0030-orph
+  printf 'y\n' >> f.txt; git add -A; git commit -qm step1 >/dev/null
+  head_sha="$(git rev-parse refs/heads/feat/0030-orph)"
+  # Orphaned fragment: status=building, branch_head_at_pause null, gates=build.
+  _write_tdd_fragment 0030-orph 1 docs/tdd/0030-orph.md 1 building build 1000 1000 "feat/0030-orph" "" log "" "" "build" "" "" "" "" "" "" "" "" ""
+  F="$D/state.d/0030-orph.json"
+  grep -q '"branch_head_at_pause":null' "$F" || { bad "fixture: branch_head_at_pause should start null (got: $(cat "$F"))"; }
+  _resume_from 0030-orph; rrc=$?
+  [ "$rrc" -ne 3 ] && ok "_resume_from does NOT refuse an orphaned fragment (rc=$rrc)" \
+    || bad "_resume_from should accept the orphaned fragment, not refuse (rc=$rrc, cause=${RESUME_REFUSE_CAUSE:-})"
+  st="$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$F" | head -1)"
+  [ "$st" = "paused" ] && ok "orphaned fragment flipped to paused" || bad "orphaned fragment should flip to paused (got '$st')"
+  bh="$(_read_fragment_field "$F" branch_head_at_pause)"
+  [ "$bh" = "$head_sha" ] && ok "branch_head_at_pause derived from the branch ref" \
+    || bad "branch_head_at_pause should equal the branch ref $head_sha (got '$bh')"
+  gc="$(_read_fragment_array_csv "$F" gates_completed)"
+  [ "$gc" = "build" ] && ok "gates_completed preserved verbatim" || bad "gates_completed should be 'build' (got '$gc')"
+  rk="$(_resume_gates_var 0030-orph)"
+  [ "${!rk:-}" = "build" ] && ok "RESUME_GATES_DONE carries the completed gates" || bad "resume hint should list build (got '${!rk:-}')"
+) || true
+
 # --- report ----------------------------------------------------------------
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
