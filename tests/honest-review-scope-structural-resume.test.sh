@@ -141,6 +141,104 @@ echo "[§3] review_one fails closed on an empty scope (base == HEAD), spawning n
   [ ! -s "$D/review-prompt.txt" ] && ok "stub reviewer was never invoked (no recorded prompt)" || bad "the reviewer stub should not have been invoked"
 ) || true
 
+# ===========================================================================
+# §3a (gap B): taxonomy. structural-finding gains a `resume` next-action (so
+# status.sh --check-paused and _resume_from's blocked arm surface it);
+# resume-blocked-integration-conflict joins the closed PERSISTED enum as a paused
+# cause; resume-blocked-tdd-unrevised is driver-report-only and joins NO enum.
+echo "[§3a-taxonomy] structural-finding gains a resume action; integration-conflict joins the enum; tdd-unrevised does not"
+( D="$ROOT/s3a"; mkdir -p "$D"; cd "$D" || { bad "cd failed"; exit 0; }
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  acts="$(_next_actions_for_cause structural-finding)"
+  printf '%s' "$acts" | grep -q 'resume after revision' \
+    && ok "structural-finding next-actions include a resume-after-revision entry" || bad "structural-finding should gain a resume action (got '$acts')"
+  printf '%s' "$acts" | grep -q 'see docs/tdd/BLOCKERS.md' \
+    && ok "structural-finding still points at BLOCKERS.md (FR-67 reaffirmed)" || bad "structural-finding should still cite BLOCKERS.md (got '$acts')"
+  _next_actions_for_cause resume-blocked-integration-conflict >/dev/null 2>&1 \
+    && ok "resume-blocked-integration-conflict is in the closed enum" || bad "resume-blocked-integration-conflict should be enumerated"
+  _is_paused_cause resume-blocked-integration-conflict \
+    && ok "resume-blocked-integration-conflict is a paused (recoverable) cause" || bad "integration-conflict should be a paused cause"
+  # resume-blocked-tdd-unrevised is NEVER persisted (the fragment stays blocked/
+  # structural-finding) → it must NOT join the enum or the paused classifier.
+  if _next_actions_for_cause resume-blocked-tdd-unrevised >/dev/null 2>&1; then
+    bad "resume-blocked-tdd-unrevised must NOT be enumerated (driver-report-only)"
+  else
+    ok "resume-blocked-tdd-unrevised stays out of the enum (never persisted)"
+  fi
+  _is_paused_cause resume-blocked-tdd-unrevised \
+    && bad "resume-blocked-tdd-unrevised must NOT be a paused cause" || ok "resume-blocked-tdd-unrevised is not classified paused"
+) || true
+
+# ===========================================================================
+# §4 (gap B): a structural-finding halt records the revision fingerprint inside
+# halt_cause_detail (no schema change; the token rides in free text). set_halt_cause
+# derives git rev-parse HEAD:<tdd-path> in the halt-time cwd and appends tdd_rev=.
+echo "[§4] a structural-finding halt records the tdd_rev= revision fingerprint"
+( D="$ROOT/s4"; mkdir -p "$D/state.d"; cd "$D" || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  git init -q -b master; git config user.email t@t.t; git config user.name t
+  mkdir -p docs/tdd; printf '# TDD 0031\nStatus: draft\n## Approach\nx\n' > docs/tdd/0031-fix.md
+  git add -A; git commit -qm "build start" >/dev/null
+  blob="$(git rev-parse HEAD:docs/tdd/0031-fix.md)"
+  _write_tdd_fragment 0031-fix 31 docs/tdd/0031-fix.md 1 blocked review 1000 1000 "feat/0031-fix" "" log "" "" "" "" "" "" "" "" "" "" "" ""
+  set_halt_cause 0031-fix structural-finding review:1 "(b)"
+  F="$STATE_DIR/0031-fix.json"
+  detail="$(_read_fragment_field "$F" halt_cause_detail)"
+  [ "$detail" = "(b) tdd_rev=$blob" ] \
+    && ok "halt_cause_detail ends with the tdd_rev fingerprint" || bad "detail should be '(b) tdd_rev=$blob' (got '$detail')"
+) || true
+
+echo "[§4-degraded] no tdd_rev token when the TDD blob cannot be derived (e.g. path absent)"
+( D="$ROOT/s4d"; mkdir -p "$D/state.d"; cd "$D" || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  git init -q -b master; git config user.email t@t.t; git config user.name t
+  printf 'x\n' > f.txt; git add -A; git commit -qm base >/dev/null   # TDD path NOT committed
+  _write_tdd_fragment 0031-fix 31 docs/tdd/0031-fix.md 1 blocked review 1000 1000 "feat/0031-fix" "" log "" "" "" "" "" "" "" "" "" "" "" ""
+  set_halt_cause 0031-fix structural-finding review:1 "(b)"
+  detail="$(_read_fragment_field "$STATE_DIR/0031-fix.json" halt_cause_detail)"
+  [ "$detail" = "(b)" ] && ok "detail written verbatim (no token) when the blob is unresolvable" || bad "degraded detail should be '(b)' (got '$detail')"
+) || true
+
+# ===========================================================================
+# §5 (gap B): a structural-finding halt now surfaces in status.sh --check-paused
+# (it previously had no resume action, so it was invisible to resume).
+echo "[§5] structural-finding surfaces as resumable=blocked in status.sh --check-paused"
+( D="$ROOT/s5"; mkdir -p "$D/state.d"; cd "$D" || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  printf '{"schema":1,"pid":1,"state":"interrupted","total":1}\n' > "$D/state.d/run.json"
+  _write_tdd_fragment 0031-fix 31 docs/tdd/0031-fix.md 1 blocked review 1000 1000 "feat/0031-fix" "" log "" "" "" "" "" "" "" "" "" "" "" ""
+  set_halt_cause 0031-fix structural-finding review:1 "(b)"   # writes the new taxonomy next-actions
+  out="$(bash "$REPO/scripts/status.sh" --logdir "$D" --check-paused 2>&1)"
+  printf '%s\n' "$out" | grep -qE 'slug=0031-fix .*cause=structural-finding resumable=blocked' \
+    && ok "structural-finding surfaces as resumable=blocked" || bad "should surface resumable=blocked (got: '$out')"
+) || true
+
+# §3a-mirror: status.sh recognizes resume-blocked-integration-conflict as a known
+# paused cause (no raw-render fallback warning), exercising both status.sh mirror
+# functions (_halt_cause_known + _halt_is_paused_cause).
+echo "[§3a-mirror] status.sh renders a resume-blocked-integration-conflict pause without the unknown-cause warning"
+( D="$ROOT/s3am"; mkdir -p "$D/state.d"; cd "$D" || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  printf '{"schema":1,"started_at":1000,"updated_at":1001,"pid":1,"state":"paused","total":1,"completed":0,"failed":0,"blocked":0,"skipped":0,"paused":1}\n' > "$D/state.d/run.json"
+  _write_tdd_fragment 0031-fix 31 docs/tdd/0031-fix.md 1 paused review 1000 1000 "feat/0031-fix" "" log "" "" "" "" "" "" "" "" "" "" "" ""
+  set_halt_cause 0031-fix resume-blocked-integration-conflict review:1 "merge conflict"
+  out="$(bash "$REPO/scripts/status.sh" --logdir "$D" 2>&1)"
+  printf '%s' "$out" | grep -qi 'unknown halt_cause' \
+    && bad "status.sh must NOT warn unknown-cause for resume-blocked-integration-conflict (got: $out)" \
+    || ok "resume-blocked-integration-conflict renders as a known cause (no fallback warning)"
+  printf '%s' "$out" | grep -q 'resume-blocked-integration-conflict' \
+    && ok "the conflict cause label appears in the halt render" || bad "the conflict cause should render (got: $out)"
+) || true
+
 # --- report ----------------------------------------------------------------
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
