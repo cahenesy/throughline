@@ -701,6 +701,17 @@ _build_one_gated() {  # <tdd> <log>
   # each Sequencing-item commit as it lands (FR-56). The verdict is still parsed
   # from the mirrored log's BATCH_RESULT line, exactly as the single-shot path.
   _per_step_review_loop "$slug" "$tdd" "$log"; _rc=$?
+  # TDD 0021 §5/§7 (FR-60): the build's final turn emits a SELF_REVIEW_BEGIN..END
+  # block immediately before BATCH_RESULT. Now that the loop has drained the full
+  # final turn into $log, record its findings onto the fragment (source:self-review)
+  # and bump self_review_count BEFORE the consolidated review pass reads the
+  # fragment — so the reviewer's `self-review-ignored` check (§5) sees the
+  # author's self-review audit trail. Best-effort: a recording hiccup must not mask
+  # the build's own rc, so the failure is logged, not propagated.
+  if [ -n "${STATE_DIR:-}" ] && [ -f "${STATE_DIR}/$slug.json" ]; then
+    _record_self_review_findings "$slug" "$log" >/dev/null \
+      || echo "warning: _build_one_gated: self-review finding recording failed for $slug" >> "$log"
+  fi
   [ "$_rc" -ne 0 ] && return "$_rc"
   bs="$(build_status "$log")"
   case "$bs" in *OK*) return 0 ;; esac
@@ -1061,6 +1072,49 @@ _record_review_findings() {  # <review-log> <pre-log-size> <slug> <pass_id>
     case "$treated" in blocker|major) halting=$((halting + 1)) ;; esac
   done < <(_iter_finding_blocks "$log" "$pre")
   printf '%s' "$halting"
+}
+
+# _record_self_review_findings <slug> <build-log>  (TDD 0021 §5/§7 / FR-60) — the
+# build's final turn emits a SELF_REVIEW_BEGIN..SELF_REVIEW_END block (the §1
+# finding shape) immediately before its terminal BATCH_RESULT. Extract that block,
+# record each FINDING inside it onto the fragment's findings[] with
+# source:self-review, and bump self_review_count by the number recorded. The §1
+# parser (_iter_finding_blocks) is reused on the extracted region so the
+# self-review and review schemas stay identical. Only the LAST block is harvested:
+# a resumed build's cumulative log can carry an earlier attempt's block, and the
+# §7 timing note pins the authoritative block to the final turn. No-op (count 0)
+# when the log carries no SELF_REVIEW block, or an empty findings list — a
+# genuinely clean self-review is a valid, expected §5 result. Echoes the count
+# recorded. Detecting an UNADDRESSED halting self-review finding (self-review-
+# ignored, §5) is the consolidated review pass's job, NOT this helper's; this
+# helper only lands the FR-60 audit trail + telemetry counter.
+_record_self_review_findings() {  # <slug> <build-log>
+  local slug="$1" log="$2" region n=0 sev st rg rl tg sm ev recorded
+  [ -n "$log" ] && [ -f "$log" ] || { printf '0'; return 0; }
+  # Body of the LAST SELF_REVIEW_BEGIN..SELF_REVIEW_END pair. A BEGIN (re)starts
+  # the buffer; END snapshots it as the running "last" so a malformed unterminated
+  # earlier block cannot leak into the final result.
+  region="$(awk '
+    /SELF_REVIEW_END/   { if(inblk){ last=buf; have=1 } inblk=0; next }
+    /SELF_REVIEW_BEGIN/ { inblk=1; buf=""; next }
+    inblk { buf = buf $0 "\n" }
+    END { if(have) printf "%s", last }
+  ' "$log")"
+  [ -z "$region" ] && { printf '0'; return 0; }
+  while IFS=$'\x1f' read -r sev st rg rl tg sm ev; do
+    [ -z "$sev$st$rg$rl$tg$sm$ev" ] && continue   # defensive: skip empty record
+    recorded="${sev:-major}"                       # empty severity → conservative major (mirrors §2 review default)
+    if _record_finding "$slug" self-review "self-review" "$recorded" "$st" "$rg" "$rl" "$tg" "$sm" "$ev"; then
+      n=$((n + 1))
+    else
+      echo "warning: _record_self_review_findings: could not record self-review finding for $slug" >> "$log"
+    fi
+  done < <(_iter_finding_blocks <(printf '%s\n' "$region"))
+  if [ "$n" -gt 0 ]; then
+    _incr_self_review_count "$slug" "$n" \
+      || echo "warning: _record_self_review_findings: could not bump self_review_count for $slug" >> "$log"
+  fi
+  printf '%s' "$n"
 }
 
 # _review_halt_boundary <review-log> <pre-log-size> <slug> <pass_id> <verdict-line>
