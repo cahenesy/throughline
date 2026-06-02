@@ -67,9 +67,12 @@ echo "[2] set_halt_cause structural-finding writes halt_cause + finding ref + ne
     && ok "halt_triggering_finding_ref recorded" || bad "halt_triggering_finding_ref should be review-1:3"
   grep -q '"paused_cause":null' "$F" 2>/dev/null \
     && ok "paused_cause null for a blocked cause" || bad "paused_cause should be null for structural-finding"
-  grep -q '"halt_next_actions":\["revise TDD via /tdd-author","see docs/tdd/BLOCKERS.md"\]' "$F" 2>/dev/null \
+  # TDD 0031 §3a: structural-finding gained a middle "resume after revision" entry
+  # (the marker --check-paused / _resume_from key on) so the halt becomes resumable
+  # once its resolving revision is merged; it still cites BLOCKERS.md (FR-67).
+  grep -q '"halt_next_actions":\["revise TDD via /tdd-author","resume after revision (re-runs the halted gate against the revised declarations)","see docs/tdd/BLOCKERS.md"\]' "$F" 2>/dev/null \
     && ok "halt_next_actions for structural-finding correct" \
-    || bad "halt_next_actions should be the structural-finding pair (got: $(grep -o '"halt_next_actions":[^]]*]' "$F"))"
+    || bad "halt_next_actions should be the structural-finding triple (got: $(grep -o '"halt_next_actions":[^]]*]' "$F"))"
 ) || true
 
 # --- Obs 3: run-level rollup — blocked dominates paused ----------------------
