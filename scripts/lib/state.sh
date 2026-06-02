@@ -513,15 +513,31 @@ state_init() {
 # (the caller passes "paused" in that case). This keeps the existing run-end
 # call sites (set_run_state "paused" / "done") correct without their needing to
 # know about blocked.
+#
+# TDD 0030 §3 (gap 3): a fragment left in a NON-terminal status
+# (building/verifying/reviewing) at run-end means the run did NOT finish cleanly
+# — the runner exited while that TDD was mid-gate (the observed incident left a
+# `building` fragment a plain re-run would silently rebuild). Such a run is
+# `interrupted`, never `done` (NFR-4 / FR-30: `done` is never written when work
+# did not finish). Precedence: blocked > interrupted > paused > done — a single
+# fragment scan with explicit ordering, so the run-end call sites still just pass
+# their requested paused/done and this helper upgrades as the fragments dictate.
 set_run_state() {
-  local derived="$1" f
+  local derived="$1" f _nonterminal=0
   if [ -n "${STATE_DIR:-}" ] && [ -d "$STATE_DIR" ]; then
     for f in "$STATE_DIR"/*.json; do
       [ -f "$f" ] || continue
       [ "$(basename "$f")" = "run.json" ] && continue
+      # `blocked` outranks everything; the moment one is seen, stop scanning.
       if grep -q '"status":"blocked"' "$f" 2>/dev/null; then derived="blocked"; break; fi
+      # A non-terminal fragment marks the run interrupted, but DON'T break — a
+      # later fragment may be `blocked`, which still outranks `interrupted`.
+      if grep -qE '"status":"(building|verifying|reviewing)"' "$f" 2>/dev/null; then _nonterminal=1; fi
     done
   fi
+  # blocked already won above (it broke the loop). Otherwise a non-terminal
+  # fragment upgrades the requested paused/done to interrupted.
+  if [ "$derived" != "blocked" ] && [ "$_nonterminal" -eq 1 ]; then derived="interrupted"; fi
   _write_run_fragment "$derived"
 }
 

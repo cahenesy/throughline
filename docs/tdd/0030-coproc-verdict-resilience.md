@@ -1,6 +1,6 @@
 # TDD 0030: Coproc verdict-write resilience + honest terminal states
 
-Status: draft
+Status: implemented
 PRD refs: FR-39, FR-42, FR-44 (gap-closure); FR-30, FR-64; NFR-4
 PRD-rev: bfc8ad6
 ADR constraints: 0004, 0005, 0006, 0007

@@ -43,6 +43,12 @@ default; to see full logs use `cat docs/tdd/.implement-logs/<runid>/REPORT`. The
 `Resume: /implement --resume <runid>` line appears only when the cause is a
 recoverable (paused-state) one.
 
+A run whose state is `interrupted` (TDD 0030 §3) did not exit cleanly — the
+runner died mid-gate, leaving one or more TDDs orphaned in a non-terminal status.
+The snapshot renders a distinct "the run did not exit cleanly" banner naming each
+orphaned TDD + gate and pointing at `/implement --resume <runid>`; it is never
+reported as `done`.
+
 `--follow` watch mode in a non-interactive background job: use `kill -TERM` (or
 `-HUP`/`-QUIT`), not `kill -INT` — SIGINT is silently un-trappable in that launch
 mode per POSIX. SIGINT still works correctly in the foreground.

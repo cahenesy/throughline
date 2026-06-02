@@ -388,6 +388,12 @@ echo "[C1] sentinel handshake: 3 STEP_COMMITs -> 3 STEP_REVIEW PASS -> 3 cleared
   setup_step_repo "$D/repo" || { bad "setup failed"; exit 0; }
   _write_tdd_fragment 0020-fix 20 docs/tdd/0020-fix.md 1 building build 1000 1000 "feat/0020-fix" "" log "" "" "" "" "" "" "" "" "" "" "" ""
   cat > "$D/repo/ctl/build_plan" <<'EOF'
+# Consume the runner's initial user-turn prompt first (the runner writes it on
+# stdin before the loop, matching real `claude -p --input-format stream-json`).
+# Without this, every per-STEP_COMMIT reply read is off by one and the build
+# exits one verdict early — leaving the final verdict write hitting a dead
+# coprocess (TDD 0030 §1). The init read keeps the handshake aligned.
+IFS= read -r _init || true
 for i in 1 2 3; do
   echo "line $i" >> src/a.txt
   git add -A >/dev/null 2>&1; git commit -q -m "step($i): work" >/dev/null 2>&1
@@ -419,6 +425,7 @@ echo "[C2] scoped diff: step 2's review base = step 1's cleared head (not build 
   setup_step_repo "$D/repo" || { bad "setup failed"; exit 0; }
   _write_tdd_fragment 0020-fix 20 docs/tdd/0020-fix.md 1 building build 1000 1000 "feat/0020-fix" "" log "" "" "" "" "" "" "" "" "" "" "" ""
   cat > "$D/repo/ctl/build_plan" <<'EOF'
+IFS= read -r _init || true   # consume the runner's initial prompt (TDD 0030 §1) so reply reads stay aligned
 for i in 1 2; do
   echo "line $i" >> src/a.txt
   git add -A >/dev/null 2>&1; git commit -q -m "step($i): work" >/dev/null 2>&1
@@ -445,6 +452,7 @@ echo "[C3+C4] pattern tags recorded on clear; step 2 review prompt shows the pri
   # step 1's review PASSes but emits a (minor) finding with a pattern tag.
   printf 'minor: src/a.txt:1 nit\npattern_tags: [unchecked-fragment-write-return]\nREVIEW_RESULT: PASS\n' > "$D/repo/ctl/review.out"
   cat > "$D/repo/ctl/build_plan" <<'EOF'
+IFS= read -r _init || true   # consume the runner's initial prompt (TDD 0030 §1) so reply reads stay aligned
 for i in 1 2; do
   echo "line $i" >> src/a.txt
   git add -A >/dev/null 2>&1; git commit -q -m "step($i): work" >/dev/null 2>&1
@@ -591,6 +599,7 @@ echo "[E1] consolidated review_one sees prior patterns from _per_step_review_loo
   # Per-step review records a pattern tag on step 1's clear (mirrors C3+C4).
   printf 'minor: nit\npattern_tags: [step5-marker-tag]\nREVIEW_RESULT: PASS\n' > "$D/repo/ctl/review.out"
   cat > "$D/repo/ctl/build_plan" <<'EOF'
+IFS= read -r _init || true   # consume the runner's initial prompt (TDD 0030 §1) so the reply read stays aligned
 echo "line 1" >> src/a.txt
 git add -A >/dev/null 2>&1; git commit -q -m "step(1): work" >/dev/null 2>&1
 echo "STEP_COMMIT: 1 $(git rev-parse HEAD)"

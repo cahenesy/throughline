@@ -448,4 +448,16 @@ if [ -f "$RES" ]; then
   bash "$RES" || RES_FAIL=1
 fi
 
-[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ] && [ "$SMS_FAIL" -eq 0 ] && [ "$PRM_FAIL" -eq 0 ] && [ "$GRM_FAIL" -eq 0 ] && [ "$BRL_FAIL" -eq 0 ] && [ "$RR_FAIL" -eq 0 ] && [ "$BCL_FAIL" -eq 0 ] && [ "$BO_FAIL" -eq 0 ] && [ "$IDP_FAIL" -eq 0 ] && [ "$RES_FAIL" -eq 0 ]
+# Run the coproc-verdict-resilience eval (TDD 0030 / FR-39, FR-42, FR-44, FR-30,
+# FR-64, NFR-4) as part of the same suite — it pins the SIGPIPE-safe verdict
+# write, unclean-death (orphan) detection + resume, the honest `interrupted`
+# rollup, the truthful BLOCKERS.md report tail, and the active-time build
+# watchdog, all runner-adjacent resilience gates that belong with the evals above.
+CVR="$(dirname "$0")/coproc-verdict-resilience.test.sh"
+CVR_FAIL=0
+if [ -f "$CVR" ]; then
+  echo
+  bash "$CVR" || CVR_FAIL=1
+fi
+
+[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ] && [ "$SMS_FAIL" -eq 0 ] && [ "$PRM_FAIL" -eq 0 ] && [ "$GRM_FAIL" -eq 0 ] && [ "$BRL_FAIL" -eq 0 ] && [ "$RR_FAIL" -eq 0 ] && [ "$BCL_FAIL" -eq 0 ] && [ "$BO_FAIL" -eq 0 ] && [ "$IDP_FAIL" -eq 0 ] && [ "$RES_FAIL" -eq 0 ] && [ "$CVR_FAIL" -eq 0 ]

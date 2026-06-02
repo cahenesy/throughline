@@ -126,16 +126,13 @@ _resume_from() {
     # resume action (e.g. rework-scope-exceeded → "resume (retries with stricter
     # scope)") is recoverable. Accept it by flipping the fragment to
     # paused/transient — the exact edit that previously required hand-surgery —
-    # then fall through to the same validation a paused fragment runs. Any other
-    # non-paused status, and a blocked fragment whose actions are design
-    # escalations only, is not resumable: return 0 so the caller proceeds
-    # normally.
-    local _halt_actions
+    # then fall through to the same validation a paused fragment runs. A blocked
+    # fragment whose actions are design escalations only is not resumable.
+    local _halt_actions _stage_now
     _halt_actions="$(sed -n 's/.*\("halt_next_actions":\[[^]]*\]\).*/\1/p' "$f" | head -1)"
+    if grep -q '"stage":null' "$f" 2>/dev/null; then _stage_now=""
+    else _stage_now="$(sed -n 's/.*"stage":"\([^"]*\)".*/\1/p' "$f" | head -1)"; fi
     if [ "$fragment_status" = "blocked" ] && printf '%s' "$_halt_actions" | grep -qE '(\[|,)"resume'; then
-      local _stage_now
-      if grep -q '"stage":null' "$f" 2>/dev/null; then _stage_now=""
-      else _stage_now="$(sed -n 's/.*"stage":"\([^"]*\)".*/\1/p' "$f" | head -1)"; fi
       # ATOMIC flip blocked → paused/transient (single write). On failure REFUSE
       # the resume (rc=3) rather than fall through: a half-written fragment would
       # otherwise be treated as a valid resume while the on-disk state contradicts
@@ -149,6 +146,19 @@ _resume_from() {
         RESUME_REFUSE_CAUSE="resume-blocked-state-write-failed"
         return 3
       fi
+    elif [ "$fragment_status" = "building" ] || [ "$fragment_status" = "verifying" ] || [ "$fragment_status" = "reviewing" ]; then
+      # TDD 0030 §2 / FR-39 (gap 2): an orphaned-unclean fragment — the runner
+      # died mid-gate (the verdict-write SIGPIPE in the observed incident),
+      # leaving this TDD non-terminal. Accept it exactly as a recoverable blocked
+      # fragment: the SAME atomic flip to paused/transient, then fall through to
+      # the existing validation. The branch-head derivation below supplies the
+      # null branch_head_at_pause from the branch ref (the unclean death never
+      # wrote it). Same refuse-on-write-failure contract as the blocked arm.
+      if ! _accept_blocked_as_paused "$slug" "$_stage_now"; then
+        echo "error: _resume_from $slug: could not flip $fragment_status->paused for resume; refusing" >&2
+        RESUME_REFUSE_CAUSE="resume-blocked-state-write-failed"
+        return 3
+      fi
     else
       return 0
     fi
@@ -158,6 +168,36 @@ _resume_from() {
   branch="$(sed -n 's/.*"branch":"\([^"]*\)".*/\1/p' "$f" | head -1)"
   branch_head_at_pause="$(_read_fragment_field "$f" branch_head_at_pause)"
   gates_csv="$(_read_fragment_array_csv "$f" gates_completed)"
+
+  # TDD 0030 §2 / FR-40 (gap 2): an orphaned-unclean fragment never wrote
+  # branch_head_at_pause (the death skipped the pause-write). Derive it from the
+  # branch ref directly — the branch's committed history IS the ground truth
+  # (FR-40) and the divergence guard below needs a baseline. A non-orphan paused
+  # fragment whose head is null benefits identically. If the branch is gone,
+  # git rev-parse fails → branch_head_at_pause stays empty and the divergence
+  # block is skipped; the driver's resume-blocked-branch-missing check (which
+  # runs BEFORE _resume_from, on the failed `git checkout`) already covers a
+  # deleted branch.
+  if [ -z "$branch_head_at_pause" ] && [ -n "$branch" ]; then
+    local _derived_head
+    _derived_head="$(git rev-parse --verify "refs/heads/$branch" 2>/dev/null || true)"
+    if [ -n "$_derived_head" ]; then
+      # Only adopt the derived head IN MEMORY once it is durably persisted. If the
+      # write fails, leaving the in-memory value set would run the divergence
+      # guard below against a baseline that was never written — masking the
+      # failure. On write failure, leave branch_head_at_pause empty so the guard
+      # is skipped (safe degraded path: the branch is still the ground truth) and
+      # surface the failure. (No observable behavioral difference in the orphan
+      # path — the derived head always equals refs/heads/<branch>, so the guard
+      # is a no-op either way; this is a state-consistency safeguard. §4-headfail
+      # pins the on-disk invariant.)
+      if _update_branch_head_at_pause "$slug" "$_derived_head"; then
+        branch_head_at_pause="$_derived_head"
+      else
+        echo "warning: _resume_from $slug: could not persist derived branch_head_at_pause; skipping divergence guard for this orphan resume" >&2
+      fi
+    fi
+  fi
 
   # Build-gate completion is read straight from gates_completed (TDD 0024 /
   # FR-40 revised) — there is no commit-history scan. The prior Source-A logic
