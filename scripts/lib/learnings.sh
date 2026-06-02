@@ -271,22 +271,21 @@ append_accepted_learning() {  # <mainrepo> <class> <files_csv> <tags_csv> <tdds_
   local mainrepo="$1" class="$2" files_csv="$3" tags_csv="$4" tdds_csv="$5"
   local sev_range="$6" summary="$7" evidence="$8" runid="$9"
   local structural="${10:-false}" rework="${11:-false}"
-  local lm="$mainrepo/docs/tdd/LEARNINGS.md" dir
+  local lm="$mainrepo/docs/tdd/LEARNINGS.md" dir hdr
   dir="$(dirname "$lm")"
+  hdr='# Build-phase learnings (accepted) — recurring quality patterns mined at run-end (FR-72), advisory context for /tdd-author (FR-73).'
   [ -d "$dir" ] || mkdir -p "$dir" || { echo "error: append_accepted_learning: cannot create $dir" >&2; return 1; }
-  if [ ! -f "$lm" ]; then
-    printf '# Build-phase learnings (accepted) — recurring quality patterns mined at run-end (FR-72), advisory context for /tdd-author (FR-73).\n' > "$lm" \
-      || { echo "error: append_accepted_learning: cannot create $lm" >&2; return 1; }
-  fi
 
   local files_space; files_space="$(printf '%s' "$files_csv" | tr ',' ' ')"
   local match_id="" maxnum=0 bid bcls bfiles bn
-  while IFS=$'\t' read -r bid bcls bfiles; do
-    [ -z "$bid" ] && continue
-    bn=$((10#$bid)) 2>/dev/null || bn=0
-    [ "$bn" -gt "$maxnum" ] && maxnum="$bn"
-    if [ "$bcls" = "$class" ] && _files_intersect "$bfiles" "$files_space"; then match_id="$bid"; fi
-  done <<< "$(_learning_blocks "$lm")"
+  if [ -f "$lm" ]; then
+    while IFS=$'\t' read -r bid bcls bfiles; do
+      [ -z "$bid" ] && continue
+      bn=$((10#$bid)) 2>/dev/null || bn=0
+      [ "$bn" -gt "$maxnum" ] && maxnum="$bn"
+      if [ "$bcls" = "$class" ] && _files_intersect "$bfiles" "$files_space"; then match_id="$bid"; fi
+    done <<< "$(_learning_blocks "$lm")"
+  fi
 
   if [ -n "$match_id" ]; then
     # Reinforce the matched entry: add the new run id + any new slugs to its
@@ -299,9 +298,20 @@ append_accepted_learning() {  # <mainrepo> <class> <files_csv> <tags_csv> <tdds_
         line=$0; lp=index(line,"(")
         if (lp>0) { head=substr(line,1,lp-1); paren=substr(line,lp) } else { head=line; paren="" }
         sub(/[[:space:]]+$/, "", head)
+        # Split the existing slug list into EXACT tokens (not substrings): a new
+        # slug that happens to be a substring of an existing one must still be
+        # added (§2 idempotency must compare whole tokens, not text-contains).
+        hs=head; sub(/^.*across:[[:space:]]*/, "", hs)
+        delete seen
+        ne=split(hs, ex, /,[[:space:]]*/)
+        for (j=1;j<=ne;j++) if (ex[j] != "") seen[ex[j]]=1
         n=split(NEWSLUGS, ns, " ")
-        for (i=1;i<=n;i++) { s=ns[i]; if (s!="" && index(head, s)==0) head=head ", " s }
-        if (paren != "" && index(paren, RUNID)==0) sub(/\)[[:space:]]*$/, "; also run " RUNID ")", paren)
+        for (i=1;i<=n;i++) { s=ns[i]; if (s != "" && !(s in seen)) { head=head ", " s; seen[s]=1 } }
+        # Same whole-token test for the run id: tokenize the paren on non-id
+        # chars and compare exactly, so e.g. run-11 is not masked by run-111.
+        hasrun=0; pp=paren; gsub(/[^A-Za-z0-9_-]/, " ", pp)
+        np=split(pp, pw, /[[:space:]]+/); for (j=1;j<=np;j++) if (pw[j]==RUNID) hasrun=1
+        if (paren != "" && hasrun==0) sub(/\)[[:space:]]*$/, "; also run " RUNID ")", paren)
         else if (paren == "") paren="(also run " RUNID ")"
         print head " " paren; next
       }
@@ -314,12 +324,16 @@ append_accepted_learning() {  # <mainrepo> <class> <files_csv> <tags_csv> <tdds_
   fi
 
   # No match — append a fresh entry numbered after the highest existing one.
-  local nnn tdds_disp files_disp tags_disp
+  # Atomic write (temp + mv, matching state.sh's convention / §2): rewrite the
+  # whole file (existing content or a fresh header) plus the new block, so a
+  # reader never sees a torn half-written entry.
+  local nnn tdds_disp files_disp tags_disp tmp="$lm.tmp.$$"
   nnn="$(printf '%03d' $((maxnum + 1)))"
   tdds_disp="$(printf '%s' "$tdds_csv" | sed 's/,/, /g')"
   files_disp="$(printf '%s' "$files_csv" | sed 's/,/, /g')"
   tags_disp="$(printf '%s' "$tags_csv" | sed 's/,/, /g')"
   {
+    if [ -f "$lm" ]; then cat "$lm"; else printf '%s\n' "$hdr"; fi
     echo
     echo "## L-$nnn: $class"
     echo "- Pattern class: $class"
@@ -329,6 +343,7 @@ append_accepted_learning() {  # <mainrepo> <class> <files_csv> <tags_csv> <tdds_
     echo "- Flags: structural=$structural rework=$rework"
     echo "- Summary: $(_jclean "$summary")"
     echo "- Representative evidence: $(_clip_evidence "$evidence")"
-  } >> "$lm" || { echo "error: append_accepted_learning: could not append entry to $lm" >&2; return 1; }
+  } > "$tmp" || { echo "error: append_accepted_learning: could not write $tmp" >&2; rm -f "$tmp" 2>/dev/null; return 1; }
+  mv "$tmp" "$lm" || { echo "error: append_accepted_learning: could not place $lm" >&2; rm -f "$tmp" 2>/dev/null; return 1; }
   return 0
 }
