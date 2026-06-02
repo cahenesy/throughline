@@ -2,7 +2,7 @@
 
 > Design-level blockers raised by /implement. Resolve via /tdd-author, then delete the entry.
 
-- [ ] **stale-base-resume** (2026-06-02, runner gap observed on run 20260601-115311 / TDD 0021) —
+- [x] **stale-base-resume** (2026-06-02, runner gap observed on run 20260601-115311 / TDD 0021) — RESOLVED by TDD 0033 (integration merge on all resume paths) —
   Resuming a paused run after the integration branch has advanced builds against a stale base:
   the branch inherits since-fixed test reds (ci-checks cannot distinguish them from build
   regressions) and accumulates merge conflicts with master that surface only at PR time.
