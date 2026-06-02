@@ -303,6 +303,52 @@ EOF
   sp="$(cat "$WT/repo/docs/tdd/.implement-logs/.stub.pid" 2>/dev/null)"; [ -n "$sp" ] && kill "$sp" 2>/dev/null
 ) || true
 
+echo "[S15] state token is validated to the known run-state vocabulary, else unknown"
+( WT="$ROOT/S15"; mkdir -p "$WT/scripts" "$WT/repo/docs/tdd/.implement-logs"
+  cp "$WATCH" "$WT/scripts/implement-watch.sh"
+  # bogus state -> must collapse to unknown; a known state (blocked) passes through.
+  cat > "$WT/scripts/implement.sh" <<'EOF'
+#!/usr/bin/env bash
+LOGS="$PWD/docs/tdd/.implement-logs"
+mkdir -p "$LOGS/run1/state.d"
+printf '{"schema":1,"state":"%s"}\n' "${STUB_STATE:-zzz weird}" > "$LOGS/run1/state.d/run.json"
+ln -sfn run1 "$LOGS/latest"
+EOF
+  out="$WT/out.txt"
+  ( cd "$WT/repo" && STUB_STATE="zzz weird" THROUGHLINE_WATCH_POLL_SECS=1 THROUGHLINE_WATCH_MAX_SECS=60 \
+      bash "$WT/scripts/implement-watch.sh" >"$out" 2>&1 )
+  ln1="$(grep '^IMPLEMENT_RUN_COMPLETE' "$out" 2>/dev/null)"
+  case "$ln1" in *"state=unknown"*) ok "unrecognized state collapses to unknown" ;; *) bad "bogus state must become unknown ($ln1)" ;; esac
+  out2="$WT/out2.txt"
+  ( cd "$WT/repo" && STUB_STATE="blocked" THROUGHLINE_WATCH_POLL_SECS=1 THROUGHLINE_WATCH_MAX_SECS=60 \
+      bash "$WT/scripts/implement-watch.sh" >"$out2" 2>&1 )
+  ln2="$(grep '^IMPLEMENT_RUN_COMPLETE' "$out2" 2>/dev/null)"
+  case "$ln2" in *"state=blocked"*) ok "a known run state passes through" ;; *) bad "known state should pass through ($ln2)" ;; esac
+) || true
+
+echo "[S16] a newline in the resolved logdir cannot inject a second line / split the contract"
+( WT="$ROOT/S16"; mkdir -p "$WT/scripts" "$WT/repo/docs/tdd/.implement-logs"
+  cp "$WATCH" "$WT/scripts/implement-watch.sh"
+  cat > "$WT/scripts/implement.sh" <<'EOF'
+#!/usr/bin/env bash
+LOGS="$PWD/docs/tdd/.implement-logs"
+nl="$(printf 'runA\nrunB')"
+mkdir -p "$LOGS/$nl/state.d"
+printf '{"schema":1,"state":"done"}\n' > "$LOGS/$nl/state.d/run.json"
+ln -sfn "$nl" "$LOGS/latest"
+EOF
+  out="$WT/out.txt"
+  ( cd "$WT/repo" && THROUGHLINE_WATCH_POLL_SECS=1 THROUGHLINE_WATCH_MAX_SECS=60 \
+      bash "$WT/scripts/implement-watch.sh" >"$out" 2>&1 )
+  # The IMPLEMENT_RUN_COMPLETE line must remain a SINGLE line carrying every field
+  # — a raw newline in logdir would push state=/candidate_learnings= onto an
+  # orphaned line that no longer starts with the marker.
+  ln1="$(grep '^IMPLEMENT_RUN_COMPLETE' "$out" 2>/dev/null)"
+  case "$ln1" in *"state=done"*"candidate_learnings="*) ok "all fields stay on the single marker line" ;; *) bad "newline in logdir split the contract line ($ln1)" ;; esac
+  n="$(grep -c '^IMPLEMENT_RUN_COMPLETE' "$out" 2>/dev/null)"; n="${n:-0}"
+  [ "$n" = "1" ] && ok "exactly one IMPLEMENT_RUN_COMPLETE line" || bad "expected exactly one marker line (got $n)"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
