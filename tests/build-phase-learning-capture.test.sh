@@ -24,6 +24,7 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 STATE_LIB="$REPO/scripts/lib/state.sh"
 LEARN_LIB="$REPO/scripts/lib/learnings.sh"
 WATCH="$REPO/scripts/implement-watch.sh"
+IMPL="$REPO/scripts/implement.sh"
 SKILL="$REPO/skills/implement/SKILL.md"
 
 RESULTS="$(mktemp)"; export RESULTS
@@ -414,6 +415,69 @@ EOF
   ( cd "$WT/repo" && THROUGHLINE_WATCH_POLL_SECS=1 bash "$WT/scripts/implement-watch.sh" >"$out" 2>"$WT/d.err" )
   ln="$(grep '^IMPLEMENT_RUN_COMPLETE' "$out" 2>/dev/null)"
   case "$ln" in *"state=done"*) ok "fast build that wrote run-state completes normally" ;; *) bad "fast legit build must report completion ($ln)" ;; esac
+) || true
+
+# --- §4: runner run-end hook ------------------------------------------------
+
+echo "[S19] implement.sh sources learnings.sh (detect/append available in the runner process)"
+( TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$REPO/scripts/implement.sh" 2>/dev/null || true
+  type detect_build_learnings  >/dev/null 2>&1 && ok "detect_build_learnings available via implement.sh"  || bad "implement.sh must source detect_build_learnings"
+  type append_accepted_learning >/dev/null 2>&1 && ok "append_accepted_learning available via implement.sh" || bad "implement.sh must source append_accepted_learning"
+) || true
+
+echo "[S20] run-end hook: a done run writes .run-complete=done and wakes the watcher (both branches / done detection)"
+( d="$ROOT/S20"; mkdir -p "$d"/{docs/tdd,docs/adr,.stub/bin}
+  cd "$d"
+  git init -q; git config user.email t@t.t; git config user.name t
+  printf '# PRD\n## Requirements\n1. do the thing\n' > docs/PRD.md
+  printf '# ADR Index\n| # | Title | Status | Scope |\n|---|---|---|---|\n' > docs/adr/INDEX.md
+  printf '# TDD 0001: alpha\nStatus: ready\nPRD refs: 1\nPRD-rev: deadbee\nADR constraints: none\n\n## Approach\nstub\n' > docs/tdd/0001-alpha.md
+  git add -A; git commit -qm init
+  STUBDIR="$d/.stub"
+  cat > "$STUBDIR/verify_test.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+  export CI_CHECKS_TEST_CMD="bash $STUBDIR/verify_test.sh" CI_CHECKS_TYPECHECK_CMD="" CI_CHECKS_LINT_CMD=""
+  cat > "$STUBDIR/bin/claude" <<'EOF'
+#!/usr/bin/env bash
+prompt=""
+while [ $# -gt 0 ]; do case "$1" in -p) prompt="$2"; shift 2;; *) shift;; esac; done
+slug="$(printf '%s' "$prompt" | grep -oE 'docs/tdd/[0-9]+-[a-z]+' | head -1 | sed 's#docs/tdd/##')"
+if printf '%s' "$prompt" | grep -q 'INDEPENDENT runtime-verification gate'; then echo "VERIFY_RUNTIME: PASS"; exit 0; fi
+if printf '%s' "$prompt" | grep -q 'INDEPENDENT review gate'; then
+  rbase="$(printf '%s' "$prompt" | grep -oE 'name-only[[:space:]]+[0-9a-f]{7,40}' | head -1 | grep -oE '[0-9a-f]{7,40}')"
+  [ -n "$rbase" ] && git diff --name-only "$rbase"..HEAD 2>/dev/null | while IFS= read -r f; do [ -n "$f" ] && echo "FILE_REVIEWED_NO_FINDINGS: $f"; done
+  echo "REVIEW_RESULT: PASS"; exit 0
+fi
+if printf '%s' "$prompt" | grep -q 'BOUNDED rework pass'; then exit 0; fi
+echo "test for $slug" >> "test-$slug.txt"; git add -A >/dev/null 2>&1; git commit -q -m "test(failing): $slug" >/dev/null 2>&1 || true
+echo "generated $(date +%s%N)" >> "generated-$slug.txt"; git add -A >/dev/null 2>&1; git commit -q -m "stub build $slug" >/dev/null 2>&1 || true
+echo "BATCH_RESULT: OK"; exit 0
+EOF
+  chmod +x "$STUBDIR/bin/claude"
+  export PATH="$STUBDIR/bin:$PATH"
+  # A watcher stand-in: traps USR1 and drops a sentinel, so we can observe the wake.
+  SENT="$d/woken.sentinel"
+  cat > "$d/helper.sh" <<EOF
+#!/usr/bin/env bash
+trap 'touch "$SENT"; exit 0' USR1
+while :; do sleep 0.2; done
+EOF
+  mkdir -p docs/tdd/.implement-logs
+  # Redirect the helper's stdio off the inherited fds (so it can never hold a
+  # piped invocation's stdout open) and reap it on subshell exit no matter what.
+  bash "$d/helper.sh" >/dev/null 2>&1 & HPID=$!
+  trap 'kill "$HPID" 2>/dev/null' EXIT
+  echo "$HPID" > docs/tdd/.implement-logs/.watch.pid
+  bash "$IMPL" --change ci >/dev/null 2>&1
+  LC="docs/tdd/.implement-logs/latest/.run-complete"
+  [ -f "$LC" ] && ok ".run-complete written at run end" || bad ".run-complete should exist after a done run"
+  [ "$(cat "$LC" 2>/dev/null)" = "done" ] && ok ".run-complete contains done" || bad ".run-complete should be 'done' (got: $(cat "$LC" 2>/dev/null))"
+  i=0; while [ ! -f "$SENT" ] && [ "$i" -lt 25 ]; do sleep 0.2; i=$((i+1)); done
+  [ -f "$SENT" ] && ok "watcher woken via SIGUSR1 at run end" || bad "run-end hook should SIGUSR1 the recorded .watch.pid"
+  kill "$HPID" 2>/dev/null
 ) || true
 
 echo
