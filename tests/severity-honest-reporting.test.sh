@@ -524,6 +524,165 @@ echo "[B4] skills/implement/SKILL.md documents the author self-review + the §5b
   grep -q -- '--no-verify' "$F" && ok "cross-references the --no-verify escape" || bad "SKILL.md should cross-reference §5b(b)"
 ) || true
 
+# --- §3b/§3c: per-file disposition + coverage check + re-review routing (#35) --
+echo "[P5] review-prompt.md carries the §3b per-file disposition requirement + {{ATTENTION_DIRECTIVE}}"
+( cd "$REPO"; F="scripts/review-prompt.md"
+  grep -q 'FILE_REVIEWED_NO_FINDINGS' "$F" && ok "names FILE_REVIEWED_NO_FINDINGS" || bad "review prompt needs the FILE_REVIEWED_NO_FINDINGS disposition line (§3b)"
+  grep -qiE 'per-file disposition' "$F" && ok "states the per-file disposition requirement" || bad "review prompt needs the per-file disposition requirement (§3b)"
+  grep -qE 'git diff --name-only' "$F" && ok "references git diff --name-only for the file list" || bad "review prompt should compute the file list via git diff --name-only (§3b)"
+  grep -q '{{ATTENTION_DIRECTIVE}}' "$F" && ok "carries the {{ATTENTION_DIRECTIVE}} interpolation point" || bad "review prompt needs the {{ATTENTION_DIRECTIVE}} placeholder (§3c re-review)"
+) || true
+
+echo "[R1] _render_review_prompt substitutes {{ATTENTION_DIRECTIVE}} (7th arg) and never leaks it"
+( D="$ROOT/R1"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D" RTMPL="$REPO/scripts/review-prompt.md"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  out="$(_render_review_prompt docs/tdd/0021-x.md b h "br" "tag" "facts" "ATTN_MARKER_XYZ")"
+  printf '%s' "$out" | grep -q 'ATTN_MARKER_XYZ' && ok "attention directive substituted" || bad "7th-arg directive should substitute {{ATTENTION_DIRECTIVE}}"
+  printf '%s' "$out" | grep -q '{{ATTENTION_DIRECTIVE}}' && bad "raw {{ATTENTION_DIRECTIVE}} leaked (with directive)" || ok "no raw directive placeholder leaks (with directive)"
+  out2="$(_render_review_prompt docs/tdd/0021-x.md b h "br" "" "" "")"
+  printf '%s' "$out2" | grep -q '{{ATTENTION_DIRECTIVE}}' && bad "raw placeholder leaked when directive empty" || ok "no raw placeholder leaks when directive empty"
+) || true
+
+# Helper: a git repo + a §6 fragment for _per_file_coverage_check unit tests.
+_c_setup() {  # <root-dir>  → cd into repo, fragment at <root>/state.d, echoes BASE
+  local r="$1"; mkdir -p "$r/repo" "$r/state.d"
+  export STATE_DIR="$r/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$r"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || return 1
+  _write_tdd_fragment 0021-x 21 docs/tdd/0021-x.md 1 reviewing review 1000 1000 "" "" "" ""
+  cd "$r/repo"; git init -q; git config user.email t@t.t; git config user.name t
+  printf 'base\n' > seed.txt; git add -A; git commit -qm base
+}
+
+echo "[C1] _per_file_coverage_check flags un-cited diff files (incomplete → rc 1 + runner-check finding)"
+( D="$ROOT/C1"; _c_setup "$D" || { bad "source guard missing"; exit 0; }
+  BASE="$(git rev-parse HEAD)"
+  printf 'x\n' > src_b.txt; printf 'y\n' > src_c.txt; git add -A; git commit -qm work
+  L="$D/review.log"
+  { printf 'FINDING_BEGIN\nseverity: nit\nstructural: false\nregion: src_b.txt:1-1\nregion_lines: 1\npattern_tags: [style]\nsummary: s\nevidence: x\nFINDING_END\n';
+    printf 'REVIEW_RESULT: PASS\n'; } > "$L"
+  _per_file_coverage_check "$L" 0 0021-x "$BASE" HEAD "review:1"; rc=$?
+  F="$D/state.d/0021-x.json"
+  [ "$rc" -eq 1 ] && ok "incomplete coverage returns rc 1" || bad "un-cited file must return incomplete (rc=$rc)"
+  grep -q 'incomplete-file-coverage' "$F" 2>/dev/null && ok "records incomplete-file-coverage finding" || bad "must record incomplete-file-coverage (got: $(cat "$F"))"
+  grep -q '"source":"runner-check"' "$F" 2>/dev/null && ok "finding is source:runner-check" || bad "incomplete-file-coverage must be source:runner-check"
+  printf '%s' "${RFIND_RE_REVIEW_DIRECTIVE:-}" | grep -q 'src_c.txt' && ok "directive names the un-cited file src_c.txt" || bad "RFIND_RE_REVIEW_DIRECTIVE must name src_c.txt (got: '${RFIND_RE_REVIEW_DIRECTIVE:-}')"
+  printf '%s' "${RFIND_RE_REVIEW_DIRECTIVE:-}" | grep -q 'src_b.txt' && bad "directive should not name the already-cited src_b.txt" || ok "directive omits the already-cited src_b.txt"
+) || true
+
+echo "[C2] _per_file_coverage_check accepts FILE_REVIEWED_NO_FINDINGS for every file (complete → rc 0, §9)"
+( D="$ROOT/C2"; _c_setup "$D" || { bad "source guard missing"; exit 0; }
+  BASE="$(git rev-parse HEAD)"
+  printf 'x\n' > src_b.txt; printf 'y\n' > src_c.txt; git add -A; git commit -qm work
+  L="$D/review.log"
+  { printf 'FILE_REVIEWED_NO_FINDINGS: src_b.txt\n'; printf 'FILE_REVIEWED_NO_FINDINGS: src_c.txt\n'; printf 'REVIEW_RESULT: PASS\n'; } > "$L"
+  _per_file_coverage_check "$L" 0 0021-x "$BASE" HEAD "review:1"; rc=$?
+  F="$D/state.d/0021-x.json"
+  [ "$rc" -eq 0 ] && ok "full FILE_REVIEWED_NO_FINDINGS coverage returns rc 0 (clear)" || bad "complete coverage must clear (rc=$rc)"
+  grep -q 'incomplete-file-coverage' "$F" 2>/dev/null && bad "no synthetic finding when coverage complete" || ok "no synthetic finding emitted on complete coverage"
+) || true
+
+echo "[C3] _per_file_coverage_check treats an empty diff as complete (rc 0)"
+( D="$ROOT/C3"; _c_setup "$D" || { bad "source guard missing"; exit 0; }
+  BASE="$(git rev-parse HEAD)"   # no further commits → empty BASE..HEAD
+  L="$D/review.log"; printf 'REVIEW_RESULT: PASS\n' > "$L"
+  _per_file_coverage_check "$L" 0 0021-x "$BASE" HEAD "review:1"; rc=$?
+  [ "$rc" -eq 0 ] && ok "empty diff → complete (rc 0)" || bad "empty diff must be complete (rc=$rc)"
+) || true
+
+# Integration: the §3c re-review routing through the bounded loop (gate_one).
+# A rotating review stub serves ctl/review.<n> on the n-th review invocation.
+_g_setup() {  # <repo-dir>  — like setup_loop_repo but with a rotating review stub + 2-file diff
+  local d="$1"; mkdir -p "$d/ctl" "$d/bin"
+  cd "$d" || return 1
+  git init -q -b master; git config user.email t@t.t; git config user.name t
+  mkdir -p src docs/tdd
+  printf 'ctl/\nbin/\n' > .gitignore
+  printf 'orig\n' > src/a.txt
+  cat > docs/tdd/0099-fix.md <<'EOF'
+# TDD 0099: fixture
+Status: draft
+PRD refs: 1
+
+## Touched files
+- `src/a.txt` — the in-scope file
+
+## Expected diff size
+- `src/a.txt` — ~50 lines added
+EOF
+  git add -A; git commit -qm "build start" >/dev/null
+  cat > "$d/bin/claude" <<EOF
+#!/usr/bin/env bash
+prompt=""
+while [ \$# -gt 0 ]; do case "\$1" in -p) prompt="\$2"; shift 2;; *) shift;; esac; done
+if printf '%s' "\$prompt" | grep -q 'INDEPENDENT review gate'; then
+  n=\$(cat "$d/ctl/rcount" 2>/dev/null || echo 0); n=\$((n+1)); echo "\$n" > "$d/ctl/rcount"
+  if [ -f "$d/ctl/review.\$n" ]; then cat "$d/ctl/review.\$n"; else cat "$d/ctl/review.last" 2>/dev/null || echo "REVIEW_RESULT: PASS"; fi
+  exit 0
+fi
+if printf '%s' "\$prompt" | grep -q 'BOUNDED rework pass'; then bash "$d/ctl/do_rework" 2>/dev/null; exit 0; fi
+echo "BATCH_RESULT: OK"; exit 0
+EOF
+  chmod +x "$d/bin/claude"
+  export PATH="$d/bin:$PATH"
+  export RTMPL="$REPO/scripts/review-prompt.md" RWTMPL="$REPO/scripts/rework-prompt.md"
+  export REVIEW_MODEL="" REBUILD=0 BASE=master
+  export THROUGHLINE_GATE_RETRIES=1 THROUGHLINE_GATE_BACKOFF_BASE=0
+  export THROUGHLINE_REQUIRE_TEST_FIRST=0 THROUGHLINE_REQUIRE_RUNTIME_VERIFY=0
+  RESUME_GATES_DONE_0099_fix="build,test-first,verify,verify-runtime"; export RESUME_GATES_DONE_0099_fix
+  _write_tdd_fragment 0099-fix 99 docs/tdd/0099-fix.md 1 reviewing review \
+    1000 1000 "feat/0099-fix" "" "log" "" "" "build,test-first,verify,verify-runtime" "" "" "" "" "" "" ""
+  # A 2-file diff after build start so the coverage check has files to require.
+  printf 'b\n' > src/b.txt; printf 'c\n' > src/c.txt; git add -A; git commit -qm work >/dev/null
+}
+
+echo "[G1] §8: incomplete coverage → re-review (NOT rework) → second pass clears"
+( D="$ROOT/G1"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D" MAINREPO="$D/repo"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  _g_setup "$D/repo" || { bad "setup failed"; exit 0; }
+  BS="$(git rev-parse master)"   # build start (before the 2-file work commit)
+  # pass 1: PASS but cites only src/b.txt → src/c.txt un-cited → incomplete.
+  printf 'FINDING_BEGIN\nseverity: nit\nstructural: false\nregion: src/b.txt:1-1\nregion_lines: 1\npattern_tags: [style]\nsummary: s\nevidence: x\nFINDING_END\nREVIEW_RESULT: PASS\n' > "$D/repo/ctl/review.1"
+  # pass 2: disposition for both files → complete → clears.
+  printf 'FILE_REVIEWED_NO_FINDINGS: src/b.txt\nFILE_REVIEWED_NO_FINDINGS: src/c.txt\nREVIEW_RESULT: PASS\n' > "$D/repo/ctl/review.2"
+  printf 'echo "do_rework MUST NOT run" >&2; exit 9\n' > "$D/repo/ctl/do_rework"
+  st="$(gate_one docs/tdd/0099-fix.md "$BS" "$D/g1.log")"; rc=$?
+  F="$STATE_DIR/0099-fix.json"
+  [ "$rc" -eq 0 ] && ok "gate_one converges after a forced re-review (rc 0)" || bad "re-review should converge (rc=$rc, st=$st)"
+  grep -q '"re_review_attempts":{"review:1":1}' "$F" 2>/dev/null && ok "re_review_attempts ticked to 1" || bad "re_review_attempts should be 1 (got: $(_read_fragment_raw_object "$F" re_review_attempts))"
+  grep -q '"rework_attempts":{}' "$F" 2>/dev/null && ok "rework_attempts did NOT tick (re-review bypasses _rework_one)" || bad "rework_attempts must stay empty (got: $(_read_fragment_raw_object "$F" rework_attempts))"
+  grep -q '"outcome":"shipped"' "$F" 2>/dev/null && bad "no rework attempt should ship (re-review path)" || ok "no rework attempt ran"
+  grep -q 'incomplete-file-coverage' "$F" 2>/dev/null && ok "incomplete-file-coverage finding recorded" || bad "must record incomplete-file-coverage"
+) || true
+
+echo "[G2] §8b: persistent incomplete coverage → BLOCKED rework-budget-exhausted after THROUGHLINE_RE_REVIEW_MAX"
+( D="$ROOT/G2"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D" MAINREPO="$D/repo"
+  export THROUGHLINE_RE_REVIEW_MAX=2
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  _g_setup "$D/repo" || { bad "setup failed"; exit 0; }
+  BS="$(git rev-parse master)"
+  # every pass leaves src/c.txt un-cited → coverage never completes.
+  printf 'FINDING_BEGIN\nseverity: nit\nstructural: false\nregion: src/b.txt:1-1\nregion_lines: 1\npattern_tags: [style]\nsummary: s\nevidence: x\nFINDING_END\nREVIEW_RESULT: PASS\n' > "$D/repo/ctl/review.last"
+  printf 'echo "do_rework MUST NOT run" >&2; exit 9\n' > "$D/repo/ctl/do_rework"
+  st="$(gate_one docs/tdd/0099-fix.md "$BS" "$D/g2.log")"; rc=$?
+  F="$STATE_DIR/0099-fix.json"
+  [ "$rc" -ne 0 ] && ok "gate_one returns non-zero (blocked)" || bad "persistent incomplete coverage should block (rc=$rc, st=$st)"
+  grep -q '"halt_cause":"rework-budget-exhausted"' "$F" 2>/dev/null && ok "halt_cause=rework-budget-exhausted" || bad "halt_cause should be rework-budget-exhausted (got: $(_read_fragment_field "$F" halt_cause 2>/dev/null))"
+  grep -q '"re_review_attempts":{"review:1":2}' "$F" 2>/dev/null && ok "re_review_attempts capped at 2" || bad "re_review_attempts should be 2 (got: $(_read_fragment_raw_object "$F" re_review_attempts))"
+  grep -q '"rework_attempts":{}' "$F" 2>/dev/null && ok "rework_attempts stayed empty (unrelated branch)" || bad "rework_attempts must stay empty (got: $(_read_fragment_raw_object "$F" rework_attempts))"
+  grep -qi 'incomplete-file-coverage\|coverage' "$D/repo/docs/tdd/BLOCKERS.md" 2>/dev/null && ok "BLOCKERS.md names the coverage trigger" || bad "BLOCKERS.md should name the coverage trigger (got: $(cat "$D/repo/docs/tdd/BLOCKERS.md" 2>/dev/null))"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
