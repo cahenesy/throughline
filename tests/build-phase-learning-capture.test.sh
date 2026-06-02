@@ -364,24 +364,45 @@ echo "[S17] watcher fails loud when the logs dir cannot be created (no false com
   ! grep -q 'launched build pid' "$out" 2>/dev/null && ok "no build launched after logs-dir failure" || bad "must not launch a build (out: $(cat "$out" 2>/dev/null))"
 ) || true
 
-echo "[S18] failed launch (build vanishes leaving no run-state) -> FATAL, no false completion"
+echo "[S18] launch-machinery failure -> FATAL (pre-launch); a started-but-fast-dying build -> reported, not fatal"
 ( WT="$ROOT/S18"; mkdir -p "$WT/scripts" "$WT/repo/docs/tdd/.implement-logs"
   cp "$WATCH" "$WT/scripts/implement-watch.sh"
-  # A build that exits immediately WITHOUT writing any run-state record models a
-  # bad nohup redirect / exec failure / instant crash — it never really started.
+
+  # (a) Launch-machinery failure: a MISSING build script fails loud BEFORE any
+  #     phantom pid — there is nothing to launch (FR-74). Deterministic pre-launch
+  #     check, no dependence on the (relinked-at-end-of-state_init, stale-on-a-2nd-
+  #     run) `latest` symlink.
+  out="$WT/a.out"; err="$WT/a.err"
+  ( cd "$WT/repo" && THROUGHLINE_WATCH_BUILD_SCRIPT="$WT/scripts/nope-missing.sh" \
+      THROUGHLINE_WATCH_POLL_SECS=1 bash "$WT/scripts/implement-watch.sh" >"$out" 2>"$err" ); rc=$?
+  [ "$rc" -ne 0 ] && grep -qi 'FATAL' "$err" 2>/dev/null && ! grep -q 'launched build pid' "$out" 2>/dev/null \
+    && ok "missing build script -> FATAL, no phantom pid" || bad "missing script should fail loud (rc=$rc, out: $(cat "$out" 2>/dev/null))"
+
+  # (b) Launch-machinery failure: an UNWRITABLE nohup.out redirect target fails
+  #     loud (no false completion). Block it by making nohup.out a directory.
   cat > "$WT/scripts/implement.sh" <<'EOF'
 #!/usr/bin/env bash
 exit 0
 EOF
-  out="$WT/out.txt"; err="$WT/err.txt"
-  ( cd "$WT/repo" && THROUGHLINE_WATCH_POLL_SECS=1 THROUGHLINE_WATCH_MAX_SECS=60 \
-      bash "$WT/scripts/implement-watch.sh" >"$out" 2>"$err" )
-  rc=$?
-  [ "$rc" -ne 0 ] && ok "watcher exits non-zero on a build that never started" || bad "watcher should fail on phantom launch (rc=$rc)"
-  grep -qi 'FATAL' "$err" 2>/dev/null && ok "FATAL diagnostic on phantom launch" || bad "should emit FATAL (err: $(cat "$err" 2>/dev/null))"
-  ! grep -q '^IMPLEMENT_RUN_COMPLETE' "$out" 2>/dev/null && ok "no false completion when build never ran" || bad "must NOT print completion (out: $(cat "$out" 2>/dev/null))"
+  mkdir -p "$WT/repo/docs/tdd/.implement-logs/nohup.out"
+  out="$WT/b.out"; err="$WT/b.err"
+  ( cd "$WT/repo" && THROUGHLINE_WATCH_POLL_SECS=1 bash "$WT/scripts/implement-watch.sh" >"$out" 2>"$err" ); rc=$?
+  [ "$rc" -ne 0 ] && grep -qi 'FATAL' "$err" 2>/dev/null && ! grep -q '^IMPLEMENT_RUN_COMPLETE' "$out" 2>/dev/null \
+    && ok "unwritable redirect target -> FATAL, no false completion" || bad "redirect failure should fail loud (rc=$rc, out: $(cat "$out" 2>/dev/null))"
+  rmdir "$WT/repo/docs/tdd/.implement-logs/nohup.out" 2>/dev/null
+  rm -f "$WT/repo/docs/tdd/.implement-logs/latest"
 
-  # A genuinely fast build that DID write run-state is NOT a phantom launch.
+  # (c) A build that genuinely STARTED then exited fast WITHOUT writing its own
+  #     run-state is REPORTED as state=unknown (TDD §Failure-modes: "Build crashes
+  #     / single-run lock rejects it … reports state=unknown … No false review"),
+  #     NOT treated as a launch failure. The launch machinery was fine, so this is
+  #     the runner's domain, not the watcher's.
+  out="$WT/c.out"
+  ( cd "$WT/repo" && THROUGHLINE_WATCH_POLL_SECS=1 bash "$WT/scripts/implement-watch.sh" >"$out" 2>"$WT/c.err" )
+  ln="$(grep '^IMPLEMENT_RUN_COMPLETE' "$out" 2>/dev/null)"
+  case "$ln" in *"state=unknown"*"candidate_learnings=no"*) ok "started-but-fast-dying build reported state=unknown (not fatal)" ;; *) bad "fast-dying started build must be reported per §Failure-modes ($ln)" ;; esac
+
+  # (d) A genuinely fast build that DID write run-state still completes normally.
   cat > "$WT/scripts/implement.sh" <<'EOF'
 #!/usr/bin/env bash
 LOGS="$PWD/docs/tdd/.implement-logs"
@@ -389,18 +410,10 @@ mkdir -p "$LOGS/run1/state.d"
 printf '{"schema":1,"state":"done"}\n' > "$LOGS/run1/state.d/run.json"
 ln -sfn run1 "$LOGS/latest"
 EOF
-  out2="$WT/out2.txt"
-  ( cd "$WT/repo" && THROUGHLINE_WATCH_POLL_SECS=1 THROUGHLINE_WATCH_MAX_SECS=60 \
-      bash "$WT/scripts/implement-watch.sh" >"$out2" 2>"$WT/err2.txt" )
-  grep -q '^IMPLEMENT_RUN_COMPLETE' "$out2" 2>/dev/null && ok "a fast build that wrote run-state still completes normally" || bad "fast legit build must still report completion (out: $(cat "$out2" 2>/dev/null))"
-
-  # A missing build script fails loud before any phantom pid is echoed.
-  out3="$WT/out3.txt"; err3="$WT/err3.txt"
-  ( cd "$WT/repo" && THROUGHLINE_WATCH_BUILD_SCRIPT="$WT/scripts/nope-missing.sh" \
-      THROUGHLINE_WATCH_POLL_SECS=1 bash "$WT/scripts/implement-watch.sh" >"$out3" 2>"$err3" )
-  rc3=$?
-  [ "$rc3" -ne 0 ] && grep -qi 'FATAL' "$err3" 2>/dev/null && ! grep -q 'launched build pid' "$out3" 2>/dev/null \
-    && ok "missing build script -> FATAL, no phantom pid" || bad "missing build script should fail loud (rc=$rc3, out: $(cat "$out3" 2>/dev/null))"
+  out="$WT/d.out"
+  ( cd "$WT/repo" && THROUGHLINE_WATCH_POLL_SECS=1 bash "$WT/scripts/implement-watch.sh" >"$out" 2>"$WT/d.err" )
+  ln="$(grep '^IMPLEMENT_RUN_COMPLETE' "$out" 2>/dev/null)"
+  case "$ln" in *"state=done"*) ok "fast build that wrote run-state completes normally" ;; *) bad "fast legit build must report completion ($ln)" ;; esac
 ) || true
 
 echo
