@@ -475,6 +475,45 @@ echo "[F7b] _rework_extract_finding marks a structural:true halting finding for 
   [ "${RWK_STRUCTURAL:-0}" = "1" ] && ok "RWK_STRUCTURAL 1 for structural:true (FR-67c escalation)" || bad "RWK_STRUCTURAL should be 1 (got '${RWK_STRUCTURAL:-}')"
 ) || true
 
+# --- §5/§5b: author self-review block + unattended-mode build-prompt safety ----
+echo "[B1] build-prompt.md carries the §5 SELF_REVIEW_BEGIN..END block (FR-60)"
+( cd "$REPO"; F="scripts/build-prompt.md"
+  grep -q 'SELF_REVIEW_BEGIN' "$F" && ok "has SELF_REVIEW_BEGIN" || bad "build prompt needs SELF_REVIEW_BEGIN (§5)"
+  grep -q 'SELF_REVIEW_END' "$F" && ok "has SELF_REVIEW_END" || bad "build prompt needs SELF_REVIEW_END (§5)"
+  grep -q 'checked_categories' "$F" && ok "lists checked_categories" || bad "build prompt needs checked_categories (§5)"
+  grep -q 'diff-vs-tdd-claims' "$F" && ok "names the diff-vs-tdd-claims category" || bad "build prompt needs the diff-vs-tdd-claims category (§5)"
+  grep -qi 'FR-60' "$F" && ok "cites FR-60" || bad "build prompt should cite FR-60 for the self-review"
+  # The block must be emitted BEFORE BATCH_RESULT, and halting self-review findings addressed first.
+  grep -qiE 'before .*BATCH_RESULT|ahead of .*BATCH_RESULT' "$F" && ok "places SELF_REVIEW before BATCH_RESULT" || bad "build prompt must require SELF_REVIEW before BATCH_RESULT"
+  grep -qi 'self-review-ignored' "$F" && ok "warns the runner detects self-review-ignored" || bad "build prompt should name the self-review-ignored consequence (§5)"
+) || true
+
+echo "[B2] build-prompt.md carries the §5b(a) AskUserQuestion prohibition (issue #28A)"
+( cd "$REPO"; F="scripts/build-prompt.md"
+  grep -q 'AskUserQuestion' "$F" && ok "names AskUserQuestion" || bad "build prompt needs the AskUserQuestion prohibition (§5b(a))"
+  grep -qiE 'never call .*AskUserQuestion|do not call .*AskUserQuestion|Never .*AskUserQuestion' "$F" && ok "prohibits calling AskUserQuestion" || bad "build prompt must prohibit AskUserQuestion (§5b(a))"
+  grep -q 'BATCH_RESULT: BLOCKED' "$F" && ok "points to BATCH_RESULT: BLOCKED as the escape" || bad "AskUserQuestion prohibition should route to BATCH_RESULT: BLOCKED"
+) || true
+
+echo "[B3] build-prompt.md carries the §5b(b) --no-verify escape for test(failing) commits (issue #28B)"
+( cd "$REPO"; F="scripts/build-prompt.md"
+  grep -q -- '--no-verify' "$F" && ok "names git commit --no-verify" || bad "build prompt needs the --no-verify escape (§5b(b))"
+  grep -qi 'pre-commit' "$F" && ok "explains the pre-commit-hook rejection" || bad "build prompt should explain the pre-commit-hook case (§5b(b))"
+  # The escape is scoped to the test(failing): commit specifically.
+  grep -qE 'no-verify.*test\(failing\)|test\(failing\).*no-verify' "$F" \
+    && ok "scopes --no-verify to the test(failing): commit" \
+    || { grep -B2 -A2 -- '--no-verify' "$F" | grep -qi 'test(failing)' && ok "scopes --no-verify to the test(failing): commit" || bad "--no-verify must be scoped to the test(failing): commit (§5b(b))"; }
+) || true
+
+echo "[B4] skills/implement/SKILL.md documents the author self-review + the §5b additions"
+( cd "$REPO"; F="skills/implement/SKILL.md"
+  grep -qi 'self-review' "$F" && ok "describes the author self-review" || bad "SKILL.md should describe the FR-60 author self-review (§5)"
+  grep -q 'SELF_REVIEW' "$F" && ok "names the SELF_REVIEW block" || bad "SKILL.md should name the SELF_REVIEW block"
+  grep -qi 'FR-60' "$F" && ok "cites FR-60" || bad "SKILL.md should cite FR-60"
+  grep -q 'AskUserQuestion' "$F" && ok "cross-references the AskUserQuestion prohibition" || bad "SKILL.md should cross-reference §5b(a)"
+  grep -q -- '--no-verify' "$F" && ok "cross-references the --no-verify escape" || bad "SKILL.md should cross-reference §5b(b)"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
