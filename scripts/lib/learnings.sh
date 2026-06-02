@@ -84,8 +84,28 @@ _split_findings_objects() {
   printf '%s' "$arr" | sed 's/},{"source":/}\n{"source":/g'
 }
 
-# Extract a single string field's (already-escaped) value from one finding object.
-_finding_field() { printf '%s' "$1" | sed -n "s/.*\"$2\":\"\\([^\"]*\\)\".*/\\1/p" | head -1; }
+# Extract a single string field's value from one finding object, with JSON
+# escapes PRESERVED and an embedded \" handled — the walk respects backslash
+# escapes and stops at the first UNescaped quote. A naive [^"]* match would
+# truncate at an embedded \" and leave a dangling backslash that corrupts the
+# re-embedded JSON for quote-bearing review prose (TDD 0022 §Failure modes);
+# this returns valid JSON string content, re-embeddable verbatim inside quotes.
+_finding_field() {  # <obj> <field>
+  printf '%s' "$1" | awk -v K="$2" '
+    {
+      key = "\"" K "\":\""
+      p = index($0, key)
+      if (p == 0) { exit }
+      s = substr($0, p + length(key)); n = length(s); i = 1; out = ""
+      while (i <= n) {
+        c = substr(s, i, 1)
+        if (c == "\\") { out = out substr(s, i, 2); i += 2; continue }
+        if (c == "\"") break
+        out = out c; i++
+      }
+      printf "%s", out
+    }'
+}
 # Extract the pattern_tags array as a space-separated tag list.
 _finding_tags() { printf '%s' "$1" | sed -n 's/.*"pattern_tags":\(\[[^]]*\]\).*/\1/p' | head -1 | tr -d '[]"' | sed 's/,/ /g'; }
 
@@ -136,7 +156,16 @@ detect_build_learnings() {  # <state_dir> <logdir> <mainrepo>
       tags="$(_finding_tags "$obj")"
       [ -z "$tags" ] && continue      # an untagged finding cannot form a class
       struct=0; case "$obj" in *'"structural":true'*) struct=1 ;; esac
-      rework=0; case "$obj" in *'"addressed_by_sha":null'*) : ;; *) rework=1 ;; esac
+      # Rework iff addressed_by_sha is present AND non-null (TDD 0021 §6 stamps a
+      # SHA string when a finding triggers rework, TDD 0019). An ABSENT field
+      # (a pre-0019 finding shape) reads as null → NOT rework — matching the
+      # §1-step-3 spec "any has addressed_by_sha != null".
+      rework=0
+      case "$obj" in
+        *'"addressed_by_sha":null'*) : ;;        # present & null → not rework
+        *'"addressed_by_sha":"'*) rework=1 ;;     # present & non-null SHA → rework
+        *) : ;;                                    # absent → treat as null
+      esac
       for tag in $tags; do
         case " $classes " in *" $tag "*) : ;; *) classes="$classes $tag" ;; esac
         case " ${C_slugs[$tag]:-} " in *" $slug "*) : ;; *) C_slugs[$tag]="${C_slugs[$tag]:-} $slug" ;; esac
