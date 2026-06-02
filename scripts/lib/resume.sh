@@ -182,9 +182,18 @@ _resume_from() {
     local _derived_head
     _derived_head="$(git rev-parse --verify "refs/heads/$branch" 2>/dev/null || true)"
     if [ -n "$_derived_head" ]; then
-      _update_branch_head_at_pause "$slug" "$_derived_head" \
-        || echo "warning: _resume_from $slug: could not record derived branch_head_at_pause" >&2
-      branch_head_at_pause="$_derived_head"
+      # Only adopt the derived head IN MEMORY once it is durably persisted. If the
+      # write fails, leaving the in-memory value set would run the divergence
+      # guard below against a baseline that was never written — masking the
+      # failure and risking an inconsistent decision on a subsequent resume.
+      # On write failure, leave branch_head_at_pause empty so the guard is
+      # skipped (the safe degraded path: the branch is still the ground truth)
+      # and surface the failure.
+      if _update_branch_head_at_pause "$slug" "$_derived_head"; then
+        branch_head_at_pause="$_derived_head"
+      else
+        echo "warning: _resume_from $slug: could not persist derived branch_head_at_pause; skipping divergence guard for this orphan resume" >&2
+      fi
     fi
   fi
 

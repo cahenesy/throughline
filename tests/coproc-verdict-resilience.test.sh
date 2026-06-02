@@ -212,6 +212,18 @@ echo "[§3] status.sh --check-paused surfaces an orphaned building fragment (dea
     && ok "orphaned line names the gate (stage)" || bad "orphaned line should carry gate=build (got: '$out')"
 ) || true
 
+echo "[§3-pid0] pid:0 counts as not-alive (kill -0 0 targets the process group, not a runner)"
+( D="$ROOT/s3p"; mkdir -p "$D/state.d"
+  # pid:0 is never a valid runner pid; `kill -0 0` would spuriously succeed
+  # against the caller's process group, so it must be treated as dead → orphaned.
+  printf '{"schema":1,"pid":0,"state":"interrupted","total":1}\n' > "$D/state.d/run.json"
+  printf '{"schema":1,"n":1,"slug":"0030-p0","queue_pos":1,"status":"building","stage":"build","branch":"feat/0030-p0"}\n' > "$D/state.d/0030-p0.json"
+  out="$(bash "$REPO/scripts/status.sh" --logdir "$D" --check-paused 2>&1)"
+  printf '%s' "$out" | grep -q 'resumable=orphaned' \
+    && ok "pid:0 is treated as not-alive → orphaned line printed" \
+    || bad "pid:0 must not suppress orphan detection (got: '$out')"
+) || true
+
 echo "[§3-neg] a LIVE runner pid is never reported as orphaned (no racing a slow run)"
 ( D="$ROOT/s3n"; mkdir -p "$D/state.d"
   printf '{"schema":1,"pid":%s,"state":"running","total":1}\n' "$$" > "$D/state.d/run.json"   # this test's own (alive) pid
