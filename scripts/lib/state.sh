@@ -836,11 +836,20 @@ _next_actions_for_cause() {
     rework-scope-exceeded)
       echo "resume (retries with stricter scope),revise TDD bounds via /tdd-author" ;;
     structural-finding)
-      echo "revise TDD via /tdd-author,see docs/tdd/BLOCKERS.md" ;;
+      # TDD 0031 §3a: the middle entry begins with `resume`, the machine-readable
+      # marker status.sh --check-paused and _resume_from's blocked arm key on — so
+      # a structural halt becomes resumable ONCE its resolving TDD revision is
+      # merged (the §3c guard enforces the precondition). FR-67 reaffirmed: the
+      # halt still BLOCKs and still cites BLOCKERS.md.
+      echo "revise TDD via /tdd-author,resume after revision (re-runs the halted gate against the revised declarations),see docs/tdd/BLOCKERS.md" ;;
     design-escalation)
       echo "revise TDD via /tdd-author,/adr-new if a constraint is being challenged" ;;
     external-blocker)
       echo "resolve external dependency,see docs/tdd/BLOCKERS.md" ;;
+    resume-blocked-integration-conflict)
+      # TDD 0031 §3c: a structural-resume merge of integration into the build
+      # branch conflicted; the human resolves it, then re-runs /implement.
+      echo "resolve the integration merge conflict on the build branch manually,then re-run /implement with resume" ;;
     *) return 1 ;;
   esac
 }
@@ -852,6 +861,7 @@ _is_paused_cause() {
   case "$1" in
     ratelimit|usage-limit|transient) return 0 ;;
     resume-blocked-build-state-missing|resume-blocked-branch-missing|resume-blocked-branch-divergence) return 0 ;;
+    resume-blocked-integration-conflict) return 0 ;;   # TDD 0031 §3c
     *) return 1 ;;
   esac
 }
@@ -908,6 +918,23 @@ set_halt_cause() {
   last_cleared_sha="$(_read_fragment_field "$f" last_cleared_review_sha)"
   cleared_step_log="$(_read_fragment_cleared_log "$f")"
   if _is_paused_cause "$cause"; then paused_cause="$cause"; else paused_cause=""; fi
+  # TDD 0031 §3b: a structural-finding halt carries a revision fingerprint inside
+  # the free-text detail field so the §3c resume guard can tell whether the
+  # resolving TDD revision has been merged to integration. Derive the TDD blob at
+  # the halt-time HEAD (the build worktree cwd) from the fragment's own `path`.
+  # If the blob cannot be derived (path missing from the branch, empty blob), the
+  # detail is written verbatim with no token and the resume guard degrades to
+  # accept-with-warning. Rides in detail deliberately: no new fragment field, no
+  # schema concern, no change to _write_tdd_fragment's positional signature.
+  if [ "$cause" = "structural-finding" ] && [ -n "$path" ]; then
+    # --verify --quiet: resolve to exactly one object or yield empty (rc≠0). A
+    # bare `git rev-parse HEAD:<missing>` echoes the unresolved arg back to stdout
+    # (and exits non-zero), which `|| true` would capture as a bogus "blob".
+    local tdd_blob
+    if tdd_blob="$(git rev-parse --verify --quiet "HEAD:$path" 2>/dev/null)" && [ -n "$tdd_blob" ]; then
+      if [ -n "$detail" ]; then detail="$detail tdd_rev=$tdd_blob"; else detail="tdd_rev=$tdd_blob"; fi
+    fi
+  fi
   now=$(date +%s)
   if ! _write_tdd_fragment "$slug" "${n:-0}" "$path" "${qp:-0}" "$status" "$stage" \
     "${sta:-$now}" "$now" "$branch" "$pr_url" "$log" "$note" \
