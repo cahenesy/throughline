@@ -393,14 +393,16 @@ echo "[§4-headfail] derived branch-head write failure: resume still accepted, h
 ) || true
 
 # ===========================================================================
-# §7 (gap 5): review time excluded from the active-time build budget.
+# §7 (gap 5, rev1): review time excluded from the active-time build budget.
 # THROUGHLINE_BUILD_TIMEOUT now bounds ACTIVE build seconds (streaming between
 # sentinels), accounted by the runner; the synchronous per-step review does not
-# count. The `timeout` wrapper is demoted to a 2× backstop.
+# count. The backstop is an INLINE 2× active-time check — there is NO wall-clock
+# `timeout` wrapper (it would count review waits and fire on correct builds).
 echo "[§7a] a per-step review LONGER than the budget does NOT trip the active watchdog (review time excluded)"
 ( D="$ROOT/s7a"; mkdir -p "$D/state.d"
   export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
-  # Active budget 3s; the review sleeps 4s (> budget, < the 2× backstop = 6s).
+  # Active budget 3s; the review sleeps 4s (> budget — but review time is off
+  # the clock, and there is no wall-clock bound to trip: rev1 inline backstop).
   export THROUGHLINE_BUILD_TIMEOUT=3 THROUGHLINE_BUILD_INTER_EVENT_TIMEOUT=30
   TDDS=()
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }

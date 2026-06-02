@@ -552,24 +552,24 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
   model="${MODEL:-}"
   errlog="${log%.log}.build.err"; [ "$errlog" = "$log" ] && errlog="$log.build.err"
   start=$(date +%s)
-  # TDD 0030 §5 (gap 5): THROUGHLINE_BUILD_TIMEOUT is now the ACTIVE build-seconds
-  # budget — the runner accounts only time the build SPENDS streaming between
-  # sentinels, excluding the synchronous per-step review waits (a budget that
-  # counted review time would be dishonest: a long review consuming the build's
-  # budget killed a finished build in the observed incident). `overall_active` is
-  # that budget; the `timeout` wrapper is demoted to a BACKSTOP at 2× the budget
-  # that only covers runner-accounting bugs (firing it is a defect, logged
-  # distinguishably). 0/unlimited/non-numeric handling preserved.
+  # TDD 0030 §5 (gap 5, rev1): THROUGHLINE_BUILD_TIMEOUT is now the ACTIVE
+  # build-seconds budget — the runner accounts only time the build SPENDS
+  # streaming between sentinels, excluding the synchronous per-step review waits
+  # (a budget that counted review time would be dishonest: a long review
+  # consuming the build's budget killed a finished build in the observed
+  # incident). `overall_active` is that budget; the BACKSTOP is an INLINE check
+  # at 2× the budget against the SAME active-seconds counter — there is NO
+  # wall-clock `timeout` wrapper (rev1: any wall-clock bound counts review-wait
+  # time, so it can fire on a correct build under heavy review load while
+  # claiming "runner accounting bug?" — review M1). Firing the backstop is a
+  # defect (the 1× check should always fire first), logged distinguishably.
+  # 0/unlimited/non-numeric handling preserved.
   local overall_active backstop
   case "$overall" in
     0|unlimited|'') overall_active=0; backstop=0 ;;
     *[!0-9]*)       overall_active=7200; backstop=14400 ;;
     *)              overall_active="$overall"; backstop=$((2 * overall)) ;;
   esac
-  local -a tocmd=()
-  if [ "$backstop" -gt 0 ] && command -v timeout >/dev/null 2>&1; then
-    tocmd=(timeout "$backstop")
-  fi
   # --disallowed-tools AskUserQuestion (issue #28A): runner-level belt-and-
   # suspenders for the prompt-level prohibition — the unattended build cannot
   # hang on a question nobody will answer.
@@ -580,7 +580,7 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
   # unaffected.
   local -a ccmd=(claude -p "$prompt" --input-format stream-json --output-format stream-json --verbose --permission-mode auto --disallowed-tools AskUserQuestion)
   [ -n "$model" ] && ccmd+=(--model "$model")
-  coproc BUILD { "${tocmd[@]}" "${ccmd[@]}" 2>>"$errlog"; }
+  coproc BUILD { "${ccmd[@]}" 2>>"$errlog"; }
   local bpid="$BUILD_PID" build_in build_out
   exec {build_in}>&"${BUILD[1]}"
   exec {build_out}<&"${BUILD[0]}"
@@ -603,9 +603,10 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
   # between sentinels (interval_start marks the current active interval's start);
   # it PAUSES across the synchronous per-step review and STOPS after BATCH_RESULT.
   # build_active_seconds accumulates committed intervals; _active_exceeded flags an
-  # active-budget kill for the post-loop classifier.
+  # active-budget kill and _backstop_exceeded an inline-backstop kill for the
+  # post-loop classifier.
   local evt text step_id sha verdict read_rc=0
-  local build_active_seconds=0 interval_start clock_active=1 _active_exceeded=0 _now _active
+  local build_active_seconds=0 interval_start clock_active=1 _active_exceeded=0 _backstop_exceeded=0 _now _active
   interval_start=$(date +%s)   # the spawn → first-STEP_COMMIT interval begins now
   while :; do
     # Capture read's OWN status directly — NOT via `if ! read; then read_rc=$?`,
@@ -626,6 +627,17 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
         # would SIGTERM the runner's own process group (TDD 0030 §5).
         _kill_pid "$bpid"
         _active_exceeded=1
+        break
+      fi
+      # TDD 0030 §5 (rev1): inline 2× backstop — same counter, same accumulation
+      # point. Reachable ONLY if the primary 1× check above failed to fire (a
+      # threshold-comparison regression); firing it is a runner defect. Review
+      # waits can never reach it: the clock is paused across reviews, so unlike
+      # a wall-clock wrapper this cannot fire on a correct build under heavy
+      # review load (review M1).
+      if [ "$backstop" -gt 0 ] && [ "$_active" -gt "$backstop" ]; then
+        _kill_pid "$bpid"
+        _backstop_exceeded=1
         break
       fi
     fi
@@ -716,13 +728,14 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
     printf 'THROUGHLINE_BUILD_TIMEOUT: build timed out — active build-seconds budget %ss exceeded (build-overall-timeout) (transient)\n' "$overall_active" >> "$log"
     return 124
   fi
-  # Backstop fired: the `timeout` wrapper (2× the active budget) exits 124. This
-  # should NOT happen if the active accounting is correct — firing it is a runner-
-  # accounting defect, logged distinguishably (THROUGHLINE_BUILD_BACKSTOP, never
-  # conflated with the active timeout above) while still carrying "timed out" +
-  # build-overall-timeout so the classification + triage path is unchanged.
-  if [ "$wrc" = "124" ]; then
-    printf 'THROUGHLINE_BUILD_BACKSTOP: hard backstop fired at %ss — build timed out (runner accounting bug?) (build-overall-timeout) (transient)\n' "$backstop" >> "$log"
+  # Backstop fired: the INLINE 2× active-time check (rev1 — no wall-clock
+  # wrapper) killed the coproc. This should NOT happen if the 1× check is
+  # correct — firing it is a runner-accounting defect, logged distinguishably
+  # (THROUGHLINE_BUILD_BACKSTOP, never conflated with the active timeout above)
+  # while still carrying "timed out" + build-overall-timeout so the
+  # classification + triage path is unchanged.
+  if [ "$_backstop_exceeded" -eq 1 ]; then
+    printf 'THROUGHLINE_BUILD_BACKSTOP: hard backstop fired at %ss active — build timed out (runner accounting bug?) (build-overall-timeout) (transient)\n' "$backstop" >> "$log"
     return 124
   fi
   # Deadlock kill path: surface a SIGTERM-equivalent code → transient.
