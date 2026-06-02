@@ -244,6 +244,65 @@ assert d["absent-class"]["triggered_rework"] is False, "absent-class should be f
   fi
 ) || true
 
+# --- §3: the watcher --------------------------------------------------------
+# The watcher resolves implement.sh next to itself (SCRIPT_DIR) and the logs dir
+# from $PWD, so each scenario builds a throwaway scripts/ + repo/ pair and drops
+# a STUB implement.sh beside a copy of the real watcher.
+
+echo "[S13] watcher prints IMPLEMENT_RUN_COMPLETE and removes .watch.pid on build exit"
+( WT="$ROOT/S13"; mkdir -p "$WT/scripts" "$WT/repo/docs/tdd/.implement-logs"
+  cp "$WATCH" "$WT/scripts/implement-watch.sh"
+  cat > "$WT/scripts/implement.sh" <<'EOF'
+#!/usr/bin/env bash
+LOGS="$PWD/docs/tdd/.implement-logs"
+mkdir -p "$LOGS/run1/state.d"
+printf '{"schema":1,"state":"done"}\n' > "$LOGS/run1/state.d/run.json"
+printf '[{"class":"x"}]\n' > "$LOGS/run1/candidate-learnings.json"
+ln -sfn run1 "$LOGS/latest"
+EOF
+  out="$WT/out.txt"
+  ( cd "$WT/repo" && THROUGHLINE_WATCH_POLL_SECS=1 THROUGHLINE_WATCH_MAX_SECS=60 \
+      bash "$WT/scripts/implement-watch.sh" >"$out" 2>&1 )
+  grep -q 'launched build pid ' "$out" 2>/dev/null && ok "watcher echoes the build pid" || bad "watcher should echo 'launched build pid' (got: $(cat "$out" 2>/dev/null))"
+  line="$(grep '^IMPLEMENT_RUN_COMPLETE' "$out" 2>/dev/null)"
+  [ -n "$line" ] && ok "IMPLEMENT_RUN_COMPLETE line printed" || bad "watcher should print IMPLEMENT_RUN_COMPLETE (got: $(cat "$out" 2>/dev/null))"
+  case "$line" in *"state=done"*) ok "state=done reported" ;; *) bad "expected state=done ($line)" ;; esac
+  case "$line" in *"candidate_learnings=yes"*) ok "candidate_learnings=yes reported" ;; *) bad "expected candidate_learnings=yes ($line)" ;; esac
+  case "$line" in *"logdir=/"*) ok "logdir is absolute" ;; *) bad "logdir should be an absolute path ($line)" ;; esac
+  [ ! -f "$WT/repo/docs/tdd/.implement-logs/.watch.pid" ] && ok ".watch.pid removed on exit" || bad ".watch.pid should be removed"
+) || true
+
+echo "[S14] SIGUSR1 shortcuts the poll sleep (exit well before MAX, build still alive)"
+( WT="$ROOT/S14"; mkdir -p "$WT/scripts" "$WT/repo/docs/tdd/.implement-logs"
+  cp "$WATCH" "$WT/scripts/implement-watch.sh"
+  cat > "$WT/scripts/implement.sh" <<'EOF'
+#!/usr/bin/env bash
+LOGS="$PWD/docs/tdd/.implement-logs"
+mkdir -p "$LOGS/run1/state.d"
+printf '{"schema":1,"state":"done"}\n' > "$LOGS/run1/state.d/run.json"
+ln -sfn run1 "$LOGS/latest"
+echo $$ > "$LOGS/.stub.pid"
+sleep 60
+EOF
+  out="$WT/out.txt"; pidf="$WT/repo/docs/tdd/.implement-logs/.watch.pid"
+  # POLL=30 so a NON-signalled watcher would still be asleep when we assert.
+  ( cd "$WT/repo" && THROUGHLINE_WATCH_POLL_SECS=30 THROUGHLINE_WATCH_MAX_SECS=300 \
+      bash "$WT/scripts/implement-watch.sh" >"$out" 2>&1 ) &
+  bgpid=$!
+  # Wait for the watcher to record its pid.
+  i=0; while [ ! -f "$pidf" ] && [ "$i" -lt 50 ]; do sleep 0.2; i=$((i+1)); done
+  wp="$(cat "$pidf" 2>/dev/null)"
+  sleep 1   # let the watcher enter its sleep
+  if [ -n "$wp" ]; then kill -USR1 "$wp" 2>/dev/null; fi
+  # The watcher should now exit promptly (well under the 30s poll).
+  i=0; while kill -0 "$bgpid" 2>/dev/null && [ "$i" -lt 16 ]; do sleep 0.5; i=$((i+1)); done
+  if kill -0 "$bgpid" 2>/dev/null; then bad "watcher did not wake on SIGUSR1 within ~8s (POLL=30)"; kill "$bgpid" 2>/dev/null; else ok "watcher woke on SIGUSR1 before the poll elapsed"; fi
+  wait "$bgpid" 2>/dev/null
+  grep -q '^IMPLEMENT_RUN_COMPLETE' "$out" 2>/dev/null && ok "completion line printed after wake" || bad "should print completion line after SIGUSR1 wake (got: $(cat "$out" 2>/dev/null))"
+  # Clean up the still-sleeping stub build.
+  sp="$(cat "$WT/repo/docs/tdd/.implement-logs/.stub.pid" 2>/dev/null)"; [ -n "$sp" ] && kill "$sp" 2>/dev/null
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
