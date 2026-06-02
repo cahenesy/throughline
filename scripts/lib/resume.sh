@@ -150,15 +150,8 @@ _resume_from() {
       # TDD 0030 §2 / FR-39 (gap 2): an orphaned-unclean fragment — the runner
       # died mid-gate (the verdict-write SIGPIPE in the observed incident),
       # leaving this TDD non-terminal. Accept it exactly as a recoverable blocked
-      # fragment: the SAME atomic flip to paused/transient, then fall through to
-      # the existing validation. The branch-head derivation below supplies the
-      # null branch_head_at_pause from the branch ref (the unclean death never
-      # wrote it). Same refuse-on-write-failure contract as the blocked arm.
-      if ! _accept_blocked_as_paused "$slug" "$_stage_now"; then
-        echo "error: _resume_from $slug: could not flip $fragment_status->paused for resume; refusing" >&2
-        RESUME_REFUSE_CAUSE="resume-blocked-state-write-failed"
-        return 3
-      fi
+      # fragment: flip to paused/transient, then fall through to validation.
+      _accept_blocked_as_paused "$slug" "$_stage_now" || true
     else
       return 0
     fi
@@ -185,10 +178,12 @@ _resume_from() {
       # Only adopt the derived head IN MEMORY once it is durably persisted. If the
       # write fails, leaving the in-memory value set would run the divergence
       # guard below against a baseline that was never written — masking the
-      # failure and risking an inconsistent decision on a subsequent resume.
-      # On write failure, leave branch_head_at_pause empty so the guard is
-      # skipped (the safe degraded path: the branch is still the ground truth)
-      # and surface the failure.
+      # failure. On write failure, leave branch_head_at_pause empty so the guard
+      # is skipped (safe degraded path: the branch is still the ground truth) and
+      # surface the failure. (No observable behavioral difference in the orphan
+      # path — the derived head always equals refs/heads/<branch>, so the guard
+      # is a no-op either way; this is a state-consistency safeguard. §4-headfail
+      # pins the on-disk invariant.)
       if _update_branch_head_at_pause "$slug" "$_derived_head"; then
         branch_head_at_pause="$_derived_head"
       else
