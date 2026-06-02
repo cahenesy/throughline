@@ -685,6 +685,75 @@ echo "[G2] §8b: persistent incomplete coverage → BLOCKED rework-budget-exhaus
   grep -qi 'incomplete-file-coverage\|coverage' "$D/repo/docs/tdd/BLOCKERS.md" 2>/dev/null && ok "BLOCKERS.md names the coverage trigger" || bad "BLOCKERS.md should name the coverage trigger (got: $(cat "$D/repo/docs/tdd/BLOCKERS.md" 2>/dev/null))"
 ) || true
 
+# --- §5/§7 / Sequencing item 7: BATCH_RESULT SELF_REVIEW block parser ----------
+# The runner extracts the build's terminal SELF_REVIEW_BEGIN..SELF_REVIEW_END
+# block, records each FINDING inside it onto findings[] with source:self-review,
+# and bumps self_review_count by the number recorded (verification §5). The block
+# carries the §1 finding shape, so the §1 parser is reused on the extracted region.
+
+echo "[SR1] _record_self_review_findings records the SELF_REVIEW block's findings (source:self-review) + bumps self_review_count (§5)"
+( D="$ROOT/SR1"; mkdir -p "$D/state.d"; _f4_frag "$D" || { bad "source guard missing"; exit 0; }
+  L="$D/build.log"
+  { printf 'some build narrative line\n';
+    printf 'SELF_REVIEW_BEGIN\n';
+    printf 'checked_categories:\n  - test-first-discipline\n  - diff-vs-tdd-claims\n';
+    printf 'findings:\n';
+    printf '  FINDING_BEGIN\n  severity: minor\n  structural: false\n  region: scripts/x.sh:3-4\n  region_lines: 2\n  pattern_tags: [naming]\n  summary: clearer name\n  evidence: the renamed var\n  FINDING_END\n';
+    printf '  FINDING_BEGIN\n  severity: major\n  structural: false\n  region: scripts/y.sh:10-12\n  region_lines: 3\n  pattern_tags: [missing-handling]\n  summary: unhandled failure mode\n  evidence: the path with no guard\n  FINDING_END\n';
+    printf 'SELF_REVIEW_END\n';
+    printf 'BATCH_RESULT: OK\n'; } > "$L"
+  n="$(_record_self_review_findings 0021-x "$L")"
+  F="$D/state.d/0021-x.json"
+  [ "$n" = "2" ] && ok "echoes 2 self-review findings recorded" || bad "should echo 2 (got '$n')"
+  c="$(grep -o '"source":"self-review"' "$F" 2>/dev/null | wc -l | tr -d ' ')"
+  [ "$c" = "2" ] && ok "two source:self-review findings on findings[]" || bad "expected 2 self-review findings (got $c) in $(cat "$F")"
+  grep -q '"self_review_count":2' "$F" 2>/dev/null && ok "self_review_count bumped to 2" || bad "self_review_count should be 2 (got: $(cat "$F"))"
+  grep -q '"source":"self-review".*"severity":"major"' "$F" 2>/dev/null && ok "the major self-review finding is recorded with its severity" || bad "major self-review finding must record severity:major"
+  grep -q 'unhandled failure mode' "$F" 2>/dev/null && ok "self-review finding summary carried through" || bad "self-review summary must be recorded"
+) || true
+
+echo "[SR2] _record_self_review_findings is a no-op when the build log has no SELF_REVIEW block"
+( D="$ROOT/SR2"; mkdir -p "$D/state.d"; _f4_frag "$D" || { bad "source guard missing"; exit 0; }
+  L="$D/build.log"; printf 'just a narrative\nBATCH_RESULT: OK\n' > "$L"
+  n="$(_record_self_review_findings 0021-x "$L")"
+  F="$D/state.d/0021-x.json"
+  [ "$n" = "0" ] && ok "echoes 0 (no block)" || bad "no SELF_REVIEW block should echo 0 (got '$n')"
+  grep -q '"findings":\[\]' "$F" 2>/dev/null && ok "findings stays empty" || bad "findings must stay [] (got: $(cat "$F"))"
+  grep -q '"self_review_count":0' "$F" 2>/dev/null && ok "self_review_count stays 0" || bad "self_review_count must stay 0"
+) || true
+
+echo "[SR3] an empty SELF_REVIEW findings list (clean self-review) records nothing and is valid (§5)"
+( D="$ROOT/SR3"; mkdir -p "$D/state.d"; _f4_frag "$D" || { bad "source guard missing"; exit 0; }
+  L="$D/build.log"
+  { printf 'SELF_REVIEW_BEGIN\n';
+    printf 'checked_categories:\n  - test-first-discipline\nfindings:\n';
+    printf 'SELF_REVIEW_END\n';
+    printf 'BATCH_RESULT: OK\n'; } > "$L"
+  n="$(_record_self_review_findings 0021-x "$L")"
+  F="$D/state.d/0021-x.json"
+  [ "$n" = "0" ] && ok "clean self-review echoes 0" || bad "empty findings should echo 0 (got '$n')"
+  grep -q '"findings":\[\]' "$F" 2>/dev/null && ok "findings stays empty on a clean self-review" || bad "findings must stay [] (got: $(cat "$F"))"
+  grep -q '"self_review_count":0' "$F" 2>/dev/null && ok "self_review_count stays 0 on a clean self-review" || bad "self_review_count must stay 0"
+) || true
+
+echo "[SR4] only the LAST SELF_REVIEW block is parsed (a resumed build's cumulative log may carry an earlier attempt's block)"
+( D="$ROOT/SR4"; mkdir -p "$D/state.d"; _f4_frag "$D" || { bad "source guard missing"; exit 0; }
+  L="$D/build.log"
+  { printf 'SELF_REVIEW_BEGIN\nfindings:\n';
+    printf '  FINDING_BEGIN\n  severity: nit\n  structural: false\n  region: old.sh:1-1\n  region_lines: 1\n  pattern_tags: [stale]\n  summary: STALE prior-attempt finding\n  evidence: x\n  FINDING_END\n';
+    printf 'SELF_REVIEW_END\n';
+    printf '... later turn ...\n';
+    printf 'SELF_REVIEW_BEGIN\nfindings:\n';
+    printf '  FINDING_BEGIN\n  severity: minor\n  structural: false\n  region: new.sh:2-2\n  region_lines: 1\n  pattern_tags: [naming]\n  summary: FINAL-turn finding\n  evidence: y\n  FINDING_END\n';
+    printf 'SELF_REVIEW_END\n';
+    printf 'BATCH_RESULT: OK\n'; } > "$L"
+  n="$(_record_self_review_findings 0021-x "$L")"
+  F="$D/state.d/0021-x.json"
+  [ "$n" = "1" ] && ok "records only the final-turn block (1 finding)" || bad "should record only the last block's 1 finding (got '$n')"
+  grep -q 'FINAL-turn finding' "$F" 2>/dev/null && ok "the final-turn finding is recorded" || bad "final-turn finding must be recorded"
+  grep -q 'STALE prior-attempt finding' "$F" 2>/dev/null && bad "the stale earlier-attempt block must NOT be re-harvested" || ok "stale earlier-attempt block is not re-harvested"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
