@@ -173,6 +173,24 @@ echo "[S9] non-intersecting file-hints create a SECOND entry (L-002)"
   grep -q '## L-002:' "$LM" 2>/dev/null && ok "second entry numbered L-002" || bad "second entry should be L-002"
 ) || true
 
+echo "[S12] reinforce keeps slugs/run-ids that are substrings of existing values; no tmp residue"
+( D="$ROOT/S12"; mkdir -p "$D/docs/tdd"
+  . "$STATE_LIB"; . "$LEARN_LIB"
+  # First entry: slug 0010-abc, run-111 (the longer values).
+  append_accepted_learning "$D" "dup-class" "src/x.sh" "dup-class" \
+    "0010-abc" "major–major" "c" "e" "run-111"
+  # Reinforce with shorter values that are SUBSTRINGS of the existing ones.
+  # A text-contains idempotency check would silently drop both.
+  append_accepted_learning "$D" "dup-class" "src/x.sh" "dup-class" \
+    "0010-ab" "major–major" "c" "e" "run-11"
+  LM="$D/docs/tdd/LEARNINGS.md"
+  n="$(grep -c '^## L-' "$LM" 2>/dev/null)"; n="${n:-0}"
+  [ "$n" = "1" ] && ok "still one entry after reinforce" || bad "expected 1 entry, got $n"
+  grep -ow 'run-111' "$LM" >/dev/null 2>&1 && grep -ow 'run-11' "$LM" >/dev/null 2>&1 && ok "both run-111 and substring run-11 recorded" || bad "substring run id run-11 must not be dropped ($(grep '^- Recurred' "$LM"))"
+  grep -ow '0010-abc' "$LM" >/dev/null 2>&1 && grep -ow '0010-ab' "$LM" >/dev/null 2>&1 && ok "both 0010-abc and substring 0010-ab recorded" || bad "substring slug 0010-ab must not be dropped ($(grep '^- Recurred' "$LM"))"
+  ls "$D/docs/tdd"/*.tmp.* >/dev/null 2>&1 && bad "atomic write must leave no .tmp residue" || ok "no temp-file residue after atomic append"
+) || true
+
 echo "[S10] quote-bearing review prose -> candidate-learnings.json stays valid JSON"
 ( D="$ROOT/S10"; SD="$D/state.d"; mkdir -p "$SD" "$D/docs/tdd"
   export STATE_DIR="$SD" STATE_STARTED_AT=1000 STATE_MODE="sequential"
