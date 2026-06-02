@@ -75,6 +75,12 @@ Status: draft
 TDD
   git add -A; git commit -q -m "init"
   BUILD_START="$(git rev-parse HEAD)"
+  # A build-output commit PAST build-start so the consolidated review scope
+  # BUILD_START..HEAD is non-empty — what a real build always produces. TDD 0031
+  # §2's empty-scope guard in review_one fails closed on a HEAD..HEAD scope, so a
+  # build-start that equals HEAD would short-circuit the verdict-vs-exit-code paths
+  # these scenarios exercise. (The per-step review path is unaffected by the guard.)
+  printf 'build output\n' > foo.txt; git add -A; git commit -q -m "build output"
 }
 
 # --- [VP1] hung gate child self-recovers (gap 1) ---------------------------

@@ -1,6 +1,6 @@
 # TDD 0031: Honest consolidated-review scope on resume + revision-resolved structural-halt resume
 
-Status: draft
+Status: implemented
 PRD refs: FR-15, FR-39, FR-40, FR-57 (gap-closure); FR-63, FR-64, FR-67; NFR-4
 PRD-rev: bfc8ad6
 ADR constraints: 0004, 0005, 0006, 0007

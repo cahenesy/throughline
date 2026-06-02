@@ -460,4 +460,16 @@ if [ -f "$CVR" ]; then
   bash "$CVR" || CVR_FAIL=1
 fi
 
-[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ] && [ "$SMS_FAIL" -eq 0 ] && [ "$PRM_FAIL" -eq 0 ] && [ "$GRM_FAIL" -eq 0 ] && [ "$BRL_FAIL" -eq 0 ] && [ "$RR_FAIL" -eq 0 ] && [ "$BCL_FAIL" -eq 0 ] && [ "$BO_FAIL" -eq 0 ] && [ "$IDP_FAIL" -eq 0 ] && [ "$RES_FAIL" -eq 0 ] && [ "$CVR_FAIL" -eq 0 ]
+# Run the honest-review-scope-structural-resume eval (TDD 0031 / FR-15, FR-39,
+# FR-40, FR-57, FR-63, FR-64, FR-67, NFR-4) as part of the same suite — it pins
+# the honest consolidated-review base + empty-scope fail-closed (gap A) and the
+# revision-resolved structural-halt resume (gap B), all runner-adjacent gates
+# that belong with the other evals above.
+HRS="$(dirname "$0")/honest-review-scope-structural-resume.test.sh"
+HRS_FAIL=0
+if [ -f "$HRS" ]; then
+  echo
+  bash "$HRS" || HRS_FAIL=1
+fi
+
+[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ] && [ "$SMS_FAIL" -eq 0 ] && [ "$PRM_FAIL" -eq 0 ] && [ "$GRM_FAIL" -eq 0 ] && [ "$BRL_FAIL" -eq 0 ] && [ "$RR_FAIL" -eq 0 ] && [ "$BCL_FAIL" -eq 0 ] && [ "$BO_FAIL" -eq 0 ] && [ "$IDP_FAIL" -eq 0 ] && [ "$RES_FAIL" -eq 0 ] && [ "$CVR_FAIL" -eq 0 ] && [ "$HRS_FAIL" -eq 0 ]

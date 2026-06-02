@@ -102,6 +102,9 @@ _update_paused_cause() {
 # and leaves the RESUME_GATES_DONE_<slug> variable unset.
 _resume_from() {
   local slug="$1" f var
+  # TDD 0031 §3c: set when this resume is accepted through the structural-finding
+  # arm, so the integration merge (end of the function) runs only for that case.
+  local _resumed_structural=0
   f="${STATE_DIR:-}/$slug.json"
   # TDD 0011 / iter-4 MAJOR-4: under --resume the fragment MUST exist
   # (state_init's queue-freeze already filtered TDDs without fragments).
@@ -133,6 +136,37 @@ _resume_from() {
     if grep -q '"stage":null' "$f" 2>/dev/null; then _stage_now=""
     else _stage_now="$(sed -n 's/.*"stage":"\([^"]*\)".*/\1/p' "$f" | head -1)"; fi
     if [ "$fragment_status" = "blocked" ] && printf '%s' "$_halt_actions" | grep -qE '(\[|,)"resume'; then
+      # TDD 0031 §3c: a structural-finding halt is resumable ONLY once the resolving
+      # TDD revision has been merged to integration. Guard BEFORE the accept-flip —
+      # a refusal here writes NOTHING, so the fragment keeps its accurate blocked/
+      # structural-finding state (§3a: resume-blocked-tdd-unrevised is never
+      # persisted). On acceptance set _resumed_structural so the integration merge
+      # at the end brings the REVISED TDD into the build branch.
+      local _hc
+      _hc="$(_read_fragment_field "$f" halt_cause)"
+      if [ "$_hc" = "structural-finding" ]; then
+        local _hdetail _recorded_blob _spath _integ_blob
+        _hdetail="$(_read_fragment_field "$f" halt_cause_detail)"
+        _recorded_blob="$(printf '%s' "$_hdetail" | sed -n 's/.*tdd_rev=\([0-9a-f]\{7,\}\).*/\1/p')"
+        _spath="$(sed -n 's/.*"path":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+        _integ_blob=""
+        [ -n "$_spath" ] && _integ_blob="$(git rev-parse --verify --quiet "$INTEGRATION:$_spath" 2>/dev/null)"
+        if [ -n "$_recorded_blob" ] && [ -n "$_integ_blob" ]; then
+          if [ "$_recorded_blob" = "$_integ_blob" ]; then
+            # Integration's TDD is byte-identical to the halt-time copy → NOT
+            # revised. Resuming would re-halt identically; refuse and persist
+            # nothing (the fragment stays blocked/structural-finding).
+            RESUME_REFUSE_CAUSE="resume-blocked-tdd-unrevised"
+            return 3
+          fi
+          _resumed_structural=1   # blobs differ → revised → accept + merge below
+        else
+          # Fingerprint absent (pre-0031 halt) or a blob unresolvable: accept with
+          # a warning. A pointless resume re-halts within one bounded review cycle.
+          echo "warning: _resume_from $slug: structural-finding resume without a resolvable tdd_rev fingerprint (recorded='$_recorded_blob' integration='$_integ_blob'); accepting (degraded — bounded rework limits a pointless resume)" >&2
+          _resumed_structural=1
+        fi
+      fi
       # ATOMIC flip blocked → paused/transient (single write). On failure REFUSE
       # the resume (rc=3) rather than fall through: a half-written fragment would
       # otherwise be treated as a valid resume while the on-disk state contradicts
@@ -239,6 +273,32 @@ _resume_from() {
           || echo "warning: _resume_from $slug: could not update paused_cause (status.sh may show stale cause)" >&2
         return 3   # see BLOCKER-2
       fi
+    fi
+  fi
+
+  # TDD 0031 §3c: integration merge. Bring the REVISED TDD into the build branch
+  # so the resumed gates (review prompt, rework pre-pass declarations, any later
+  # build step) read the revised declarations, not the branch's stale copy. ONLY
+  # for a structural-finding acceptance (the flag set in the blocked arm above),
+  # and AFTER the divergence guard — which must compare against the halt-time head
+  # BEFORE the merge moves it. A merge already present (combined-mode shared
+  # branch) is a git no-op ("Already up to date"). On conflict: abort, persist
+  # resume-blocked-integration-conflict (the fragment is already paused/transient —
+  # only its cause is updated, exactly the resume-blocked-branch-divergence
+  # pattern), and refuse (rc=3). On success: advance branch_head_at_pause to the
+  # post-merge head so the divergence record stays truthful.
+  if [ "$_resumed_structural" -eq 1 ]; then
+    if git merge --no-edit "$INTEGRATION" >/dev/null 2>&1; then
+      local _post_merge_head
+      _post_merge_head="$(git rev-parse --verify HEAD 2>/dev/null || true)"
+      [ -n "$_post_merge_head" ] && { _update_branch_head_at_pause "$slug" "$_post_merge_head" \
+        || echo "warning: _resume_from $slug: could not advance branch_head_at_pause after integration merge" >&2; }
+    else
+      git merge --abort >/dev/null 2>&1 || true
+      RESUME_REFUSE_CAUSE="resume-blocked-integration-conflict"
+      _update_paused_cause "$slug" "$RESUME_REFUSE_CAUSE" \
+        || echo "warning: _resume_from $slug: could not update paused_cause after integration merge conflict" >&2
+      return 3
     fi
   fi
 

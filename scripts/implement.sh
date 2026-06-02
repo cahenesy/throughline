@@ -387,7 +387,10 @@ if [ "$PARALLEL" -eq 1 ]; then
           exit 0
         fi
       fi
-      pre="$(git rev-parse HEAD)"
+      # TDD 0031 §1 (gap A): the HONEST build-start base, not gate-entry HEAD.
+      # Parallel stacks on $BASE; the merge-base equals branch creation on a
+      # fresh build and the true build start on a resumed branch.
+      pre="$(_review_base "$BASE")"
       st="$(gate_one "$tdd" "$pre" "$abslog")"; rc=$?
       printf 'PARSTATUS::%s\n' "$st" >>"$abslog"
       if [ "$rc" -eq 0 ] && [ "$HASGH" -eq 1 ]; then
@@ -470,7 +473,9 @@ else
           continue
         fi
       fi
-      pre="$(git rev-parse HEAD 2>/dev/null || echo "$BASE")"
+      # TDD 0031 §1 (gap A): honest build-start base (merge-base of the combined
+      # branch's stacking base $BASE and HEAD), not gate-entry HEAD.
+      pre="$(_review_base "$BASE")"
       echo ">>> $slug"; st="$(gate_one "$tdd" "$pre" "$log")"; rc=$?
       echo "  $st"; echo "- $slug — $st (log: $log)" >>"$REPORT"
       case "$rc" in
@@ -551,7 +556,11 @@ else
           paused_halt=1; continue
         fi
       fi
-      pre="$(git rev-parse HEAD)"
+      # TDD 0031 §1 (gap A): honest build-start base. Sequential stacks each TDD
+      # on $prev; the merge-base of $prev and HEAD equals branch creation on a
+      # fresh build and the true build start on a resumed branch (where the old
+      # `git rev-parse HEAD` returned the tip, collapsing review to HEAD..HEAD).
+      pre="$(_review_base "$prev")"
       echo ">>> $slug (off $prev)"; st="$(gate_one "$tdd" "$pre" "$log")"; rc=$?; echo "  $st"
       case "$rc" in
         0)

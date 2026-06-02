@@ -185,6 +185,7 @@ _halt_is_paused_cause() {  # <cause>
   case "$1" in
     ratelimit|usage-limit|transient) return 0 ;;
     resume-blocked-build-state-missing|resume-blocked-branch-missing|resume-blocked-branch-divergence) return 0 ;;
+    resume-blocked-integration-conflict) return 0 ;;   # TDD 0031 §3c (mirrors state.sh:_is_paused_cause)
     *) return 1 ;;
   esac
 }
@@ -197,6 +198,7 @@ _halt_cause_known() {  # <cause>
     resume-blocked-branch-missing|resume-blocked-branch-divergence) return 0 ;;
     rework-budget-exhausted|rework-scope-exceeded|structural-finding) return 0 ;;
     design-escalation|external-blocker) return 0 ;;
+    resume-blocked-integration-conflict) return 0 ;;   # TDD 0031 §3c (mirrors state.sh enum)
     *) return 1 ;;
   esac
 }
