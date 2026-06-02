@@ -49,6 +49,7 @@ EOF
 prompt=""; argv="\$*"
 while [ \$# -gt 0 ]; do case "\$1" in -p) prompt="\$2"; shift 2;; *) shift;; esac; done
 if printf '%s' "\$prompt" | grep -q 'INDEPENDENT review gate'; then
+  s="\$(cat "$d/ctl/review_sleep" 2>/dev/null || echo 0)"; [ "\$s" != 0 ] && sleep "\$s"
   n=\$(cat "$d/ctl/revcount" 2>/dev/null || echo 0); n=\$((n+1)); echo "\$n" > "$d/ctl/revcount"
   printf '%s' "\$prompt" > "$d/ctl/review-prompt.\$n"
   cat "$d/ctl/review.out" 2>/dev/null || echo "REVIEW_RESULT: PASS"
@@ -389,6 +390,78 @@ echo "[§4-headfail] derived branch-head write failure: resume still accepted, h
   bh="$(_read_fragment_field "$F" branch_head_at_pause)"
   [ -z "$bh" ] && ok "branch_head_at_pause left null on disk (no never-persisted baseline adopted)" \
     || bad "branch_head_at_pause should stay null when the write fails (got '$bh')"
+) || true
+
+# ===========================================================================
+# §7 (gap 5): review time excluded from the active-time build budget.
+# THROUGHLINE_BUILD_TIMEOUT now bounds ACTIVE build seconds (streaming between
+# sentinels), accounted by the runner; the synchronous per-step review does not
+# count. The `timeout` wrapper is demoted to a 2× backstop.
+echo "[§7a] a per-step review LONGER than the budget does NOT trip the active watchdog (review time excluded)"
+( D="$ROOT/s7a"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  # Active budget 3s; the review sleeps 4s (> budget, < the 2× backstop = 6s).
+  export THROUGHLINE_BUILD_TIMEOUT=3 THROUGHLINE_BUILD_INTER_EVENT_TIMEOUT=30
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  setup_step_repo "$D/repo" || { bad "setup failed"; exit 0; }
+  echo 4 > "$D/repo/ctl/review_sleep"
+  _write_tdd_fragment 0030-fix 30 docs/tdd/0030-fix.md 1 building build 1000 1000 "feat/0030-fix" "" log "" "" "" "" "" "" "" "" "" "" "" ""
+  cat > "$D/repo/ctl/build_plan" <<'EOF'
+IFS= read -r _init || true
+echo "line 1" >> src/a.txt
+git add -A >/dev/null 2>&1; git commit -q -m "step(1): work" >/dev/null 2>&1
+echo "STEP_COMMIT: 1 $(git rev-parse HEAD)"
+IFS= read -r _reply || true
+echo "BATCH_RESULT: OK"
+EOF
+  _per_step_review_loop 0030-fix docs/tdd/0030-fix.md "$D/s7a.log"; rc=$?
+  [ "$rc" -eq 0 ] && ok "build finishes cleanly despite a review longer than the budget (rc=0)" \
+    || bad "review time must not count against the active budget (rc=$rc)"
+  grep -q 'BATCH_RESULT: OK' "$D/s7a.log" && ok "BATCH_RESULT reached (build not killed mid-review)" || bad "BATCH_RESULT should be reached"
+  ! grep -q 'THROUGHLINE_BUILD_TIMEOUT' "$D/s7a.log" && ok "no active-timeout fired during the long review" || bad "active watchdog must not fire on review wait"
+  ! grep -q 'THROUGHLINE_BUILD_BACKSTOP' "$D/s7a.log" && ok "backstop did not fire" || bad "backstop must not fire under the active budget"
+) || true
+
+echo "[§7b] streaming PAST the active budget after a review trips the active watchdog (not the backstop)"
+( D="$ROOT/s7b"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  export THROUGHLINE_BUILD_TIMEOUT=3 THROUGHLINE_BUILD_INTER_EVENT_TIMEOUT=30
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  setup_step_repo "$D/repo" || { bad "setup failed"; exit 0; }
+  _write_tdd_fragment 0030-fix 30 docs/tdd/0030-fix.md 1 building build 1000 1000 "feat/0030-fix" "" log "" "" "" "" "" "" "" "" "" "" "" ""
+  # Fast review (~0); after the verdict the build streams non-sentinel events
+  # well past the 3s active budget, never emitting BATCH_RESULT.
+  cat > "$D/repo/ctl/build_plan" <<'EOF'
+IFS= read -r _init || true
+echo "line 1" >> src/a.txt
+git add -A >/dev/null 2>&1; git commit -q -m "step(1): work" >/dev/null 2>&1
+echo "STEP_COMMIT: 1 $(git rev-parse HEAD)"
+IFS= read -r _reply || true
+while true; do echo '{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}'; sleep 0.2; done
+EOF
+  t0=$(date +%s)
+  _per_step_review_loop 0030-fix docs/tdd/0030-fix.md "$D/s7b.log"; rc=$?
+  t1=$(date +%s)
+  [ "$rc" = "124" ] && ok "active watchdog returns 124 (the existing overall-timeout code)" \
+    || bad "post-review streaming past the budget should return 124 (got $rc)"
+  grep -q 'THROUGHLINE_BUILD_TIMEOUT' "$D/s7b.log" && grep -q 'build-overall-timeout' "$D/s7b.log" \
+    && ok "log records the active-timeout with the build-overall-timeout classification" \
+    || bad "log should record build-overall-timeout (got tail: $(tail -2 "$D/s7b.log" 2>/dev/null))"
+  ! grep -q 'THROUGHLINE_BUILD_BACKSTOP' "$D/s7b.log" \
+    && ok "the active watchdog fired, NOT the backstop" || bad "active accounting must fire before the backstop"
+  ! grep -q 'BATCH_RESULT' "$D/s7b.log" && ok "no BATCH_RESULT fabricated" || bad "must not fabricate a BATCH_RESULT"
+  [ $((t1 - t0)) -lt 20 ] && ok "killed near the active cap, not left running" || bad "build should be killed near the active cap"
+) || true
+
+echo "[§7c] the backstop is a distinguishable 2× derivation (never conflated with the active timeout)"
+( cd "$REPO"
+  F="scripts/lib/gates.sh"
+  grep -q 'THROUGHLINE_BUILD_BACKSTOP' "$F" && ok "gates.sh logs a distinct THROUGHLINE_BUILD_BACKSTOP line" \
+    || bad "gates.sh must log THROUGHLINE_BUILD_BACKSTOP so a backstop fire is never read as an active timeout"
+  grep -qE '2 ?\* ?overall|overall ?\* ?2|backstop=\$\(\(2' "$F" && ok "backstop is derived as 2× the active budget" \
+    || bad "backstop should derive from 2× the active budget"
 ) || true
 
 # --- report ----------------------------------------------------------------
