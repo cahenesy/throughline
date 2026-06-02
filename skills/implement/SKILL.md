@@ -56,6 +56,19 @@ that asks.
      A plain (non-`--resume`) re-run would silently rebuild the finished,
      reviewed work, so the orphaned line MUST be surfaced for the user's
      resume/fresh decision.
+   - A `resumable=blocked` line with `cause=structural-finding` (TDD 0031 /
+     FR-39, FR-67, gap B) carries a precondition: the halt is resumable ONLY
+     once the resolving TDD revision has been merged to integration. Surface
+     it for Resume, but label the option so the user knows the precondition
+     (step 3 below). On `--resume` the runner re-checks: if the integration
+     copy of the TDD is byte-identical to the halt-time copy (unrevised), it
+     refuses with `resume-blocked-tdd-unrevised` (driver-report-only — the
+     fragment stays blocked/structural-finding, nothing is persisted); if the
+     revision IS merged, it merges integration into the build branch and
+     re-runs the halted gate against the revised declarations. A merge that
+     conflicts refuses with `resume-blocked-integration-conflict` (a persisted
+     paused cause), naming the manual conflict-resolution step. Both refusal
+     causes appear on the runner's `refuse-to-resume: <cause>` report line.
 2. **Lock-alive race guard (TDD 0011 / iter-3 MAJOR-2).** A paused
    fragment can briefly coexist with a live lock — the runner's atomic
    `mv` lands the fragment a moment before the EXIT trap removes
@@ -73,7 +86,11 @@ that asks.
    - If lock dies during the polling window, proceed to step 3.
 3. Surface the interrupted run via `AskUserQuestion`. Options:
    - **Resume from `<gate>` on `<slug>`** — re-launch the runner with
-     `--resume` so gates already completed are not re-run.
+     `--resume` so gates already completed are not re-run. For a
+     `cause=structural-finding` line, label this option **"Resume `<slug>`
+     (structural halt; requires the resolving TDD revision to be merged
+     first)"** so the user is told the precondition at decision time (TDD
+     0031 / FR-64).
    - **Start fresh (discard paused state)** — delete `state.d/*.json`
      under the prior run's logdir (preserving the rest of the run dir
      for forensic value) AND remove the `latest` symlink so a stray

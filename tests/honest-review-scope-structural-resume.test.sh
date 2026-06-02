@@ -335,6 +335,65 @@ echo "[§8] integration merge conflict refuses cleanly with a persisted cause"
     && bad "conflict markers left on disk" || ok "no conflict markers on disk (worktree clean)"
 ) || true
 
+# ===========================================================================
+# §9 (gap B): both refusal outcomes render correctly in status.sh.
+# Fixture A — the point-8 conflict fragment: full render emits no raw-render
+# fallback warning (the carried structural-finding cause is known), and
+# --check-paused surfaces the persisted conflict cause.
+echo "[§9-A] the conflict outcome renders correctly in status.sh (no unknown-cause warning; --check-paused surfaces it)"
+( TDDS=(); THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  _setup_structural_halt "$ROOT/s9a" 1 1 || { bad "setup failed"; exit 0; }
+  _resume_from 0031-fix >/dev/null 2>&1   # → merge conflict, persists resume-blocked-integration-conflict
+  printf '{"schema":1,"started_at":1000,"updated_at":1001,"pid":1,"state":"paused","total":1,"completed":0,"failed":0,"blocked":0,"skipped":0,"paused":1}\n' > "$STATE_DIR/run.json"
+  out="$(bash "$REPO/scripts/status.sh" --logdir "$LOGDIR" 2>&1)"
+  printf '%s' "$out" | grep -qi 'unknown halt_cause' \
+    && bad "status.sh must not emit a raw-render fallback warning (got: $out)" \
+    || ok "full render emits no unknown-cause fallback warning"
+  cp="$(bash "$REPO/scripts/status.sh" --logdir "$LOGDIR" --check-paused 2>&1)"
+  printf '%s' "$cp" | grep -q 'cause=resume-blocked-integration-conflict' \
+    && ok "--check-paused surfaces the persisted conflict cause" || bad "--check-paused should surface the conflict cause (got: $cp)"
+) || true
+
+# §9-A2: when the conflict cause IS the rendered cause (the _halt_field fallback /
+# a conflict-cause halt), status.sh renders its next-action text + a Resume:
+# trailer with no fallback warning — exercising BOTH new status.sh mirror arms
+# (_halt_cause_known + _halt_is_paused_cause).
+echo "[§9-A2] a conflict-cause halt renders its next-action text + Resume trailer (status.sh mirrors)"
+( D="$ROOT/s9a2"; mkdir -p "$D/state.d"; cd "$D" || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=(); THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  printf '{"schema":1,"started_at":1000,"updated_at":1001,"pid":1,"state":"paused","total":1,"completed":0,"failed":0,"blocked":0,"skipped":0,"paused":1}\n' > "$D/state.d/run.json"
+  _write_tdd_fragment 0031-fix 31 docs/tdd/0031-fix.md 1 paused review 1000 1000 "feat/0031-fix" "" log "" "" "" "" "" "" "" "" "" "" "" ""
+  set_halt_cause 0031-fix resume-blocked-integration-conflict review:1 "merge conflict on src/a.txt"
+  out="$(bash "$REPO/scripts/status.sh" --logdir "$D" 2>&1)"
+  printf '%s' "$out" | grep -qi 'unknown halt_cause' \
+    && bad "must not warn unknown-cause for resume-blocked-integration-conflict (got: $out)" || ok "conflict cause renders without a fallback warning"
+  printf '%s' "$out" | grep -q 'resolve the integration merge conflict on the build branch manually' \
+    && ok "render shows the conflict cause's next-action text" || bad "render should show the conflict next-action (got: $out)"
+  printf '%s' "$out" | grep -q 'Resume: /implement --resume' \
+    && ok "Resume trailer shown (conflict is a paused/recoverable cause)" || bad "Resume trailer should appear for the conflict cause (got: $out)"
+) || true
+
+# Fixture B — the point-6 tdd-unrevised fragment: the refused resume changed
+# NOTHING, so the fragment still renders the structural-finding halt exactly as a
+# fresh structural halt would (cause label + the 3-entry next-actions; no Resume
+# trailer since structural-finding is not a paused cause).
+echo "[§9-B] the tdd-unrevised refusal leaves the structural-finding halt rendering unchanged"
+( TDDS=(); THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  _setup_structural_halt "$ROOT/s9b" 0 0 || { bad "setup failed"; exit 0; }
+  _resume_from 0031-fix >/dev/null 2>&1   # → refused (tdd-unrevised), fragment unchanged
+  printf '{"schema":1,"started_at":1000,"updated_at":1001,"pid":1,"state":"blocked","total":1,"completed":0,"failed":0,"blocked":1,"skipped":0,"paused":0}\n' > "$STATE_DIR/run.json"
+  out="$(bash "$REPO/scripts/status.sh" --logdir "$LOGDIR" 2>&1)"
+  printf '%s' "$out" | grep -qi 'unknown halt_cause' \
+    && bad "must not warn unknown-cause for structural-finding (got: $out)" || ok "structural-finding renders without a fallback warning"
+  printf '%s' "$out" | grep -q 'structural-finding' \
+    && ok "render names the structural-finding cause" || bad "render should name structural-finding (got: $out)"
+  printf '%s' "$out" | grep -q 'resume after revision' \
+    && ok "render lists the resume-after-revision next-action (taxonomy)" || bad "render should list resume-after-revision (got: $out)"
+  printf '%s' "$out" | grep -q 'Resume: /implement --resume' \
+    && bad "structural-finding must NOT show a Resume trailer (it is not a paused cause)" || ok "no Resume trailer for the blocked structural-finding halt"
+) || true
+
 # --- report ----------------------------------------------------------------
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
