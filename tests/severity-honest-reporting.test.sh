@@ -483,8 +483,12 @@ echo "[B1] build-prompt.md carries the §5 SELF_REVIEW_BEGIN..END block (FR-60)"
   grep -q 'checked_categories' "$F" && ok "lists checked_categories" || bad "build prompt needs checked_categories (§5)"
   grep -q 'diff-vs-tdd-claims' "$F" && ok "names the diff-vs-tdd-claims category" || bad "build prompt needs the diff-vs-tdd-claims category (§5)"
   grep -qi 'FR-60' "$F" && ok "cites FR-60" || bad "build prompt should cite FR-60 for the self-review"
-  # The block must be emitted BEFORE BATCH_RESULT, and halting self-review findings addressed first.
-  grep -qiE 'before .*BATCH_RESULT|ahead of .*BATCH_RESULT' "$F" && ok "places SELF_REVIEW before BATCH_RESULT" || bad "build prompt must require SELF_REVIEW before BATCH_RESULT"
+  # The block must be emitted BEFORE BATCH_RESULT, and halting self-review findings
+  # addressed first. Assert the SELF_REVIEW-specific placement/ordering text the §5
+  # addition introduces — NOT the pre-existing RESUME-COMPLETION "BATCH_RESULT"
+  # prose (which would make this assertion vacuous / green before the impl).
+  grep -qi 'immediately before the BATCH_RESULT line' "$F" && ok "places the SELF_REVIEW block immediately before BATCH_RESULT" || bad "build prompt must place the SELF_REVIEW block immediately before BATCH_RESULT (§5)"
+  grep -qiE 'address it.*before emitting|MUST address.*before .*BATCH_RESULT' "$F" && ok "requires addressing halting self-review findings before BATCH_RESULT" || bad "build prompt must require halting self-review findings be addressed before BATCH_RESULT (§5)"
   grep -qi 'self-review-ignored' "$F" && ok "warns the runner detects self-review-ignored" || bad "build prompt should name the self-review-ignored consequence (§5)"
 ) || true
 
@@ -492,7 +496,11 @@ echo "[B2] build-prompt.md carries the §5b(a) AskUserQuestion prohibition (issu
 ( cd "$REPO"; F="scripts/build-prompt.md"
   grep -q 'AskUserQuestion' "$F" && ok "names AskUserQuestion" || bad "build prompt needs the AskUserQuestion prohibition (§5b(a))"
   grep -qiE 'never call .*AskUserQuestion|do not call .*AskUserQuestion|Never .*AskUserQuestion' "$F" && ok "prohibits calling AskUserQuestion" || bad "build prompt must prohibit AskUserQuestion (§5b(a))"
-  grep -q 'BATCH_RESULT: BLOCKED' "$F" && ok "points to BATCH_RESULT: BLOCKED as the escape" || bad "AskUserQuestion prohibition should route to BATCH_RESULT: BLOCKED"
+  # Route-to-BLOCKED must be asserted INSIDE the AskUserQuestion prohibition, not
+  # anywhere in the file (the prompt already mentions BATCH_RESULT: BLOCKED for
+  # dependencies + design blockers — a bare file-wide grep would be vacuous).
+  awk '/AskUserQuestion/{c=8} c>0{print; c--}' "$F" | grep -q 'BATCH_RESULT: BLOCKED' && ok "the AskUserQuestion prohibition routes to BATCH_RESULT: BLOCKED" || bad "AskUserQuestion prohibition should route to BATCH_RESULT: BLOCKED (§5b(a))"
+  grep -q 'disallowed-tools AskUserQuestion' "$F" && ok "names the runner-level --disallowed-tools backstop" || bad "build prompt should reference the --disallowed-tools AskUserQuestion backstop (§5b(a))"
 ) || true
 
 echo "[B3] build-prompt.md carries the §5b(b) --no-verify escape for test(failing) commits (issue #28B)"
@@ -510,7 +518,9 @@ echo "[B4] skills/implement/SKILL.md documents the author self-review + the §5b
   grep -qi 'self-review' "$F" && ok "describes the author self-review" || bad "SKILL.md should describe the FR-60 author self-review (§5)"
   grep -q 'SELF_REVIEW' "$F" && ok "names the SELF_REVIEW block" || bad "SKILL.md should name the SELF_REVIEW block"
   grep -qi 'FR-60' "$F" && ok "cites FR-60" || bad "SKILL.md should cite FR-60"
-  grep -q 'AskUserQuestion' "$F" && ok "cross-references the AskUserQuestion prohibition" || bad "SKILL.md should cross-reference §5b(a)"
+  # SKILL.md already uses AskUserQuestion for the interrupted-run prompt, so a bare
+  # token grep is vacuous. Assert the §5b(a) PROHIBITION wording specifically.
+  grep -qiE 'never call .*AskUserQuestion' "$F" && ok "cross-references the AskUserQuestion prohibition" || bad "SKILL.md should cross-reference the §5b(a) AskUserQuestion prohibition"
   grep -q -- '--no-verify' "$F" && ok "cross-references the --no-verify escape" || bad "SKILL.md should cross-reference §5b(b)"
 ) || true
 
