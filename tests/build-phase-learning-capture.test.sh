@@ -173,6 +173,59 @@ echo "[S9] non-intersecting file-hints create a SECOND entry (L-002)"
   grep -q '## L-002:' "$LM" 2>/dev/null && ok "second entry numbered L-002" || bad "second entry should be L-002"
 ) || true
 
+echo "[S10] quote-bearing review prose -> candidate-learnings.json stays valid JSON"
+( D="$ROOT/S10"; SD="$D/state.d"; mkdir -p "$SD" "$D/docs/tdd"
+  export STATE_DIR="$SD" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"; TDDS=()
+  . "$STATE_LIB"; . "$LEARN_LIB"
+  # Findings whose summary/evidence embed escaped quotes (the shape _record_finding
+  # stores when the reviewer quotes the diff). A lossy [^"]* re-embed would leave a
+  # dangling backslash and corrupt the whole array.
+  F1='{"source":"review","pass_id":"review-1:1","severity":"major","structural":false,"region":"src/a.sh:1-9","region_lines":8,"pattern_tags":["quote-class"],"summary":"he said \"go\" here","evidence":"the line \"x\" broke","addressed_at":null,"addressed_by_sha":null}'
+  F2='{"source":"review","pass_id":"review-1:1","severity":"major","structural":false,"region":"src/b.sh:2-7","region_lines":5,"pattern_tags":["quote-class"],"summary":"again \"go\"","evidence":"second \"y\" case","addressed_at":null,"addressed_by_sha":null}'
+  _write_tdd_fragment 0010-a 10 docs/tdd/0010-a.md 1 done flip 1000 1000 "" "" "" "" \
+    "" "" "" "" "" "" "" "" "" "" "" "" "" "[$F1]" 0 '{}'
+  _write_tdd_fragment 0011-b 11 docs/tdd/0011-b.md 2 done flip 1000 1000 "" "" "" "" \
+    "" "" "" "" "" "" "" "" "" "" "" "" "" "[$F2]" 0 '{}'
+  detect_build_learnings "$SD" "$D" "$D" || bad "S10 detect should succeed"
+  CL="$D/candidate-learnings.json"
+  if python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$CL" 2>/dev/null; then
+    ok "candidate-learnings.json parses as valid JSON with quote-bearing prose"
+  else
+    bad "candidate-learnings.json must stay valid JSON ($(cat "$CL" 2>/dev/null))"
+  fi
+) || true
+
+echo "[S11] triggered_rework follows addressed_by_sha (non-null=true, null/absent=false)"
+( D="$ROOT/S11"; SD="$D/state.d"; mkdir -p "$SD" "$D/docs/tdd"
+  export STATE_DIR="$SD" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"; TDDS=()
+  . "$STATE_LIB"; . "$LEARN_LIB"
+  # rework-class: one occurrence carries a non-null addressed_by_sha -> rework true.
+  RW='{"source":"review","pass_id":"review-1:1","severity":"major","structural":false,"region":"src/a.sh:1-9","region_lines":8,"pattern_tags":["rework-class"],"summary":"s","evidence":"e","addressed_at":1700,"addressed_by_sha":"deadbeef"}'
+  RW2='{"source":"review","pass_id":"review-1:1","severity":"major","structural":false,"region":"src/b.sh:2-7","region_lines":5,"pattern_tags":["rework-class"],"summary":"s","evidence":"e","addressed_at":null,"addressed_by_sha":null}'
+  # absent-class: NEITHER occurrence has the addressed_by_sha field at all (pre-0019
+  # shape) -> must be treated as null -> rework false (the MAJOR-2 absent-field case).
+  AB='{"source":"review","pass_id":"review-1:1","severity":"major","structural":false,"region":"src/a.sh:1-9","region_lines":8,"pattern_tags":["absent-class"],"summary":"s","evidence":"e"}'
+  AB2='{"source":"review","pass_id":"review-1:1","severity":"major","structural":false,"region":"src/b.sh:2-7","region_lines":5,"pattern_tags":["absent-class"],"summary":"s","evidence":"e"}'
+  _write_tdd_fragment 0010-a 10 docs/tdd/0010-a.md 1 done flip 1000 1000 "" "" "" "" \
+    "" "" "" "" "" "" "" "" "" "" "" "" "" "[$RW,$AB]" 0 '{}'
+  _write_tdd_fragment 0011-b 11 docs/tdd/0011-b.md 2 done flip 1000 1000 "" "" "" "" \
+    "" "" "" "" "" "" "" "" "" "" "" "" "" "[$RW2,$AB2]" 0 '{}'
+  detect_build_learnings "$SD" "$D" "$D" || bad "S11 detect should succeed"
+  CL="$D/candidate-learnings.json"
+  if python3 -c '
+import json,sys
+d={o["class"]:o for o in json.load(open(sys.argv[1]))}
+assert d["rework-class"]["triggered_rework"] is True,  "rework-class should be true"
+assert d["absent-class"]["triggered_rework"] is False, "absent-class should be false"
+' "$CL" 2>/dev/null; then
+    ok "triggered_rework: non-null sha -> true, absent field -> false"
+  else
+    bad "triggered_rework wrong for non-null/absent addressed_by_sha ($(cat "$CL" 2>/dev/null))"
+  fi
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
