@@ -464,6 +464,24 @@ echo "[§7c] the backstop is a distinguishable 2× derivation (never conflated w
     || bad "backstop should derive from 2× the active budget"
 ) || true
 
+echo "[§7d] _kill_pid guards the pid:0 / empty edge (a bare 'kill 0' would SIGTERM the process group)"
+( D="$ROOT/s7d"; mkdir -p "$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  command -v _kill_pid >/dev/null 2>&1 || { bad "_kill_pid helper missing"; exit 0; }
+  # pid 0 / empty: the helper must short-circuit (return non-zero) WITHOUT
+  # invoking kill — `kill 0` / `kill ""` signal the caller's whole process group.
+  _kill_pid 0; rc=$?
+  [ "$rc" -ne 0 ] && ok "_kill_pid 0 sends no signal (returns non-zero, guarding the process-group edge)" \
+    || bad "_kill_pid 0 must not signal (got rc=$rc)"
+  _kill_pid ""; rc=$?
+  [ "$rc" -ne 0 ] && ok "_kill_pid '' sends no signal" || bad "_kill_pid empty must not signal (got rc=$rc)"
+  # a real, non-zero pid IS terminated.
+  sleep 30 & p=$!
+  _kill_pid "$p"; sleep 0.3
+  if kill -0 "$p" 2>/dev/null; then bad "_kill_pid should terminate a real pid"; kill "$p" 2>/dev/null; else ok "_kill_pid terminates a real, non-zero pid"; fi
+) || true
+
 # --- report ----------------------------------------------------------------
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
