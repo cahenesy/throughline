@@ -534,4 +534,16 @@ if [ -f "$IDISC" ]; then
   bash "$IDISC" || IDISC_FAIL=1
 fi
 
-[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ] && [ "$SMS_FAIL" -eq 0 ] && [ "$PRM_FAIL" -eq 0 ] && [ "$GRM_FAIL" -eq 0 ] && [ "$BRL_FAIL" -eq 0 ] && [ "$RR_FAIL" -eq 0 ] && [ "$BCL_FAIL" -eq 0 ] && [ "$BO_FAIL" -eq 0 ] && [ "$IDP_FAIL" -eq 0 ] && [ "$RES_FAIL" -eq 0 ] && [ "$CVR_FAIL" -eq 0 ] && [ "$HRS_FAIL" -eq 0 ] && [ "$SHR_FAIL" -eq 0 ] && [ "$BPL_FAIL" -eq 0 ] && [ "$BDN_FAIL" -eq 0 ] && [ "$IDISC_FAIL" -eq 0 ]
+# Run the evaluation-rubric eval (TDD 0029 / FR-77) as part of the same suite so
+# the prd-author / tdd-author rubric-co-creation phase blocks, the '## Evaluation
+# rubric' template lines, and the design-reviewer rubric-consumption section are
+# regression-gated by ci-checks, not orphaned from the aggregator. Same rationale
+# as the sibling evals above.
+ERC="$(dirname "$0")/evaluation-rubric.test.sh"
+ERC_FAIL=0
+if [ -f "$ERC" ]; then
+  echo
+  bash "$ERC" || ERC_FAIL=1
+fi
+
+[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ] && [ "$SMS_FAIL" -eq 0 ] && [ "$PRM_FAIL" -eq 0 ] && [ "$GRM_FAIL" -eq 0 ] && [ "$BRL_FAIL" -eq 0 ] && [ "$RR_FAIL" -eq 0 ] && [ "$BCL_FAIL" -eq 0 ] && [ "$BO_FAIL" -eq 0 ] && [ "$IDP_FAIL" -eq 0 ] && [ "$RES_FAIL" -eq 0 ] && [ "$CVR_FAIL" -eq 0 ] && [ "$HRS_FAIL" -eq 0 ] && [ "$SHR_FAIL" -eq 0 ] && [ "$BPL_FAIL" -eq 0 ] && [ "$BDN_FAIL" -eq 0 ] && [ "$IDISC_FAIL" -eq 0 ] && [ "$ERC_FAIL" -eq 0 ]

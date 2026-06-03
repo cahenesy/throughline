@@ -154,6 +154,43 @@ a collaborative scribe. Apply this discipline throughout that interview:
    (yes/no without semantic content) may skip the append (and do not trigger
    `tl_draft_init`).
 4. Keep interviewing until the requirements are unambiguous and testable.
+
+### Rubric co-creation (FR-77)
+
+After the interview is complete and BEFORE you write `docs/PRD.md`, run a distinct
+rubric co-creation phase. This is a separate conversational step with its own
+AskUserQuestion flow — NOT folded into the interview.
+
+- **Precondition (strict ordering).** Do not start this phase until every
+  open-assumptions item (the Interrogator-discipline list above, [[0028]] / FR-75)
+  is dispositioned (`resolved:` or `waived:`). Grading criteria co-created while
+  feasibility questions are still open would grade against assumptions that may not
+  survive.
+- **Posture switch.** You are now a skeptical grading expert, not the author. Your
+  job is to define how a harsh reviewer would grade the PRD you are about to write —
+  before you write it, so the criteria cannot be bent to fit what you produced.
+- **Co-creation flow.** Propose a draft rubric as a markdown table: one row per
+  criterion, columns `Criterion | High-quality | Acceptable | Failing`, each cell a
+  one-line OBSERVABLE description (a quality a later gate can observe or enforce, not
+  a vague aspiration). Seed it with these criteria: requirement testability,
+  acceptance-criterion observability, scope coherence, non-goal explicitness,
+  open-question honesty. Present it via AskUserQuestion for the user to
+  add/remove/edit criteria. Iterate until approved. A trivial change may settle on a
+  one-row minimal rubric the user approves as such — the human PR reviewer judges
+  boilerplate against the change's substance.
+- **Persistence.** Persist the approved rubric as a `## Evaluation rubric` section
+  in `docs/PRD.md` (after `## Open questions`). It ships in the same PR as the
+  requirements it grades.
+- **Crash safety.** Persist each co-creation iteration to the draft the same way the
+  interview persists answers, when persistence is available:
+  `tl_draft_append_elicit prd-author question "rubric: PRD" "co-created evaluation rubric" "<the rubric markdown table>"`
+  — the SAME five-argument signature and the SAME fully-shell-quoted-argument rule
+  as step 3, with the fixed `header` `rubric: PRD` and the rubric table in the answer
+  field. Check its exit status and STOP on non-zero per the mid-interview-failure
+  rule. The latest `rubric:`-headed entry is the approved rubric; on resume the same
+  `tl_draft_read` parse recovers it and this step picks it up. (In degraded mode keep
+  the rubric in-conversation only.)
+
 5. Write `docs/PRD.md` from the template. Mark anything unresolved under Open
    questions rather than inventing an answer.
    - **Before drafting any section, re-read the draft** to refresh your working
@@ -207,6 +244,7 @@ Fix and move on (no re-review loop) then commit and open the PR.
 ## Non-goals
 ## Constraints & assumptions
 ## Open questions
+## Evaluation rubric   (co-created success criteria, FR-77: Criterion | High-quality | Acceptable | Failing)
 ```
 
 ## Git (phase gate)

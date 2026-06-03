@@ -274,9 +274,51 @@ Apply the architecture & dependency dispositions (also in global CLAUDE.md):
   designing a new abstraction (plugin interface, schema, protocol), check the
   API surface of the system you're integrating with — it may already exist there.
 
+### Rubric co-creation (FR-77)
+
+After the interrogation above is complete and BEFORE you write any TDD content
+(below), run a distinct rubric co-creation phase. This is a separate
+conversational step with its own AskUserQuestion flow — NOT folded into the design
+interview.
+
+- **Precondition (strict ordering).** Do not start this phase until every
+  open-assumptions item (the Interrogator-discipline list above, [[0028]] / FR-76)
+  is dispositioned (`resolved:` or `waived:`). Grading criteria co-created while
+  feasibility questions are still open would grade against assumptions that may not
+  survive.
+- **Posture switch.** You are now a skeptical grading expert, not the author. Your
+  job is to define how a harsh reviewer would grade the TDD set you are about to
+  write — before you write it, so the criteria cannot be bent to fit what you
+  produced.
+- **Co-creation flow.** Propose a draft rubric as a markdown table: one row per
+  criterion, columns `Criterion | High-quality | Acceptable | Failing`, each cell a
+  one-line OBSERVABLE description (a quality the design-critique gate can observe or
+  enforce, not a vague aspiration). Seed it with the design-flavored set:
+  requirement traceability, interface concreteness, alternatives-analysis substance,
+  verification-plan actionability, scope-bound adherence, naming consistency.
+  Present it via AskUserQuestion for the user to add/remove/edit criteria.
+  Iterate until approved. A trivial change may settle on a one-row minimal rubric
+  the user approves as such — the human PR reviewer judges boilerplate against the
+  change's substance.
+- **One rubric, every TDD.** One rubric covers the WHOLE TDD set of this design
+  pass (not one per TDD). Write it as a `## Evaluation rubric` section — identical
+  content — in EACH TDD of the set, so every TDD is self-contained for the per-TDD
+  reviews the build pipeline runs later.
+- **Crash safety.** Persist each co-creation iteration to the draft the same way the
+  interview persists answers, when persistence is available:
+  `tl_draft_append_elicit tdd-author question "rubric: TDD-set" "co-created evaluation rubric" "<the rubric markdown table>"`
+  — the SAME five-argument signature and the SAME fully-shell-quoted-argument rule
+  as the elicitations above, with the fixed `header` `rubric: TDD-set` and the
+  rubric table in the answer field. Check its exit status and STOP on non-zero per
+  the mid-interview-failure rule. The latest `rubric:`-headed entry is the approved
+  rubric; on resume the same `tl_draft_read` parse recovers it and this step picks
+  it up. (In degraded mode keep the rubric in-conversation only.)
+
 Write each TDD from the template, numbered sequentially, `Status: draft`. Each
 TDD MUST include a traceability table mapping every PRD requirement in its scope
-(FR/NFR) to the design element that satisfies it, and call out any gaps.
+(FR/NFR) to the design element that satisfies it, and call out any gaps. Include
+the co-created `## Evaluation rubric` section (identical across the set) in every
+TDD you write.
 
 - **Before drafting any section, re-read the draft** to refresh your working
   state across any compaction or long pause: `cat "$(tl_draft_path tdd-author)"`.
@@ -344,6 +386,7 @@ Supersedes: <NNNN, only when this TDD replaces a previously-implemented one>
 ## Sequencing / implementation plan
 ## Failure modes & edge cases
 ## Verification plan          (observable surface → observation point(s) → expected observations; SKIP: <why> only if no surface)
+## Evaluation rubric          (co-created success criteria, FR-77: Criterion | High-quality | Acceptable | Failing; identical across the set)
 ## Requirement traceability   (each FR/NFR in scope → design element; note gaps)
 ## Dependencies considered    (REQUIRED per new dep: chosen + ≥1 rejected alternative + reason)
 ## PRD conflicts surfaced (and resolution)
@@ -447,6 +490,10 @@ conflicts, and scope coherence, ending with `DESIGN_REVIEW: PASS` or
 - Pre-requisite: `tl_lint_all` exit 0 (or recorded waiver). The design-reviewer
   assumes the pre-pass is clean; spawning it on a structurally-broken TDD set
   is the wrong tool for the job and burns tokens (TDD 0013 / FR-51).
+- **Rubric (FR-77).** The design-reviewer reads the `## Evaluation rubric` section
+  from the TDDs and grades each artifact against it. Your PR body (step 9) must note
+  that a rubric is present and co-created, so the human reviewer knows the gate
+  graded against explicit, user-approved success criteria.
 
 - On BLOCK: fix the design — tighten interfaces, add the missing alternatives
   analysis, resolve the ADR conflict, re-scope — and re-run the critique until it
