@@ -102,14 +102,21 @@ identical to §1 (tdd-author also has draft persistence via [[0012]]).
 `/prd-author`'s `## Git (phase gate)` section and `/tdd-author`'s `## 9. Git`
 section each gain:
 
-- "Render the final assumptions list as an **'Open assumptions & waivers'**
-  section in the PR body: one line per item, `- <assumption> — resolved:
-  <how>` or `- <assumption> — waived: <rationale>`. Source the list from the
-  draft (`tl_draft_read`, latest entry per `assumption:` header — the same
-  parse as the resume instruction), NOT from conversational memory, so the
-  rendered record survives any compaction that happened mid-interview. A PR
-  whose interview surfaced no assumptions states 'Open assumptions: none
-  surfaced' explicitly (the absence is declared, never silent)."
+- "**Before** invoking `gh pr create`, render the final assumptions list as an
+  **'Open assumptions & waivers'** section and assemble it INTO the PR body
+  string that the SAME `gh pr create --body` (or `--body-file`) call publishes —
+  the section is part of the body at creation time, never a step performed after
+  the PR already exists. One line per item, `- <assumption> — resolved: <how>`
+  or `- <assumption> — waived: <rationale>`. Source the list from the draft
+  (`tl_draft_read`, latest entry per `assumption:` header — the same parse as the
+  resume instruction), NOT from conversational memory, so the rendered record
+  survives any compaction that happened mid-interview. A PR whose interview
+  surfaced no assumptions states 'Open assumptions: none surfaced' explicitly
+  (the absence is declared, never silent)." **Ordering is load-bearing (FR-76):
+  the instruction MUST be positioned in the git step so the model renders and
+  folds the section into the body it passes to `gh pr create`, not as a bullet
+  that follows the create call — a post-creation render leaves the primary
+  record deliverable out of the published PR body.**
 - prd-author only: "Items dispositioned as `waived` are ALSO appended to the
   PRD's `## Open questions` section, so the artifact records what was
   consciously deferred without re-reading the PR."
@@ -133,14 +140,22 @@ as today. The PR-body record is rendered text, not persisted state.
 ## Sequencing / implementation plan
 
 1. **prd-author SKILL.md**: insert the Interrogator-discipline block (§1), the
-   PR-body record instruction (§3), and the self-review item (§4).
+   PR-body record instruction (§3), and the self-review item (§4). The §3 record
+   instruction MUST be positioned so the section is assembled into the body
+   passed to `gh pr create` (before the create call), not after it.
 2. **tdd-author SKILL.md**: insert the design-flavored block (§2), the PR-body
-   record instruction (§3), and the self-review item (§4).
+   record instruction (§3), and the self-review item (§4). Same ordering
+   constraint as step 1: the §3 record is folded into the `gh pr create --body`
+   in `## 9. Git` BEFORE the create call, never as a following bullet.
 3. **Eval**: extend or add a test that greps both SKILL.mds for the required
    instruction blocks (presence + key phrases: "interrogator", "OPEN
    ASSUMPTIONS", the agreement-is-not-helpfulness anti-sycophancy sentence,
    "resolved:" / "waived:" dispositions, the `tl_draft_read` resume parse,
-   the PR-body section name).
+   the PR-body section name). Every check MUST satisfy the **Mechanical-check
+   robustness** requirements in the Verification plan: absence checks fail closed
+   on file-read error (no `grep && bad || ok` that passes on grep exit ≥2), and
+   every anchor is specific to text THIS change introduces (no vacuous match on
+   pre-existing skill content).
 4. **Wire the eval into the aggregator (do NOT defer):** add the
    `tests/interrogator-discipline.test.sh` invocation to
    `tests/implement-gate.test.sh` in the SAME step as creating the eval —
@@ -216,6 +231,28 @@ interview.
 against this TDD's own build per the standing pattern; §1–§3 are the
 mechanical regression surface.)
 
+**Mechanical-check robustness (binding on the §1–§3 eval — `tests/interrogator-discipline.test.sh`).**
+The greps that back §1–§3 MUST fail closed and assert specifically, so a passing
+eval means the behavior is present rather than that the check couldn't tell:
+
+- **Absence/removal checks fail closed on read error.** The subsumed-directive
+  removal check (the assertion that `CHALLENGE the PRD:` is GONE) MUST
+  distinguish "string correctly absent" (grep exit 1) from "file unreadable"
+  (grep exit ≥2). A bare `grep -q PATTERN FILE && bad || ok` is forbidden — grep's
+  error exit is non-zero and would silently take the `ok` (pass) branch on a
+  missing/unreadable file. Guard it: assert the target file exists and is
+  readable first (fail the eval if not), THEN treat exit 1 as the pass and any
+  exit ≥2 as an eval failure.
+- **Anchors are specific to the NEW text, never strings the skill already
+  contains.** Every presence grep MUST anchor on a phrase introduced by THIS
+  change (e.g. the literal `Interrogator discipline (FR-75/FR-76)` heading, the
+  verbatim anti-sycophancy sentence, the `Open assumptions & waivers` section
+  name). An anchor that matches pre-existing skill text — e.g. a bare
+  `Open questions` or a bare `decomposition` that already appears elsewhere in
+  the file — passes vacuously and is forbidden; for the prd-author
+  waived→Open-questions fold, anchor on the new combined phrasing, not the bare
+  pre-existing `## Open questions` heading.
+
 **Expected observations (PASS):** every numbered point yields the cited result.
 
 ## Requirement traceability
@@ -268,6 +305,20 @@ actual sizes and the aggregator wire-in promoted to an explicit `## Sequencing`
 step so a rebuild does it inline. No design substance changed; see
 `docs/tdd/BLOCKERS.md`.
 
+**Second build blocker resolved (2026-06-03, after `--resume`).** With the scope
+bound corrected, the resumed review reached deeper and surfaced three genuine
+defects: a `structural-finding(c)` — the §3 PR-body record instruction was built
+positioned *after* `gh pr create`, so the FR-76 record could miss the published
+PR body — plus two recurrent build-quality majors in the eval
+(`fragile-inversion-pattern`: an absence check that false-passes on `grep` exit
+≥2; `weak-structural-assertion`: an anchor that matches pre-existing skill text
+and passes vacuously). Resolved by tightening the design, not by relaxing it: §3
+now mandates pre-creation assembly of the section into `gh pr create --body`
+(load-bearing ordering, both skills), and the Verification plan gained binding
+**Mechanical-check robustness** rules (fail-closed absence checks; new-text-only
+anchors) that the eval must satisfy. These are clarifications of the existing
+design's intent, not new behavior.
+
 ## Decisions to promote (ADR candidates)
 
 None. The discipline is prompt-level instruction within existing skills; no
@@ -284,9 +335,9 @@ Total: 4 files touched.
 
 ## Expected diff size
 
-- `skills/prd-author/SKILL.md` — ~60 lines added (interrogator block + PR-body record + self-review item; the verbatim anti-sycophancy and tracking instructions are intrinsically multi-line).
-- `skills/tdd-author/SKILL.md` — ~60 lines added (same block, design-flavored, plus removal of the subsumed one-line directive).
-- `tests/interrogator-discipline.test.sh` — ~135 lines added (new eval: ~10 mechanical anchors greped across both SKILL.mds, plus the subsumed-directive removal polarity check, with per-assertion `ok`/`bad` reporting).
+- `skills/prd-author/SKILL.md` — ~65 lines added (interrogator block + PR-body record with the pre-creation assembly clause + self-review item; the verbatim anti-sycophancy and tracking instructions are intrinsically multi-line).
+- `skills/tdd-author/SKILL.md` — ~65 lines added (same block, design-flavored, plus removal of the subsumed one-line directive and the §3 pre-creation ordering clause).
+- `tests/interrogator-discipline.test.sh` — ~155 lines added (new eval: ~10 mechanical anchors greped across both SKILL.mds, plus the subsumed-directive removal check hardened to fail closed on grep exit ≥2, plus the file-readable guards and per-assertion `ok`/`bad` reporting required by the Verification plan's mechanical-check robustness rules).
 - `tests/implement-gate.test.sh` — ~18 lines added (aggregator wire-in: `*_FAIL` accumulator + conditional run block + final-expression AND, matching the sibling-eval pattern).
 
-Total expected diff: ~273 lines across 4 files. No exceptions needed.
+Total expected diff: ~303 lines across 4 files. No exceptions needed (the eval at ~155 lines is under the 300-line per-file bound).
