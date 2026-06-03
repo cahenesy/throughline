@@ -18,6 +18,7 @@
 # Run: bash tests/step-commit-protocol.test.sh
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
+IMPL="$REPO/scripts/implement.sh"
 LINT="$REPO/scripts/lib/tdd-lint.sh"
 # ok/bad run inside `( … )` subshells, so tally via a file (a parent-scope
 # counter would never see the subshell increments — the same pattern
@@ -251,6 +252,84 @@ echo "[P2] skills/implement/SKILL.md carries the protocol-correction sentence (l
     && ok "SKILL.md names the bounded protocol-correction reply" || bad "SKILL.md must name the bounded protocol-correction BLOCK reply"
   grep -qiE 'never .*transient|not .*transient' "$F" \
     && ok "SKILL.md states exhaustion is never classified transient" || bad "SKILL.md must state exhaustion FAILs via the fatal pathway, never transient"
+) || true
+
+# ============================================================================
+# §3 / Verification 4 — pre-flight refuses to spawn the build (layer 3).
+# ============================================================================
+# setup_preflight_repo <dir> <seq-body-on-stdin>: a git repo + a fixture TDD
+# whose Sequencing body is stdin, a state fragment, and a stub `claude` that
+# writes ctl/SPAWNED if it is ever invoked (proving the coprocess never spawns
+# when the pre-flight refuses). Leaves PWD in the repo.
+setup_preflight_repo() {  # <dir>  (sequencing body on stdin)
+  local d="$1"; mkdir -p "$d/ctl" "$d/bin"
+  cd "$d" || return 1
+  git init -q -b master; git config user.email t@t.t; git config user.name t
+  mkdir -p src docs/tdd
+  printf 'ctl/\nbin/\n' > .gitignore
+  printf 'orig\n' > src/a.txt
+  { printf '# TDD 0032: fixture\nStatus: draft\nPRD refs: 1\n\n## Sequencing / implementation plan\n\n'
+    cat
+    printf '\n## Touched files\n- `src/a.txt` — the in-scope file\n'
+  } > docs/tdd/0032-fix.md
+  git add -A; git commit -qm "build start" >/dev/null
+  # Any invocation of claude marks ctl/SPAWNED. If the pre-flight refuses before
+  # the coproc spawn, this file must never appear.
+  cat > "$d/bin/claude" <<EOF
+#!/usr/bin/env bash
+touch "$d/ctl/SPAWNED"
+echo "BATCH_RESULT: OK"
+EOF
+  chmod +x "$d/bin/claude"
+  export PATH="$d/bin:$PATH"
+  export TMPL="$REPO/scripts/build-prompt.md" RTMPL="$REPO/scripts/review-prompt.md"
+  export MODEL="" REVIEW_MODEL="" MAINREPO="$d"
+}
+
+echo "[PF] _per_step_review_loop refuses to spawn the build for non-integer Sequencing labels"
+( D="$ROOT/PF"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  setup_preflight_repo "$D/repo" <<'EOF'
+1. one
+2. two
+5b. the non-integer label that breaks the STEP_COMMIT parser
+6. six
+EOF
+  _write_tdd_fragment 0032-fix 32 docs/tdd/0032-fix.md 1 building build 1000 1000 "feat/0032-fix" "" log "" "" "" "" "" "" "" "" "" "" "" ""
+  _per_step_review_loop 0032-fix docs/tdd/0032-fix.md "$D/pf.log"; rc=$?
+  [ ! -f "$D/repo/ctl/SPAWNED" ] && ok "build coprocess never spawned (zero tokens)" || bad "pre-flight must refuse BEFORE spawning claude"
+  grep -q 'THROUGHLINE_PROTOCOL_PREFLIGHT' "$D/pf.log" 2>/dev/null \
+    && ok "log records THROUGHLINE_PROTOCOL_PREFLIGHT" || bad "log should carry the pre-flight refusal marker (got: $(cat "$D/pf.log" 2>/dev/null))"
+  [ "$rc" -ne 0 ] && ok "gate returns non-zero" || bad "pre-flight refusal should return non-zero (rc=$rc)"
+  cause="$(_classify_cause "$D/pf.log" "$rc")"
+  [ "$cause" = "fatal" ] && ok "_classify_cause routes the refusal to fatal (never transient)" || bad "refusal must classify fatal, got '$cause'"
+  ! grep -q 'BATCH_RESULT' "$D/pf.log" 2>/dev/null && ok "no BATCH_RESULT fabricated" || bad "must not fabricate a BATCH_RESULT on refusal"
+) || true
+
+echo "[PF2] _sequencing_labels_ok passes a conforming 1..N plan (no false refusal)"
+( D="$ROOT/PF2"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  setup_preflight_repo "$D/repo" <<'EOF'
+1. one
+2. two
+3. three
+EOF
+  if _sequencing_labels_ok docs/tdd/0032-fix.md >/dev/null 2>&1; then
+    ok "_sequencing_labels_ok returns 0 for a conforming plan"
+  else
+    bad "_sequencing_labels_ok should pass labels 1..3"
+  fi
+  # A prose-only / absent plan also passes (degrades to end-of-build review).
+  printf '# TDD\nStatus: draft\n\n## Approach\n\nProse.\n' > docs/tdd/0032-prose.md
+  if _sequencing_labels_ok docs/tdd/0032-prose.md >/dev/null 2>&1; then
+    ok "_sequencing_labels_ok passes a prose-only plan"
+  else
+    bad "_sequencing_labels_ok should pass a prose-only plan"
+  fi
 ) || true
 
 # <<INSERT NEW SECTIONS ABOVE THIS LINE>>
