@@ -124,6 +124,29 @@ grep -qF 'rubric is present and co-created' "$TDD_SKILL" \
   && ok "tdd-author §2: step-7b note tells the design-reviewer a rubric is present and co-created" \
   || bad "tdd-author §2: step-7b note must record that a rubric is present and co-created"
 
+# --- design-reviewer consumption (FR-77 §3) -----------------------------------
+REVIEWER="$REPO/agents/design-reviewer.md"
+echo "[design-reviewer] rubric consumption section (FR-77)"
+if [ ! -r "$REVIEWER" ]; then
+  bad "design-reviewer: agent prompt not readable at $REVIEWER"
+else
+  grep -qF '## Evaluation rubric' "$REVIEWER" \
+    && ok "design-reviewer §3: reads the '## Evaluation rubric' section" \
+    || bad "design-reviewer §3: must instruct reading the '## Evaluation rubric' section"
+  grep -qiF 'EACH rubric row' "$REVIEWER" \
+    && ok "design-reviewer §3: grades the artifact against EACH rubric row" \
+    || bad "design-reviewer §3: must grade the artifact against EACH rubric row"
+  grep -qF 'grade on any rubric criterion is a BLOCK' "$REVIEWER" \
+    && ok "design-reviewer §3: failing-grade-is-a-BLOCK rule present" \
+    || bad "design-reviewer §3: must state a failing grade on any rubric criterion is a BLOCK"
+  grep -qF 'NEWLY AUTHORED' "$REVIEWER" && grep -qiF 'emit a finding' "$REVIEWER" \
+    && ok "design-reviewer §3: absence-is-a-finding rule keyed on NEWLY AUTHORED artifacts" \
+    || bad "design-reviewer §3: must emit a finding for a NEWLY AUTHORED artifact lacking a rubric"
+  grep -qF 'can never be graded acceptable' "$REVIEWER" && grep -qiF 'precedence' "$REVIEWER" \
+    && ok "design-reviewer §3: standing-criteria-vs-rubric precedence rule present" \
+    || bad "design-reviewer §3: must state standing criteria take precedence (ADR conflict never graded acceptable)"
+fi
+
 # --- report -------------------------------------------------------------------
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
