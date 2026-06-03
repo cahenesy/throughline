@@ -337,7 +337,19 @@ apply_accepted_learnings() {  # <logdir> [<index>...]
     case "$idx" in ''|*[!0-9]*) echo "error: apply_accepted_learnings: non-numeric index '$idx' rejected" >&2; fail=1; continue ;; esac
     rec="$(_candidate_record "$cl" "$idx")" || { echo "error: apply_accepted_learnings: cannot parse candidate index $idx" >&2; fail=1; continue; }
     [ -z "$rec" ] && { echo "error: apply_accepted_learnings: candidate index $idx out of range" >&2; fail=1; continue; }
-    IFS=$'\t' read -r cls files tags tdds sev summ evid struct rew <<< "$rec"
+    # Split the @tsv record on TAB while PRESERVING empty fields. `IFS=$'\t' read`
+    # would collapse consecutive tabs (a whitespace-IFS quirk), so an empty field
+    # — e.g. files_csv when the involved TDDs declared no `## Touched files` — would
+    # be dropped and every later field (summary, evidence, …) would shift left. The
+    # @tsv producer escapes any in-field tab/newline, so a literal tab here is
+    # always a field boundary; walk them explicitly.
+    local _rest="$rec"; local -a _F=()
+    while :; do
+      _F+=("${_rest%%$'\t'*}")
+      case "$_rest" in *$'\t'*) _rest="${_rest#*$'\t'}" ;; *) break ;; esac
+    done
+    cls="${_F[0]:-}"; files="${_F[1]:-}"; tags="${_F[2]:-}"; tdds="${_F[3]:-}"
+    sev="${_F[4]:-}"; summ="${_F[5]:-}"; evid="${_F[6]:-}"; struct="${_F[7]:-}"; rew="${_F[8]:-}"
     append_accepted_learning "$mainrepo" "$cls" "$files" "$tags" "$tdds" "$sev" "$summ" "$evid" "$runid" "$struct" "$rew" \
       || { echo "error: apply_accepted_learnings: persist failed for index $idx ($cls)" >&2; fail=1; }
   done
