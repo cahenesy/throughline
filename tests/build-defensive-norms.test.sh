@@ -21,7 +21,6 @@
 # Run: bash tests/build-defensive-norms.test.sh
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-IMPL="$REPO/scripts/implement.sh"
 NORMS="$REPO/scripts/build-norms.md"
 RESULTS="$(mktemp)"; export RESULTS
 ok()   { printf 'ok\n'   >>"$RESULTS"; printf '  ok   — %s\n' "$1"; }
