@@ -104,6 +104,26 @@ grep -qF 'rubric: PRD' "$PRD_SKILL" \
   && ok "prd-author §1: fixed crash-safety header 'rubric: PRD' present" \
   || bad "prd-author §1: missing the fixed crash-safety draft header 'rubric: PRD'"
 
+# --- tdd-author (FR-77) -------------------------------------------------------
+TDD_SKILL="$REPO/skills/tdd-author/SKILL.md"
+echo "[tdd-author] rubric-phase block + template line + step-7b note (FR-77)"
+check_phase "$TDD_SKILL" "tdd-author" "in EACH TDD of the set" \
+  "interface concreteness" "alternatives-analysis substance"
+# tdd-author persists under the fixed draft header 'rubric: TDD-set'.
+grep -qF 'rubric: TDD-set' "$TDD_SKILL" \
+  && ok "tdd-author §1: fixed crash-safety header 'rubric: TDD-set' present" \
+  || bad "tdd-author §1: missing the fixed crash-safety draft header 'rubric: TDD-set'"
+# tdd-author specific: ONE rubric covers the whole set, duplicated into EACH TDD so
+# every TDD is self-contained for the per-TDD build reviews.
+grep -qiF 'self-contained' "$TDD_SKILL" && grep -qF 'EACH TDD of the set' "$TDD_SKILL" \
+  && ok "tdd-author §2: one-rubric-per-set duplicated into each TDD (self-contained)" \
+  || bad "tdd-author §2: must duplicate the one set rubric into EACH TDD so every TDD is self-contained"
+# tdd-author specific: the step-7b instruction tells the design-reviewer a rubric is
+# present (the PR body notes a rubric is present and co-created).
+grep -qF 'rubric is present and co-created' "$TDD_SKILL" \
+  && ok "tdd-author §2: step-7b note tells the design-reviewer a rubric is present and co-created" \
+  || bad "tdd-author §2: step-7b note must record that a rubric is present and co-created"
+
 # --- report -------------------------------------------------------------------
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
