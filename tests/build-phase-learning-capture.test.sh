@@ -557,35 +557,37 @@ echo "[S23] SKILL.md carries the watcher launch + the injection-safe Detect-pend
   grep -q '"<evidence>"' "$S" 2>/dev/null && bad "must NOT interpolate <evidence> into a shell command (injection)" || ok "no <evidence> interpolated into a command"
 ) || true
 
+# These scenarios use the REAL logdir layout (<repo>/docs/tdd/.implement-logs/<id>)
+# so apply_accepted_learnings derives the repo root from the logdir, not the cwd.
 echo "[S24] apply_accepted_learnings persists by index, injection-safe, error-checked reviewed-rename"
-( D="$ROOT/S24"; mkdir -p "$D/run" "$D/docs/tdd"
+( D="$ROOT/S24"; LOG="$D/docs/tdd/.implement-logs/run1"; mkdir -p "$LOG"
   . "$STATE_LIB"; . "$LEARN_LIB"
   # A candidate whose summary/evidence carry shell metacharacters: $(...), backticks, quotes.
-  cat > "$D/run/candidate-learnings.json" <<'JSON'
+  cat > "$LOG/candidate-learnings.json" <<'JSON'
 [{"class":"evil-class","distinct_tdds":["0010-a","0011-b"],"distinct_steps":2,"severity_range":["major","major"],"was_structural":false,"triggered_rework":false,"subject_area_hints":{"files":["src/a.sh"],"tags":["evil-class"]},"summary":"has $(touch /tmp/PWNED_S24) and 'quotes'","evidence":"line `touch /tmp/PWNED_S24b` end","occurrences":[]}]
 JSON
   rm -f /tmp/PWNED_S24 /tmp/PWNED_S24b
-  ( cd "$D" && apply_accepted_learnings "$D/run" 0 ) || bad "S24 apply should succeed"
+  ( cd "$D" && apply_accepted_learnings "$LOG" 0 ) || bad "S24 apply should succeed"
   { [ ! -e /tmp/PWNED_S24 ] && [ ! -e /tmp/PWNED_S24b ]; } && ok "no shell injection from summary/evidence" || { bad "INJECTION: command in candidate prose executed"; rm -f /tmp/PWNED_S24 /tmp/PWNED_S24b; }
   LM="$D/docs/tdd/LEARNINGS.md"
   grep -q '## L-001: evil-class' "$LM" 2>/dev/null && ok "accepted class persisted by index" || bad "class should persist (got: $(cat "$LM" 2>/dev/null))"
   grep -q 'touch /tmp/PWNED_S24' "$LM" 2>/dev/null && ok "candidate prose stored literally, not executed" || bad "summary should be stored verbatim"
-  { [ -f "$D/run/candidate-learnings.reviewed.json" ] && [ ! -f "$D/run/candidate-learnings.json" ]; } && ok "queue renamed reviewed after persist" || bad "should rename to candidate-learnings.reviewed.json"
+  { [ -f "$LOG/candidate-learnings.reviewed.json" ] && [ ! -f "$LOG/candidate-learnings.json" ]; } && ok "queue renamed reviewed after persist" || bad "should rename to candidate-learnings.reviewed.json"
 
   # Zero indices = accept nothing, still mark reviewed (all-discarded case).
-  D2="$ROOT/S24b"; mkdir -p "$D2/run" "$D2/docs/tdd"
-  printf '[{"class":"c","distinct_tdds":["0010-a"],"distinct_steps":1,"severity_range":["minor","minor"],"was_structural":false,"triggered_rework":false,"subject_area_hints":{"files":[],"tags":["c"]},"summary":"s","evidence":"e","occurrences":[]}]\n' > "$D2/run/candidate-learnings.json"
-  ( cd "$D2" && apply_accepted_learnings "$D2/run" ) || bad "zero-index apply should succeed"
-  { [ -f "$D2/run/candidate-learnings.reviewed.json" ] && [ ! -f "$D2/docs/tdd/LEARNINGS.md" ]; } && ok "all-discarded marks reviewed, persists nothing" || bad "zero-index should mark reviewed without persisting"
+  D2="$ROOT/S24b"; LOG2="$D2/docs/tdd/.implement-logs/run1"; mkdir -p "$LOG2"
+  printf '[{"class":"c","distinct_tdds":["0010-a"],"distinct_steps":1,"severity_range":["minor","minor"],"was_structural":false,"triggered_rework":false,"subject_area_hints":{"files":[],"tags":["c"]},"summary":"s","evidence":"e","occurrences":[]}]\n' > "$LOG2/candidate-learnings.json"
+  ( cd "$D2" && apply_accepted_learnings "$LOG2" ) || bad "zero-index apply should succeed"
+  { [ -f "$LOG2/candidate-learnings.reviewed.json" ] && [ ! -f "$D2/docs/tdd/LEARNINGS.md" ]; } && ok "all-discarded marks reviewed, persists nothing" || bad "zero-index should mark reviewed without persisting"
 ) || true
 
 echo "[S25] empty subject-area files (realistic) must NOT shift persisted fields (tab-split keeps empty fields)"
-( D="$ROOT/S25"; mkdir -p "$D/run" "$D/docs/tdd"
+( D="$ROOT/S25"; LOG="$D/docs/tdd/.implement-logs/run1"; mkdir -p "$LOG"
   . "$STATE_LIB"; . "$LEARN_LIB"
   # files=[] (a candidate whose involved TDDs declared no ## Touched files). A
   # whitespace-IFS read collapses the empty field and shifts summary/evidence.
-  printf '[{"class":"empty-files-class","distinct_tdds":["0010-a","0011-b"],"distinct_steps":2,"severity_range":["major","major"],"was_structural":false,"triggered_rework":false,"subject_area_hints":{"files":[],"tags":["empty-files-class"]},"summary":"SUMMARY_MARKER","evidence":"EVIDENCE_MARKER","occurrences":[]}]\n' > "$D/run/candidate-learnings.json"
-  ( cd "$D" && apply_accepted_learnings "$D/run" 0 ) || bad "S25 apply should succeed"
+  printf '[{"class":"empty-files-class","distinct_tdds":["0010-a","0011-b"],"distinct_steps":2,"severity_range":["major","major"],"was_structural":false,"triggered_rework":false,"subject_area_hints":{"files":[],"tags":["empty-files-class"]},"summary":"SUMMARY_MARKER","evidence":"EVIDENCE_MARKER","occurrences":[]}]\n' > "$LOG/candidate-learnings.json"
+  ( cd "$D" && apply_accepted_learnings "$LOG" 0 ) || bad "S25 apply should succeed"
   LM="$D/docs/tdd/LEARNINGS.md"
   grep -q '^- Summary: SUMMARY_MARKER$'                "$LM" 2>/dev/null && ok "summary stays in the Summary field" || bad "summary field shifted ($(grep -n 'Summary\|evidence' "$LM" 2>/dev/null | tr '\n' '|'))"
   grep -q '^- Representative evidence: EVIDENCE_MARKER$' "$LM" 2>/dev/null && ok "evidence stays in the evidence field" || bad "evidence field shifted"
@@ -594,18 +596,44 @@ echo "[S25] empty subject-area files (realistic) must NOT shift persisted fields
 ) || true
 
 echo "[S26] a JSON parse error fails loud through the live || error path, leaving the queue UNREVIEWED"
-( D="$ROOT/S26"; mkdir -p "$D/run" "$D/docs/tdd"
+( D="$ROOT/S26"; LOG="$D/docs/tdd/.implement-logs/run1"; mkdir -p "$LOG"
   . "$STATE_LIB"; . "$LEARN_LIB"
-  printf '{ this is not valid json' > "$D/run/candidate-learnings.json"
+  printf '{ this is not valid json' > "$LOG/candidate-learnings.json"
   err="$D/err.txt"
-  ( cd "$D" && apply_accepted_learnings "$D/run" 0 ) 2>"$err"; rc=$?
+  ( cd "$D" && apply_accepted_learnings "$LOG" 0 ) 2>"$err"; rc=$?
   [ "$rc" -ne 0 ] && ok "apply returns non-zero on a parse error" || bad "parse error should fail (rc=$rc)"
   # The distinguishing observation: a real parse error must hit the `|| cannot
   # parse` branch (the error path is LIVE), not be silently swallowed and
   # misreported as an out-of-range empty result (which a `return 0` + 2>/dev/null
   # would do).
   grep -qi 'cannot parse' "$err" 2>/dev/null && ok "the || parse-error path fires (not dead code)" || bad "a parse error must reach the cannot-parse branch (err: $(cat "$err" 2>/dev/null))"
-  { [ -f "$D/run/candidate-learnings.json" ] && [ ! -f "$D/run/candidate-learnings.reviewed.json" ]; } && ok "queue left UNREVIEWED on failure" || bad "must not mark reviewed when persistence failed"
+  { [ -f "$LOG/candidate-learnings.json" ] && [ ! -f "$LOG/candidate-learnings.reviewed.json" ]; } && ok "queue left UNREVIEWED on failure" || bad "must not mark reviewed when persistence failed"
+) || true
+
+echo "[S27] @tsv transport escaping is reversed: a backslash / newline in candidate prose persists faithfully"
+( D="$ROOT/S27"; LOG="$D/docs/tdd/.implement-logs/run1"; mkdir -p "$LOG"
+  . "$STATE_LIB"; . "$LEARN_LIB"
+  # summary has a real newline (JSON \n); evidence has a real backslash (JSON \\).
+  cat > "$LOG/candidate-learnings.json" <<'JSON'
+[{"class":"esc-class","distinct_tdds":["0010-a","0011-b"],"distinct_steps":2,"severity_range":["major","major"],"was_structural":false,"triggered_rework":false,"subject_area_hints":{"files":["src/a.sh"],"tags":["esc-class"]},"summary":"multi\nline","evidence":"back\\slash here","occurrences":[]}]
+JSON
+  ( cd "$D" && apply_accepted_learnings "$LOG" 0 ) || bad "S27 apply should succeed"
+  LM="$D/docs/tdd/LEARNINGS.md"
+  # backslash must be SINGLE (not @tsv-doubled) and the literal text intact.
+  grep -qF '- Representative evidence: back\slash here' "$LM" 2>/dev/null && ok "single backslash persisted (transport escaping reversed)" || bad "evidence backslash corrupted ($(grep -n 'evidence' "$LM" 2>/dev/null))"
+  grep -qF 'back\\slash' "$LM" 2>/dev/null && bad "backslash was @tsv-doubled in the store" || ok "no doubled backslash in the store"
+  # the real newline flattens to a space (single-line markdown entry), not a literal \n.
+  grep -q '^- Summary: multi line$' "$LM" 2>/dev/null && ok "newline flattened, not left as a literal \\n" || bad "summary newline not handled ($(grep -n 'Summary' "$LM" 2>/dev/null))"
+) || true
+
+echo "[S28] apply_accepted_learnings locates the repo root from the logdir, not the cwd (no silent wrong-path)"
+( D="$ROOT/S28"; LOG="$D/docs/tdd/.implement-logs/run1"; mkdir -p "$LOG"
+  . "$STATE_LIB"; . "$LEARN_LIB"
+  printf '[{"class":"cwd-class","distinct_tdds":["0010-a","0011-b"],"distinct_steps":2,"severity_range":["minor","minor"],"was_structural":false,"triggered_rework":false,"subject_area_hints":{"files":[],"tags":["cwd-class"]},"summary":"s","evidence":"e","occurrences":[]}]\n' > "$LOG/candidate-learnings.json"
+  # Run from a DIFFERENT cwd than the repo root: the store must still land under $D.
+  ( cd "$ROOT" && apply_accepted_learnings "$LOG" 0 ) || bad "S28 apply should succeed"
+  grep -q '## L-001: cwd-class' "$D/docs/tdd/LEARNINGS.md" 2>/dev/null && ok "LEARNINGS.md written under the logdir's repo root" || bad "store landed in the wrong tree (cwd-dependent path)"
+  [ ! -f "$ROOT/docs/tdd/LEARNINGS.md" ] && ok "nothing written under the unrelated cwd" || bad "wrote LEARNINGS.md under the cwd (silent wrong-path)"
 ) || true
 
 echo
