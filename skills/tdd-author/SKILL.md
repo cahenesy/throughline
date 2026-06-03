@@ -139,6 +139,14 @@ Get approval; adjust as directed.
 Read `docs/adr/INDEX.md`. Treat only `accepted` ADRs as binding; pull full ADR
 bodies on demand by relevant Scope. Exclude superseded; note proposed.
 
+Also read `docs/tdd/LEARNINGS.md` if present — the accepted build-phase learnings
+store written by the run-end learning capture (FR-72). Each `## L-NNN` entry's
+`Pattern class`, its `Subject-area hints` (the `files=[...]` and `tags=[...]`
+sets), `Recurred across`, and `Summary` are the matchable surface step 5's
+lead-in uses to surface relevant prior learnings (FR-73). The file is advisory
+input, not a binding artifact: an **absent** `docs/tdd/LEARNINGS.md` is a no-op
+(no prior learnings) — never treat its absence as an error.
+
 ## 5. Author the approved set
 > Tip: the interview parts of this phase benefit from `/fast` (faster output, still
 > Opus) for snappier back-and-forth; toggle it off if you want slower, more
