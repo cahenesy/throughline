@@ -1,6 +1,6 @@
 # TDD 0026: Build-phase defensive-coding norms
 
-Status: draft
+Status: implemented
 PRD refs: FR-74
 PRD-rev: 5036877
 ADR constraints: 0004, 0005, 0006, 0007
