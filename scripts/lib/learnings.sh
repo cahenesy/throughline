@@ -281,6 +281,31 @@ _files_intersect() {  # <spaceA> <spaceB> — 0 if any token shared
 # summary / evidence (free review prose that may contain quotes, $(…), or
 # backticks) is read from the JSON HERE and handed to append_accepted_learning as
 # positional args — it is NEVER interpolated into a shell command line.
+# _untsv <field> — reverse the @tsv transport escaping (\\ \t \n \r → the literal
+# backslash / tab / newline / CR) applied by _candidate_record's jq @tsv / python
+# producers. WITHOUT this, a field that legitimately holds a backslash or newline
+# is persisted in its transport-escaped form (a doubled backslash, a literal `\n`)
+# — corrupting LEARNINGS.md. Single left-to-right pass so `\\n` round-trips to a
+# literal `\n`, not backslash+newline.
+_untsv() {  # <field>
+  printf '%s' "${1:-}" | awk '
+    {
+      n = length($0); i = 1; out = ""
+      while (i <= n) {
+        c = substr($0, i, 1)
+        if (c == "\\" && i < n) {
+          d = substr($0, i + 1, 1)
+          if (d == "t") { out = out "\t"; i += 2; continue }
+          if (d == "n") { out = out "\n"; i += 2; continue }
+          if (d == "r") { out = out "\r"; i += 2; continue }
+          if (d == "\\") { out = out "\\"; i += 2; continue }
+        }
+        out = out c; i++
+      }
+      printf "%s", out
+    }'
+}
+
 _candidate_record() {  # <cl> <index>
   local cl="$1" i="$2"
   if command -v jq >/dev/null 2>&1; then
@@ -336,7 +361,16 @@ apply_accepted_learnings() {  # <logdir> [<index>...]
   [ -n "$logdir" ] || { echo "error: apply_accepted_learnings: no logdir given" >&2; return 1; }
   local cl="$logdir/candidate-learnings.json"
   [ -r "$cl" ] || { echo "error: apply_accepted_learnings: no readable candidate-learnings.json at $cl" >&2; return 1; }
-  local mainrepo="$PWD" runid; runid="$(basename "$logdir")"
+  # Derive the repo root DETERMINISTICALLY from the logdir
+  # (<mainrepo>/docs/tdd/.implement-logs/<runid> → four levels up) rather than
+  # trusting $PWD: a caller in the wrong cwd would otherwise silently write the
+  # store to the wrong tree. Validate the result actually holds docs/tdd so a
+  # non-standard logdir fails loud instead of writing astray.
+  local mainrepo runid; runid="$(basename "$logdir")"
+  mainrepo="$(cd "$logdir/../../../.." 2>/dev/null && pwd -P)" \
+    || { echo "error: apply_accepted_learnings: cannot resolve the repo root from logdir '$logdir'" >&2; return 1; }
+  [ -d "$mainrepo/docs/tdd" ] \
+    || { echo "error: apply_accepted_learnings: derived repo root '$mainrepo' has no docs/tdd (logdir not in the expected layout?)" >&2; return 1; }
   local idx rec fail=0 _rest
   local cls files tags tdds sev summ evid struct rew
   local -a _F
@@ -356,8 +390,11 @@ apply_accepted_learnings() {  # <logdir> [<index>...]
       _F+=("${_rest%%$'\t'*}")
       case "$_rest" in *$'\t'*) _rest="${_rest#*$'\t'}" ;; *) break ;; esac
     done
-    cls="${_F[0]:-}"; files="${_F[1]:-}"; tags="${_F[2]:-}"; tdds="${_F[3]:-}"
-    sev="${_F[4]:-}"; summ="${_F[5]:-}"; evid="${_F[6]:-}"; struct="${_F[7]:-}"; rew="${_F[8]:-}"
+    # Reverse the @tsv transport escaping so a backslash / newline in any field is
+    # persisted faithfully (not doubled / left as a literal \n).
+    cls="$(_untsv "${_F[0]:-}")"; files="$(_untsv "${_F[1]:-}")"; tags="$(_untsv "${_F[2]:-}")"
+    tdds="$(_untsv "${_F[3]:-}")"; sev="$(_untsv "${_F[4]:-}")"; summ="$(_untsv "${_F[5]:-}")"
+    evid="$(_untsv "${_F[6]:-}")"; struct="$(_untsv "${_F[7]:-}")"; rew="$(_untsv "${_F[8]:-}")"
     append_accepted_learning "$mainrepo" "$cls" "$files" "$tags" "$tdds" "$sev" "$summ" "$evid" "$runid" "$struct" "$rew" \
       || { echo "error: apply_accepted_learnings: persist failed for index $idx ($cls)" >&2; fail=1; }
   done

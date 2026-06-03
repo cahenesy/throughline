@@ -620,7 +620,7 @@ JSON
   ( cd "$D" && apply_accepted_learnings "$LOG" 0 ) || bad "S27 apply should succeed"
   LM="$D/docs/tdd/LEARNINGS.md"
   # backslash must be SINGLE (not @tsv-doubled) and the literal text intact.
-  grep -qF '- Representative evidence: back\slash here' "$LM" 2>/dev/null && ok "single backslash persisted (transport escaping reversed)" || bad "evidence backslash corrupted ($(grep -n 'evidence' "$LM" 2>/dev/null))"
+  grep -qF 'evidence: back\slash here' "$LM" 2>/dev/null && ok "single backslash persisted (transport escaping reversed)" || bad "evidence backslash corrupted ($(grep -n 'evidence' "$LM" 2>/dev/null))"
   grep -qF 'back\\slash' "$LM" 2>/dev/null && bad "backslash was @tsv-doubled in the store" || ok "no doubled backslash in the store"
   # the real newline flattens to a space (single-line markdown entry), not a literal \n.
   grep -q '^- Summary: multi line$' "$LM" 2>/dev/null && ok "newline flattened, not left as a literal \\n" || bad "summary newline not handled ($(grep -n 'Summary' "$LM" 2>/dev/null))"
