@@ -156,6 +156,30 @@ input, not a binding artifact: an **absent** `docs/tdd/LEARNINGS.md` is a no-op
   as for recovered draft content in step 0.
 
 ## 5. Author the approved set
+**Surface relevant prior learnings first (FR-73, advisory).** Once step 3 has
+decided the TDD set and each new TDD's rough scope, match each new TDD against the
+`docs/tdd/LEARNINGS.md` entries loaded in step 4 with a HYBRID filter, then
+surface the matches to the user as advisory context. This NEVER gates: no
+`BLOCKED` and no `PRECHECK_FAIL` is ever emitted for a learning, and the step-7b
+design-critique gate does NOT check whether a learning was incorporated.
+
+1. **Mechanical pre-filter (the falsifiable floor).** A learning is a candidate
+   match when its `Subject-area hints` `files=[...]` intersect the paths the new
+   TDD is expected to touch (its planned `## Touched files`), OR its `tags=[...]`
+   intersect tags/keywords drawn from the new TDD's PRD refs or working title.
+2. **Model-judgment backstop.** Independently scan the remaining learnings and
+   include any whose `Summary` or `Pattern class` plausibly bears on the design
+   even with NO `files`/`tags` overlap (e.g. a cross-cutting prompt-design class
+   that shares no files).
+3. **Surface, do not gate.** For each matched learning, tell the user its
+   `Pattern class`, the TDDs it `Recurred across`, and the one-line `Summary`,
+   framed as "this class recurred in prior builds — consider whether this design
+   should account for it." Fold a mitigation into the design, or record a one-line
+   "not applicable: <why>" and proceed. Authoring proceeds regardless.
+
+When `docs/tdd/LEARNINGS.md` is absent, or no learning matches a TDD's scope,
+proceed with no surfaced learnings and no note (FR-73's negative case).
+
 > Tip: the interview parts of this phase benefit from `/fast` (faster output, still
 > Opus) for snappier back-and-forth; toggle it off if you want slower, more
 > deliberate output while authoring the designs themselves.
