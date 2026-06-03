@@ -1,6 +1,6 @@
 # TDD 0022: Build-phase learning capture — recurring-pattern detection, run-completion notification, candidate review & persistence
 
-Status: draft
+Status: implemented
 PRD refs: FR-72
 PRD-rev: 52c32b9
 ADR constraints: 0003, 0004, 0005, 0006, 0007
