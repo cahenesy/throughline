@@ -1,6 +1,6 @@
 # TDD 0028: Interrogator discipline for authoring interviews
 
-Status: draft
+Status: implemented
 PRD refs: FR-75, FR-76
 PRD-rev: bfc8ad6
 ADR constraints: 0004, 0005, 0006
