@@ -216,6 +216,7 @@ throughline/
 │   │   ├── plan-classifier.sh   # mechanical / nontrivial verification-plan heuristic (model tiering)
 │   │   └── learnings.sh         # recurring-pattern detection over per-TDD findings + accepted-learning persistence to docs/tdd/LEARNINGS.md
 │   ├── build-prompt.md          # build discipline; delegates to superpowers:test-driven-development
+│   ├── build-norms.md           # enumerated FR-74 defensive-coding norms; rendered into the build prompt + reinforced on a per-step BLOCK
 │   ├── review-prompt.md         # review gate: pr-review-toolkit + security-reviewer, separate process/model
 │   ├── ci-checks.sh                # mechanical gate: tests + typecheck + lint (CI's job)
 │   ├── verify-runtime-prompt.md # runtime-verification gate: drive + observe the real artifact

@@ -188,6 +188,45 @@ _render_build_prompt() {  # <slug> <tdd>
   printf '%s' "$prompt"
 }
 
+# _build_norms_reminder (TDD 0026 / FR-74 §3) — a SHORT reminder echoed onto the
+# build's stdin ALONGSIDE a STEP_REVIEW: BLOCK verdict, re-pointing the build at
+# the FR-74 norms already in its retained context at the moment a finding was just
+# raised and a fix is imminent. NOT the full file: a one-line lead-in plus the
+# seven TERSE norm headlines — for each `N. ` line under the `## Defensive-coding
+# norms` anchor, the leading number plus the label clause up to and INCLUDING the
+# first period of the clause (e.g. `1. Fail loud.`). The first period of the clause
+# is the one AFTER the `N. ` prefix, not the period in the number itself, so the
+# prefix is stripped before locating it. Continuation lines (no leading `N. `) are
+# ignored. Pure awk, no model call.
+#
+# Degrades gracefully: if the norms file is unreadable or yields no headlines at
+# reminder time, emit a generic one-liner rather than failing the in-flight build
+# — the full norms are already in the build's retained context, and aborting a live
+# build over a missing reminder is a worse outcome than a degraded reminder
+# (deliberately asymmetric vs §2's fail-loud render, which is the build's ONLY
+# exposure to the norms).
+_build_norms_reminder() {
+  local nf headlines=""
+  nf="$(_build_norms_file)"
+  if [ -r "$nf" ]; then
+    headlines="$(awk '
+      /^## Defensive-coding norms/ { inblk = 1; next }
+      inblk && match($0, /^[0-9]+\. /) {
+        prefix = substr($0, 1, RLENGTH)        # the `N. ` lead
+        rest   = substr($0, RLENGTH + 1)       # the clause after it
+        p = index(rest, ".")                   # first period OF THE CLAUSE
+        if (p > 0) print prefix substr(rest, 1, p)
+        else       print prefix rest
+      }
+    ' "$nf" 2>/dev/null)"
+  fi
+  if [ -z "$headlines" ]; then
+    printf 're-check the FR-74 defensive-coding norms in your initial prompt'
+    return 0
+  fi
+  printf 'Reminder — re-apply the FR-74 defensive-coding norms from your initial prompt when you fix this:\n%s' "$headlines"
+}
+
 # _render_review_prompt <tdd> <scope-base> <scope-head> <branch> <prior-tags-csv>
 # (TDD 0020 / FR-57, FR-59) — interpolate the review prompt template's scope +
 # prior-patterns placeholders. Used by BOTH the per-step review (scope =
@@ -843,6 +882,17 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
               build_active_seconds=$((build_active_seconds + $(date +%s) - interval_start))
               verdict="$(_run_per_step_review "$slug" "$tdd" "$step_id" "$sha" "$build_start" "$log")"
               printf '%s\n' "$verdict" >> "$log"
+              # TDD 0026 §3 / FR-74: on a BLOCK verdict ONLY, append a compact
+              # FR-74 norms reminder to the STDIN message (reinforcement at the
+              # rework moment — the build is about to write a fix). The LOG write
+              # above keeps the BARE $verdict (the reviewer's actual verdict;
+              # mutating it before the log would pollute the gate log with the
+              # reminder). A PASS verdict is sent unchanged — the coprocess retains
+              # the initial-prompt norms across steps, so PASS needs no reminder.
+              local augmented="$verdict"
+              case "$verdict" in
+                *"STEP_REVIEW: BLOCK"*) augmented="$verdict"$'\n'"$(_build_norms_reminder)" ;;
+              esac
               # TDD 0030 §1 / FR-42: the review may have run long enough for the
               # overall watchdog to kill the coproc (the observed incident). Write
               # the verdict through _coproc_write so a dead coproc never SIGPIPE-
@@ -851,7 +901,7 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
               # break so the post-loop `wait` collects the dead coproc's status and
               # _classify_cause routes the return code (124 + timeout log, or 143)
               # to the transient/pause path — exactly as a clean watchdog kill.
-              if ! _coproc_write "${build_in}" "$(_user_turn_json "$verdict")"; then
+              if ! _coproc_write "${build_in}" "$(_user_turn_json "$augmented")"; then
                 printf 'THROUGHLINE_COPROC_DEAD: build coprocess exited before verdict delivery (step %s verdict was %s); cleared work is preserved (transient)\n' \
                   "$step_id" "$(printf '%s' "$verdict" | grep -aoE 'PASS|BLOCK' | head -1)" >> "$log"
                 break
