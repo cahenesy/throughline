@@ -478,21 +478,24 @@ Unless the user says "skip git":
   PRD commit SHA you designed against.
 - Commit the TDD set AND any ADRs promoted this round TOGETHER — ADRs ride in the
   design PR because they justify decisions made in these TDDs.
-- Open the design PR with `gh pr create` (base `main`) and put the design-critique
-  verdict + findings summary (and any waivers) in the PR body, so the human
-  reviews an INFORMED design, not a bare diff. Do NOT merge — the human merge of
-  this PR is the design gate: merging is what makes the TDDs buildable, so they are
-  built only after it lands.
-- **Open assumptions & waivers (FR-76).** Also render the final assumptions list —
-  every surfaced assumption with its disposition — as an **"Open assumptions &
-  waivers"** section in the design PR body: one line per item, `- <assumption> —
-  resolved: <how>` or `- <assumption> — waived: <rationale>`. Source the list from
-  the draft (`tl_draft_read`, the latest entry per `assumption:` header — the same
-  parse as the Interrogator-discipline resume instruction), NOT from conversational
-  memory, so the record survives any compaction that happened mid-interview. A
-  design PR whose interview surfaced no assumptions states "Open assumptions: none
-  surfaced" explicitly (the absence is declared, never silent). Render this before
-  `tl_draft_discard` below, which deletes the draft.
+- **Open assumptions & waivers (FR-76).** BEFORE opening the design PR, source the
+  final assumptions list from the draft (`tl_draft_read`, the latest entry per
+  `assumption:` header — the same parse as the Interrogator-discipline resume
+  instruction), NOT from conversational memory, so the record survives any
+  compaction that happened mid-interview. Render it — every surfaced assumption
+  with its disposition — as an **"Open assumptions & waivers"** section: one line
+  per item, `- <assumption> — resolved: <how>` or `- <assumption> — waived:
+  <rationale>`. Put it in the commit message body so `gh pr create --fill` carries
+  it into the PR (or pass it via `--body`); it must be part of the PR body at
+  creation time, never added after the PR already exists. A design PR whose
+  interview surfaced no assumptions states "Open assumptions: none surfaced"
+  explicitly (the absence is declared, never silent).
+- Open the design PR with `gh pr create` (base `main`). The PR body MUST carry
+  BOTH the design-critique verdict + findings summary (and any waivers) AND the
+  "Open assumptions & waivers" section rendered above, so the human reviews an
+  INFORMED design, not a bare diff. Do NOT merge — the human merge of this PR is
+  the design gate: merging is what makes the TDDs buildable, so they are built
+  only after it lands.
 - After the PR is opened, run `tl_draft_discard tdd-author`. This is the ONLY
   path that discards the draft on success; on any path that exits before PR
   creation (including a user cancel), the draft persists for a later resume

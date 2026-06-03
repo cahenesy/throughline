@@ -98,9 +98,13 @@ echo "[prd-author] interrogator block, completion gate, draft integration, self-
 check_common "$PRD_SKILL" "FR-75" "prd-author"
 # prd-author specific: waived items are ALSO folded into the PRD's own
 # `## Open questions` section so the artifact records what was deferred.
-{ grep -qF 'Open questions' "$PRD_SKILL" && grep -qiF 'waived' "$PRD_SKILL"; } \
+# Anchor on the UNIQUE fold-instruction fragment 'fold every item dispositioned'
+# (introduced by this change), not a bare 'Open questions' / 'waived' grep — both
+# of those match pre-existing skill text and would pass vacuously even if the fold
+# instruction were deleted.
+{ grep -qF 'fold every item dispositioned' "$PRD_SKILL" && grep -qF 'Open questions' "$PRD_SKILL"; } \
   && ok "prd-author: waived items folded into the PRD's ## Open questions section" \
-  || bad "prd-author: waived items must ALSO be appended to the PRD's ## Open questions section"
+  || bad "prd-author: waived items must ALSO be appended to the PRD's ## Open questions section (anchor: 'fold every item dispositioned')"
 
 # --- tdd-author (FR-76) -------------------------------------------------------
 echo "[tdd-author] interrogator block, completion gate, draft integration, self-review (FR-76)"
@@ -117,9 +121,20 @@ check_common "$TDD_SKILL" "FR-76" "tdd-author"
 # challenge instructions of different strengths (TDD 0028 §2). Anchored on the
 # distinctive uppercase "CHALLENGE the PRD:" so it cannot collide with the new
 # block's lowercase "challenge the PRD's requirements" phrasing.
-grep -qF 'CHALLENGE the PRD:' "$TDD_SKILL" \
-  && bad "tdd-author: the subsumed one-sentence 'CHALLENGE the PRD:' directive must be REMOVED (new block is authoritative)" \
-  || ok "tdd-author: the subsumed one-sentence 'CHALLENGE the PRD:' directive was removed"
+# Fail closed: a bare `grep -q P F && bad || ok` false-passes on an unreadable
+# file because grep's error exit (>=2) is non-zero and would take the `ok` branch.
+# Distinguish exit 1 (string correctly absent = pass) from exit >=2 (file error =
+# fail), so the removal guard can never silently pass on a missing/unreadable file.
+if [ ! -r "$TDD_SKILL" ]; then
+  bad "tdd-author: SKILL.md not readable at $TDD_SKILL (CHALLENGE-removal check)"
+else
+  grep -qF 'CHALLENGE the PRD:' "$TDD_SKILL"; _challenge_rc=$?
+  case "$_challenge_rc" in
+    1) ok  "tdd-author: the subsumed one-sentence 'CHALLENGE the PRD:' directive was removed" ;;
+    0) bad "tdd-author: the subsumed one-sentence 'CHALLENGE the PRD:' directive must be REMOVED (new block is authoritative)" ;;
+    *) bad "tdd-author: CHALLENGE-removal check could not read $TDD_SKILL (grep exit $_challenge_rc)" ;;
+  esac
+fi
 
 # --- report -------------------------------------------------------------------
 echo
