@@ -31,7 +31,6 @@
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 PRD_SKILL="$REPO/skills/prd-author/SKILL.md"
-TDD_SKILL="$REPO/skills/tdd-author/SKILL.md"
 
 # Distinguish an infrastructure failure (a missing tool / unreadable skill) from a
 # genuine content failure: a missing grep or an empty file would otherwise feed
