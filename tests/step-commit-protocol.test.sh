@@ -332,6 +332,165 @@ EOF
   fi
 ) || true
 
+# ============================================================================
+# §4 / Verification 5-8 — runtime malformed-sentinel branch (layer 4).
+# ============================================================================
+# setup_proto_repo <dir>: a git repo + a TDD with CONFORMING Sequencing labels
+# (so the layer-3 pre-flight passes and layer 4 is reached) + a stub `claude`
+# that is BOTH the multi-turn build (runs ctl/build_plan) and the per-step review
+# (echoes ctl/review.out, default PASS, capturing each review prompt). Mirrors
+# continuous-in-build-review.test.sh's setup_step_repo. Leaves PWD in the repo.
+setup_proto_repo() {  # <dir>
+  local d="$1"; mkdir -p "$d/ctl" "$d/bin"
+  cd "$d" || return 1
+  git init -q -b master; git config user.email t@t.t; git config user.name t
+  mkdir -p src docs/tdd
+  printf 'ctl/\nbin/\n' > .gitignore
+  printf 'orig\n' > src/a.txt
+  cat > docs/tdd/0032-fix.md <<'EOF'
+# TDD 0032: fixture
+Status: draft
+PRD refs: 1
+
+## Sequencing / implementation plan
+
+1. first item
+2. second item
+
+## Touched files
+- `src/a.txt` — the in-scope file
+EOF
+  git add -A; git commit -qm "build start" >/dev/null
+  cat > "$d/bin/claude" <<EOF
+#!/usr/bin/env bash
+prompt=""
+while [ \$# -gt 0 ]; do case "\$1" in -p) prompt="\$2"; shift 2;; *) shift;; esac; done
+if printf '%s' "\$prompt" | grep -q 'INDEPENDENT review gate'; then
+  n=\$(cat "$d/ctl/revcount" 2>/dev/null || echo 0); n=\$((n+1)); echo "\$n" > "$d/ctl/revcount"
+  printf '%s' "\$prompt" > "$d/ctl/review-prompt.\$n"
+  cat "$d/ctl/review.out" 2>/dev/null || echo "REVIEW_RESULT: PASS"
+  exit 0
+fi
+bash "$d/ctl/build_plan"
+EOF
+  chmod +x "$d/bin/claude"
+  export PATH="$d/bin:$PATH"
+  export TMPL="$REPO/scripts/build-prompt.md" RTMPL="$REPO/scripts/review-prompt.md"
+  export MODEL="" REVIEW_MODEL="" MAINREPO="$d"
+  printf 'REVIEW_RESULT: PASS\n' > "$d/ctl/review.out"
+}
+
+echo "[X5] no false positive: template echo + prose mention + one valid sentinel → 0 protocol errors, 1 review"
+( D="$ROOT/X5"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  setup_proto_repo "$D/repo" || { bad "setup failed"; exit 0; }
+  _write_tdd_fragment 0032-fix 32 docs/tdd/0032-fix.md 1 building build 1000 1000 "feat/0032-fix" "" log "" "" "" "" "" "" "" "" "" "" "" ""
+  cat > "$D/repo/ctl/build_plan" <<'EOF'
+IFS= read -r _init || true
+echo "STEP_COMMIT: <step-id> <sha>"          # template echo — must be ignored (has <)
+echo "discussing the STEP_COMMIT: protocol"  # prose mention — must be ignored (not line-anchored)
+echo "work" >> src/a.txt
+git add -A >/dev/null 2>&1; git commit -q -m "step(1): work" >/dev/null 2>&1
+echo "STEP_COMMIT: 1 $(git rev-parse HEAD)"  # the one real sentinel
+IFS= read -r _reply || true
+echo "BATCH_RESULT: OK"
+EOF
+  _per_step_review_loop 0032-fix docs/tdd/0032-fix.md "$D/x5.log"; rc=$?
+  pe="$(grep -c 'THROUGHLINE_PROTOCOL_ERROR' "$D/x5.log" 2>/dev/null)" || true
+  [ "$pe" -eq 0 ] && ok "no THROUGHLINE_PROTOCOL_ERROR on template/prose echoes" || bad "template/prose must not trigger a protocol error (got $pe: $(grep PROTOCOL "$D/x5.log"))"
+  [ -f "$D/repo/ctl/review-prompt.1" ] && [ ! -f "$D/repo/ctl/review-prompt.2" ] \
+    && ok "exactly one per-step review ran (the valid sentinel)" || bad "should run exactly one review"
+  [ "$rc" -eq 0 ] && ok "loop completes cleanly" || bad "loop should return 0 (rc=$rc)"
+) || true
+
+echo "[X6] malformed sentinel → bounded protocol-correction BLOCK reply (attempt 1/2)"
+( D="$ROOT/X6"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  export THROUGHLINE_BUILD_INTER_EVENT_TIMEOUT=5   # bound the wait if the reply ever regresses
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  setup_proto_repo "$D/repo" || { bad "setup failed"; exit 0; }
+  _write_tdd_fragment 0032-fix 32 docs/tdd/0032-fix.md 1 building build 1000 1000 "feat/0032-fix" "" log "" "" "" "" "" "" "" "" "" "" "" ""
+  cat > "$D/repo/ctl/build_plan" <<'EOF'
+IFS= read -r _init || true
+echo "STEP_COMMIT: 5b $(git rev-parse HEAD)"   # malformed (non-integer step id)
+IFS= read -r reply || true
+echo "$reply" > ctl/reply1
+echo "BATCH_RESULT: OK"
+EOF
+  _per_step_review_loop 0032-fix docs/tdd/0032-fix.md "$D/x6.log" >/dev/null 2>&1
+  grep -q 'THROUGHLINE_PROTOCOL_ERROR' "$D/x6.log" 2>/dev/null && grep -q 'attempt 1/2' "$D/x6.log" 2>/dev/null \
+    && ok "log records THROUGHLINE_PROTOCOL_ERROR (attempt 1/2)" || bad "log should record the protocol error attempt 1/2 (got: $(grep PROTOCOL "$D/x6.log"))"
+  grep -q 'protocol-error' "$D/repo/ctl/reply1" 2>/dev/null && grep -q 'STEP_REVIEW: BLOCK' "$D/repo/ctl/reply1" 2>/dev/null \
+    && ok "build received STEP_REVIEW: BLOCK protocol-error reply" || bad "build should receive the protocol-correction BLOCK (got: $(cat "$D/repo/ctl/reply1" 2>/dev/null))"
+  # The reply must NOT re-run a per-step review (no code to review on a malformed sentinel).
+  [ ! -f "$D/repo/ctl/review-prompt.1" ] && ok "no per-step review ran for the malformed sentinel" || bad "a malformed sentinel must not invoke the per-step review"
+) || true
+
+echo "[X7] self-correction completes: 5b → BLOCK → valid 6 → review PASS → cleared, loop proceeds"
+( D="$ROOT/X7"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  export THROUGHLINE_BUILD_INTER_EVENT_TIMEOUT=5   # bound the wait if the reply ever regresses
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  setup_proto_repo "$D/repo" || { bad "setup failed"; exit 0; }
+  _write_tdd_fragment 0032-fix 32 docs/tdd/0032-fix.md 1 building build 1000 1000 "feat/0032-fix" "" log "" "" "" "" "" "" "" "" "" "" "" ""
+  cat > "$D/repo/ctl/build_plan" <<'EOF'
+IFS= read -r _init || true
+echo "STEP_COMMIT: 5b $(git rev-parse HEAD)"   # malformed → correction
+IFS= read -r _r1 || true
+echo "work" >> src/a.txt
+git add -A >/dev/null 2>&1; git commit -q -m "step(6): work" >/dev/null 2>&1
+echo "STEP_COMMIT: 6 $(git rev-parse HEAD)"     # re-emitted with the ordinal
+IFS= read -r _r2 || true
+echo "BATCH_RESULT: OK"
+EOF
+  _per_step_review_loop 0032-fix docs/tdd/0032-fix.md "$D/x7.log"; rc=$?
+  F="$STATE_DIR/0032-fix.json"
+  grep -q 'attempt 1/2' "$D/x7.log" 2>/dev/null && ok "the malformed sentinel was corrected once" || bad "expected one protocol correction"
+  [ "$rc" -eq 0 ] && ok "loop returns 0 after self-correction" || bad "loop should complete (rc=$rc)"
+  if command -v jq >/dev/null 2>&1; then
+    sid="$(jq -r '.cleared_step_log[].step_id' "$F" 2>/dev/null | tr '\n' ',')"
+    case "$sid" in *6*) ok "re-emitted step 6 was reviewed and cleared" ;; *) bad "cleared_step_log should record step 6 (got '$sid')" ;; esac
+  else
+    grep -q '"step_id":6' "$F" 2>/dev/null && ok "re-emitted step 6 cleared" || bad "should record step 6"
+  fi
+) || true
+
+echo "[X8] exhaustion → fatal: three malformed sentinels → PROTOCOL_FATAL, kill, fatal (never transient/paused)"
+( D="$ROOT/X8"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  export THROUGHLINE_BUILD_INTER_EVENT_TIMEOUT=5
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  setup_proto_repo "$D/repo" || { bad "setup failed"; exit 0; }
+  _write_tdd_fragment 0032-fix 32 docs/tdd/0032-fix.md 1 building build 1000 1000 "feat/0032-fix" "" log "" "" "" "" "" "" "" "" "" "" "" ""
+  cat > "$D/repo/ctl/build_plan" <<'EOF'
+IFS= read -r _init || true
+# Re-emit a malformed sentinel after every correction reply. The 3rd exhausts the
+# budget (2 corrections) and the runner kills the coproc.
+for i in 1 2 3 4; do
+  echo "STEP_COMMIT: 5b $(git rev-parse HEAD)"
+  IFS= read -r _reply || exit 0     # killed coproc closes our stdin → exit
+done
+echo "BATCH_RESULT: OK"
+EOF
+  t0=$(date +%s)
+  _per_step_review_loop 0032-fix docs/tdd/0032-fix.md "$D/x8.log"; rc=$?
+  t1=$(date +%s)
+  grep -q 'THROUGHLINE_PROTOCOL_FATAL' "$D/x8.log" 2>/dev/null && ok "log records THROUGHLINE_PROTOCOL_FATAL" || bad "log should record PROTOCOL_FATAL (got: $(grep PROTOCOL "$D/x8.log"))"
+  [ "$rc" -ne 0 ] && ok "gate returns non-zero" || bad "exhaustion should return non-zero (rc=$rc)"
+  cause="$(_classify_cause "$D/x8.log" "$rc")"
+  [ "$cause" = "fatal" ] && ok "_classify_cause routes exhaustion to fatal (NOT transient)" || bad "exhaustion must be fatal, got '$cause'"
+  [ $((t1 - t0)) -lt 20 ] && ok "killed promptly (not left to the inter-event watchdog)" || bad "should kill at the 3rd malformed sentinel, not hang"
+  # No paused-state write: _per_step_review_loop never sets status=paused.
+  st="$(_read_fragment_field "$STATE_DIR/0032-fix.json" status 2>/dev/null || true)"
+  [ "$st" != "paused" ] && ok "fragment not marked paused (deterministic failure, NFR-4)" || bad "must not pause on a protocol-fatal failure"
+  ! grep -q 'BATCH_RESULT' "$D/x8.log" 2>/dev/null && ok "no BATCH_RESULT fabricated" || bad "must not fabricate BATCH_RESULT on exhaustion"
+) || true
+
 # <<INSERT NEW SECTIONS ABOVE THIS LINE>>
 
 # grep -c prints the count and exits 1 when zero — keep the count, drop the rc.
