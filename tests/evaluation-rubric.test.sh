@@ -66,7 +66,11 @@ check_phase() {  # <file> <label> <persistence-anchor> <seed1> <seed2>
   grep -qiF 'skeptical grading expert' "$f" \
     && ok "$lbl §1: skeptical-grading-expert posture switch present" \
     || bad "$lbl §1: missing the skeptical-grading-expert posture switch"
-  grep -qiF 'dispositioned' "$f" && grep -qiF 'open-assumptions' "$f" \
+  # Anchor on the rubric-block-unique 'Do not start this phase until' so this does
+  # not pass vacuously on the pre-existing interrogator block's use of
+  # 'dispositioned' / 'open-assumptions'.
+  grep -qiF 'Do not start this phase until' "$f" && grep -qiF 'dispositioned' "$f" \
+    && grep -qiF 'open-assumptions' "$f" \
     && ok "$lbl §1: strict-ordering precondition (open-assumptions dispositioned first) present" \
     || bad "$lbl §1: missing the strict-ordering precondition (open-assumptions dispositioned first)"
   grep -qF 'Criterion | High-quality | Acceptable | Failing' "$f" \
