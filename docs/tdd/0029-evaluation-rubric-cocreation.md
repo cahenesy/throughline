@@ -204,20 +204,40 @@ sessions; the design-reviewer's output citing rubric criteria.
    `agents/design-reviewer.md` for: the instruction to grade against each
    rubric row; the failing-grade-is-BLOCK rule; the absence-is-a-finding rule;
    the rubric-vs-standing-criteria precedence statement.
-4. **Behavioral: rubric reaches the artifact and the gate cites it.** Run a
-   `/tdd-author` session in a fixture repo (post-build, plugin reloaded);
-   complete the interrogation + rubric phases; let it author a TDD and spawn
-   the design-reviewer. Observe: the authored TDD contains the
-   `## Evaluation rubric` section with the co-created table; the
-   design-reviewer's output cites at least one rubric criterion by name in its
-   findings or PASS rationale.
+4. **Behavioral, two parts — split by what the headless gate can observe:**
+   - **§4a (interactive-only — `SKIP` for the automated runtime-verify gate).**
+     The end-to-end "a live co-creation produces a `## Evaluation rubric` table in
+     the authored artifact" check requires driving a real `/tdd-author` session
+     through its rubric co-creation phase, which is an **interactive
+     `AskUserQuestion` exchange**. The headless runtime-verify gate is a
+     non-interactive `claude -p` process and CANNOT answer those prompts, so this
+     observation is **not headlessly observable** and the gate records
+     `VERIFY_RUNTIME: SKIP` for it (NFR-4: declared, never a false PASS, never
+     conflated with "observed and wrong"). It is verified out-of-band when a human
+     actually runs `/tdd-author` post-merge and sees the co-created table land in
+     the authored TDD — concretely, the FIRST post-merge `/tdd-author` run that
+     produces a `## Evaluation rubric` section in its authored output IS the
+     out-of-band observation (that produced section is the evidence; no separate
+     fixture or recorded artifact is required). The repo-side regression weight for the co-creation
+     instruction itself is carried by the mechanical checks §1 (the rubric-phase
+     block + `## Evaluation rubric` persistence instruction) and §2 (the template
+     line) — those assert the instruction that drives §4a exists.
+   - **§4b (gate-observable). Design-reviewer cites a rubric criterion by name.**
+     Present the design-reviewer (non-interactively) with a fixture TDD that
+     already contains an `## Evaluation rubric` table. Observe: its output cites at
+     least one rubric criterion by name in its findings or PASS rationale. This
+     needs no interactive co-creation — the rubric is pre-supplied in the fixture —
+     so it IS headlessly observable and the gate drives it.
 5. **Behavioral: missing-rubric finding.** Present the design-reviewer with a
    fixture TDD lacking the rubric section (in a context marked as post-FR-77
    authoring). Observe: its output contains a finding noting the rubric's
    absence.
 
-(§4–§5 are session-driven, exercised by the runtime-verify gate; §1–§3 are the
-mechanical regression surface.)
+(§4b and §5 are session-driven observations the runtime-verify gate drives
+headlessly against fixture TDDs; §4a is interactive-only and is recorded `SKIP`
+by the gate (verified out-of-band by a real authoring session); §1–§3 are the
+mechanical regression surface. So the automated runtime-verify gate PASSES on
+§4b + §5 and SKIPs §4a — it never blocks on the un-observable interactive path.)
 
 **Expected observations (PASS):** every numbered point yields the cited result.
 
@@ -226,10 +246,10 @@ mechanical regression surface.)
 | Requirement | Design element satisfying it |
 |---|---|
 | FR-77 distinct rubric phase, both skills, after interview before artifact | §1 + §2 phase blocks with the strict-ordering precondition. Verification §1. |
-| FR-77 skeptical grading-expert posture + co-creation with user | §1/§2 posture-switch + AskUserQuestion co-creation flow. Verification §1, §4. |
-| FR-77 criteria limited to gate-observable qualities | §1/§2 seed lists + §2's design-flavored set; rubric structure (observable one-line anchors). Verification §1 (table spec grep), §4. |
-| FR-77 persisted as part of the design record | §1/§2 persistence into the artifact's `## Evaluation rubric` section + §4 template lines. Verification §2, §4. |
-| FR-77 consumed by the design-critique gate as explicit success criteria | §3 design-reviewer consumption (grade per row, cite criteria, failing→BLOCK). Verification §3, §4, §5. |
+| FR-77 skeptical grading-expert posture + co-creation with user | §1/§2 posture-switch + AskUserQuestion co-creation flow. Verification §1, §4a (interactive). |
+| FR-77 criteria limited to gate-observable qualities | §1/§2 seed lists + §2's design-flavored set; rubric structure (observable one-line anchors). Verification §1 (table spec grep), §4a (interactive). |
+| FR-77 persisted as part of the design record | §1/§2 persistence into the artifact's `## Evaluation rubric` section + §4 template lines. Verification §2, §4a (interactive). |
+| FR-77 consumed by the design-critique gate as explicit success criteria | §3 design-reviewer consumption (grade per row, cite criteria, failing→BLOCK). Verification §3, §4b, §5. |
 | FR-77 queryable by future sessions + learnings system | Inline-in-artifact storage means future sessions read it with the artifact (no new query surface needed); learnings-system integration explicitly deferred (open question retained). Traced as satisfied-by-simplest-mechanism + declared deferral. |
 
 No gaps (the learnings-integration leg is satisfied at the "queryable" level by
@@ -274,6 +294,19 @@ pass to fold in.
 The second open question ("Rubric phase ordering vs. interrogator completion")
 is also resolved: strict ordering (assumptions dispositioned first), per §
 Approach decision 4.
+
+**Build blocker resolved (2026-06-03).** The first `/implement` build of this TDD
+passed every mechanical check (29/29) and every other behavioral observation but
+halted `VERIFY_RUNTIME: BLOCKED — §4(a) unobservable`: the original §4 told the
+headless runtime-verify gate to drive a live `/tdd-author` rubric co-creation,
+which is an interactive `AskUserQuestion` exchange a non-interactive `claude -p`
+verifier cannot complete. This was a verification-plan flaw, not a code defect.
+Resolved in-place (this TDD is `draft`): §4 is split into §4a
+(interactive-only → the gate records `SKIP`, verified out-of-band by a real
+authoring session) and §4b (the design-reviewer citing a criterion against a
+pre-supplied fixture rubric — headlessly observable, the gate drives it). The
+repo-side regression weight for the co-creation instruction stays on the
+mechanical §1/§2 checks. No design substance changed.
 
 ## Decisions to promote (ADR candidates)
 
