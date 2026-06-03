@@ -1,6 +1,6 @@
 # TDD 0029: Evaluation-rubric co-creation phase
 
-Status: draft
+Status: implemented
 PRD refs: FR-77
 PRD-rev: bfc8ad6
 ADR constraints: 0003, 0004, 0005, 0006
