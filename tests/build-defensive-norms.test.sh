@@ -21,6 +21,7 @@
 # Run: bash tests/build-defensive-norms.test.sh
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
+IMPL="$REPO/scripts/implement.sh"
 NORMS="$REPO/scripts/build-norms.md"
 RESULTS="$(mktemp)"; export RESULTS
 ok()   { printf 'ok\n'   >>"$RESULTS"; printf '  ok   — %s\n' "$1"; }
@@ -47,6 +48,101 @@ echo "[§0] build-norms.md structural contract: unique H2 anchor + seven numbere
     grep -qF "$kw" "$NORMS" 2>/dev/null && ok "norm class present: $kw" \
       || bad "norm class missing: $kw"
   done
+) || true
+
+# mk_prompt_dir <dir> — a build-prompt.md fixture carrying the three render
+# placeholders ({{TDD}}, {{CLEARED_STEPS}}, {{BUILD_NORMS}}). The norms file is
+# created separately by each case (present / absent / sed-breaking) beside it, so
+# the dirname-of-$TMPL resolution picks it up.
+mk_prompt_dir() {  # <dir>
+  local d="$1"; mkdir -p "$d"
+  cat > "$d/build-prompt.md" <<'EOF'
+Implement {{TDD}} as a single unattended build.
+
+Build discipline:
+- RESUME SIGNAL. Cleared steps: {{CLEARED_STEPS}}
+
+Defensive-coding norms (FR-74). The following norms are non-negotiable:
+
+{{BUILD_NORMS}}
+
+Close:
+- done
+EOF
+}
+
+# ===========================================================================
+# §1: the norms reach the initial build prompt. _render_build_prompt must
+# substitute {{BUILD_NORMS}} with the full norms file content — the anchor and
+# all seven lead-ins present, no literal placeholder left, return code 0.
+echo "[§1] _render_build_prompt substitutes {{BUILD_NORMS}}: anchor + 7 norms present, no placeholder left"
+( D="$ROOT/r1"; TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  mk_prompt_dir "$D"
+  cp "$NORMS" "$D/build-norms.md"
+  export TMPL="$D/build-prompt.md"; unset STATE_DIR
+  prompt="$(_render_build_prompt 0026-x docs/tdd/0026-x.md)"; rc=$?
+  [ "$rc" -eq 0 ] && ok "render returns 0 with a norms file present" || bad "render should return 0 (got $rc)"
+  printf '%s' "$prompt" | grep -qF '## Defensive-coding norms (FR-74)' \
+    && ok "rendered prompt carries the norms H2 anchor" || bad "rendered prompt should carry the anchor"
+  miss=0
+  for kw in "Fail loud" "Temp files" "Safe escaping" "Sourced-library hygiene" \
+            "Path / trust boundary" "Read once" "No hardcoding"; do
+    printf '%s' "$prompt" | grep -qF "$kw" || { miss=1; bad "rendered prompt missing norm lead-in: $kw"; }
+  done
+  [ "$miss" -eq 0 ] && ok "all seven norm lead-ins reached the prompt"
+  printf '%s' "$prompt" | grep -qF '{{BUILD_NORMS}}' \
+    && bad "literal {{BUILD_NORMS}} placeholder must NOT remain" || ok "no literal {{BUILD_NORMS}} placeholder remains"
+) || true
+
+# ===========================================================================
+# §2: a missing/unreadable norms file is FATAL at render — _render_build_prompt
+# returns non-zero with a stderr diagnostic naming the file, and emits NO partial
+# prompt. A build prompt that silently drops its norms is the exact failure mode
+# FR-74 prevents (norm #1, fail loud).
+echo "[§2] a missing norms file is FATAL at render (non-zero + stderr diagnostic; no partial prompt)"
+( D="$ROOT/r2"; TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  mk_prompt_dir "$D"            # build-prompt.md but NO build-norms.md beside it
+  export TMPL="$D/build-prompt.md"; unset STATE_DIR
+  err="$ROOT/r2.err"
+  prompt="$(_render_build_prompt 0026-x docs/tdd/0026-x.md 2>"$err")"; rc=$?
+  [ "$rc" -ne 0 ] && ok "render returns non-zero when the norms file is absent" \
+    || bad "render must fail when the norms file is missing (got rc=$rc)"
+  grep -qF 'build-norms.md' "$err" 2>/dev/null \
+    && ok "stderr diagnostic names the missing norms file" || bad "stderr should name build-norms.md (got: $(cat "$err" 2>/dev/null))"
+  printf '%s' "$prompt" | grep -qF 'Implement docs/tdd/0026-x.md' \
+    && bad "no partial prompt should be emitted on the fatal path" || ok "no partial prompt emitted on the fatal path"
+) || true
+
+# ===========================================================================
+# §3: substitution is bash parameter expansion, not sed. A norms file containing
+# sed-breaking characters (&, /) and a {{TDD}}-like token must survive verbatim:
+# the chars are not corrupted, and the {{TDD}}-like token inside the norms is NOT
+# re-substituted with the TDD path (proving the norms go in LAST and are never
+# re-scanned).
+echo "[§3] substitution is PE not sed: &, / survive; a {{TDD}}-like token in the norms is NOT re-substituted"
+( D="$ROOT/r3"; TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  mk_prompt_dir "$D"
+  cat > "$D/build-norms.md" <<'EOF'
+## Defensive-coding norms (FR-74)
+
+1. Amp & ersand and a /slash/path survive verbatim.
+2. A token {{TDD}} inside the norms must stay literal, never re-substituted.
+EOF
+  export TMPL="$D/build-prompt.md"; unset STATE_DIR
+  prompt="$(_render_build_prompt 0026-x docs/tdd/0026-real.md)"; rc=$?
+  [ "$rc" -eq 0 ] && ok "render returns 0 with the sed-breaking norms file" || bad "render should return 0 (got $rc)"
+  printf '%s' "$prompt" | grep -qF 'Amp & ersand and a /slash/path' \
+    && ok "& and / in the norms survive verbatim (no sed corruption)" || bad "& and / should survive verbatim"
+  # The build-prompt body's own {{TDD}} WAS substituted (sed, first)...
+  printf '%s' "$prompt" | grep -qF 'Implement docs/tdd/0026-real.md' \
+    && ok "the template's own {{TDD}} placeholder was substituted" || bad "the template {{TDD}} should be substituted"
+  # ...but the {{TDD}}-like token INSIDE the norms stays literal (norms go in last).
+  printf '%s' "$prompt" | grep -qF 'A token {{TDD}} inside the norms' \
+    && ok "a {{TDD}}-like token inside the norms is NOT re-substituted (norms inserted last)" \
+    || bad "the norms' {{TDD}}-like token should remain literal"
 ) || true
 
 # --- report ----------------------------------------------------------------
