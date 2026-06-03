@@ -99,15 +99,24 @@ short section (§4). Resolution mirrors the existing template-not-found handling
   precedent (`_per_step_review_loop` already treats a failed render as FATAL
   rather than spawning `claude -p ""`), the missing-norms case must abort the
   build, not degrade silently.
-- Substitute via bash parameter expansion (not `sed`) — the norms text contains
-  `&`, `/`, and backslashes that would corrupt a `sed` replacement (this TDD
-  must not itself violate norm #3). Read the file into a variable and use
-  `${prompt//\{\{BUILD_NORMS\}\}/$norms}`.
+- Insert the norms by **split-and-concatenate**, NOT by `sed` and NOT by a
+  `${prompt//\{\{BUILD_NORMS\}\}/$norms}` parameter-expansion replace. The norms
+  text contains `&`, `/`, and backslashes; an unescaped `&` is the matched-text
+  back-reference in `sed` AND — since bash 5.2 (the runner box ships 5.3) — in a
+  PE *replacement* string too, so a PE replace corrupts norms containing `&`
+  exactly as `sed` would (the very hazard norm #3 cites; this TDD must not itself
+  violate it). Read the file into `$norms`, then split the rendered template on
+  the literal `{{BUILD_NORMS}}` placeholder and concatenate the three pieces
+  (`before$norms$after`) — pure prefix/suffix string ops with ZERO metacharacter
+  interpretation. (Implementation note, build 0026: the original PE-replace
+  prescription was found to corrupt `&` on bash ≥5.2 during the build; this
+  design-of-record was amended to the concatenation approach, which the
+  verification §3 char-survival check confirms.)
 
 Substitution order: `{{TDD}}` (existing `sed`) first, then `{{CLEARED_STEPS}}`
-(existing PE), then `{{BUILD_NORMS}}` (new PE) LAST — so the norms text (which
-may contain `{{...}}`-like sequences in examples) cannot be re-scanned for
-earlier placeholders.
+(existing PE), then `{{BUILD_NORMS}}` (split-and-concatenate) LAST — so the norms
+text (which may contain `{{...}}`-like sequences in examples) cannot be re-scanned
+for earlier placeholders.
 
 ### 3. BLOCK-only reinforcement — `_per_step_review_loop` in `scripts/lib/gates.sh`
 
@@ -179,9 +188,9 @@ is persisted to `state.d/`.
 1. **Add `scripts/build-norms.md`** with the §1 content (the H2 anchor + the
    seven numbered norms).
 2. **Extend `_render_build_prompt`** (`scripts/lib/gates.sh`) to substitute
-   `{{BUILD_NORMS}}` from `build-norms.md`, fail-loud on a missing file, PE
-   substitution last (§2). Add the `{{BUILD_NORMS}}` placeholder section to
-   `build-prompt.md` (§4).
+   `{{BUILD_NORMS}}` from `build-norms.md`, fail-loud on a missing file,
+   split-and-concatenate insertion last (§2). Add the `{{BUILD_NORMS}}`
+   placeholder section to `build-prompt.md` (§4).
 3. **Add `_build_norms_reminder` + wire the BLOCK-only reinforcement** into
    `_per_step_review_loop`'s BLOCK reply path (§3), degrading gracefully on a
    missing file.
@@ -196,8 +205,9 @@ is persisted to `state.d/`.
   one-line reminder; do NOT abort the in-flight build (the full norms are already
   in its retained context). Distinct from §2 by design.
 - **Norms text contains sed-breaking characters.** Handled: `{{BUILD_NORMS}}` is
-  substituted by bash PE, not `sed`; substitution happens last so the inserted
-  text is never re-scanned (§2).
+  inserted by split-and-concatenate (not `sed`, and not a PE replace — `&` is the
+  matched-text reference in a bash ≥5.2 PE replacement too); insertion happens
+  last so the inserted text is never re-scanned (§2).
 - **A PASS verdict.** No reminder appended; sent unchanged (the coprocess retains
   the norms; reinforcement is BLOCK-only by design decision).
 - **Degraded single-shot build (no STEP_COMMIT sentinels).** §3 never fires (no
@@ -224,11 +234,11 @@ FR-74 acceptance itself — the committed diff of a build that exercises a norm.
    removed. Expect: `_render_build_prompt` returns non-zero and emits a stderr
    diagnostic naming the missing file; the returned prompt is NOT a partial
    prompt with an unsubstituted/empty placeholder.
-3. **Substitution is PE, not sed (no corruption).** Fixture `build-norms.md`
-   containing `&`, `/`, and a `{{TDD}}`-like token. Expect: the rendered prompt
-   contains those characters verbatim, and the `{{TDD}}`-like token inside the
-   norms text is NOT substituted with the TDD path (proves norms are substituted
-   last and not re-scanned).
+3. **Substitution is literal (no corruption from `sed` OR a PE replace).** Fixture
+   `build-norms.md` containing `&`, `/`, and a `{{TDD}}`-like token. Expect: the
+   rendered prompt contains those characters verbatim, and the `{{TDD}}`-like token
+   inside the norms text is NOT substituted with the TDD path (proves the norms are
+   inserted last by split-and-concatenate and not re-scanned).
 4. **BLOCK reply carries the reminder.** Drive `_per_step_review_loop` (or the
    extracted `_build_norms_reminder` + reply assembly) with a stubbed per-step
    review returning `STEP_REVIEW: BLOCK <finding>`. Expect: the message written
