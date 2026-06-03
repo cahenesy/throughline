@@ -270,7 +270,13 @@ the sentinels off the build's stdout (stream-json) and writes the verdict to
 stdin. This makes review continuous and scoped per step rather than one
 end-of-build pass, so already-cleared code is never re-evaluated (FR-57). A
 build that never emits `STEP_COMMIT:` degrades gracefully to single-shot
-end-of-build review (the legacy shape).
+end-of-build review (the legacy shape). A malformed `STEP_COMMIT:` (a
+non-integer step id, e.g. copying a `5b.` Sequencing label literally) is not
+dropped silently: the runner logs a `THROUGHLINE_PROTOCOL_ERROR` and replies
+with a bounded protocol-correction `STEP_REVIEW: BLOCK` telling the build to
+re-emit the sentinel with the 1-based ordinal (2 corrections per build);
+exhausting that budget kills the build and FAILs the TDD via the fatal pathway
+— a protocol error is never classified transient (NFR-4).
 
 The build's own `BATCH_RESULT: OK` is NOT trusted as done. Before flipping a TDD
 to `implemented`, the runner enforces four independent gates:
