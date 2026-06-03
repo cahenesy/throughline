@@ -141,6 +141,14 @@ as today. The PR-body record is rendered text, not persisted state.
    ASSUMPTIONS", the agreement-is-not-helpfulness anti-sycophancy sentence,
    "resolved:" / "waived:" dispositions, the `tl_draft_read` resume parse,
    the PR-body section name).
+4. **Wire the eval into the aggregator (do NOT defer):** add the
+   `tests/interrogator-discipline.test.sh` invocation to
+   `tests/implement-gate.test.sh` in the SAME step as creating the eval —
+   declare its `*_FAIL` accumulator, run it conditionally like the sibling
+   evals, and AND it into the suite's final pass/fail expression. An eval that
+   is not wired here is orphaned from `ci-checks.sh` and provides no regression
+   gate for FR-75/FR-76; this is a required deliverable of step 3's unit, not a
+   follow-up.
 
 **Build-order note:** the current `/implement` run (TDDs 0021/0022/0023/0026)
 also modifies `skills/tdd-author/SKILL.md` (0023's learnings surfacing). This
@@ -249,6 +257,17 @@ the cross-reference FR-5 already carries ("the interview discipline that
 precedes this rigor pass is specified by FR-75") was added in the same PRD
 revision this TDD designs against.
 
+**Build blocker resolved (2026-06-03).** The first `/implement` build of this
+TDD halted with a `structural-finding(b)` scope precheck (`PRECHECK_FAIL:
+tests/interrogator-discipline.test.sh 131 > 90`): the bounded-rework loop had
+correctly added the aggregator wire-in but the eval test then exceeded its
+declared per-file bound. This was a design-time underestimate in `## Expected
+diff size`, not a code defect — the eval genuinely needs ~130 lines. Resolved
+in-place (this TDD is `draft`): per-file bounds corrected to the build branch's
+actual sizes and the aggregator wire-in promoted to an explicit `## Sequencing`
+step so a rebuild does it inline. No design substance changed; see
+`docs/tdd/BLOCKERS.md`.
+
 ## Decisions to promote (ADR candidates)
 
 None. The discipline is prompt-level instruction within existing skills; no
@@ -265,9 +284,9 @@ Total: 4 files touched.
 
 ## Expected diff size
 
-- `skills/prd-author/SKILL.md` — ~45 lines added.
-- `skills/tdd-author/SKILL.md` — ~45 lines added.
-- `tests/interrogator-discipline.test.sh` — ~90 lines added (new eval).
-- `tests/implement-gate.test.sh` — ~6 lines added (aggregator wire-in).
+- `skills/prd-author/SKILL.md` — ~60 lines added (interrogator block + PR-body record + self-review item; the verbatim anti-sycophancy and tracking instructions are intrinsically multi-line).
+- `skills/tdd-author/SKILL.md` — ~60 lines added (same block, design-flavored, plus removal of the subsumed one-line directive).
+- `tests/interrogator-discipline.test.sh` — ~135 lines added (new eval: ~10 mechanical anchors greped across both SKILL.mds, plus the subsumed-directive removal polarity check, with per-assertion `ok`/`bad` reporting).
+- `tests/implement-gate.test.sh` — ~18 lines added (aggregator wire-in: `*_FAIL` accumulator + conditional run block + final-expression AND, matching the sibling-eval pattern).
 
-Total expected diff: ~186 lines across 4 files. No exceptions needed.
+Total expected diff: ~273 lines across 4 files. No exceptions needed.
