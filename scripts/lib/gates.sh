@@ -999,14 +999,7 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
                   printf '%s\n' "$verdict" >> "$log"
                   # Same SIGPIPE-safe write as the review-verdict path: a coproc
                   # that died mid-correction breaks to the post-loop classifier.
-                  # Fail loud (FR-74 norm #1): log the dead-coproc cause in-band so
-                  # triage sees WHY the loop broke, mirroring the valid-sentinel
-                  # path's THROUGHLINE_COPROC_DEAD diagnostic — never a silent break.
-                  if ! _coproc_write "${build_in}" "$(_user_turn_json "$verdict")"; then
-                    printf 'THROUGHLINE_COPROC_DEAD: build coprocess exited before protocol-correction delivery (attempt %s/2); (transient)\n' \
-                      "$_protocol_errors" >> "$log"
-                    break
-                  fi
+                  _coproc_write "${build_in}" "$(_user_turn_json "$verdict")" || break
                   interval_start=$(date +%s)   # same clock handling as the review-verdict path
                 else
                   # Budget exhausted (>2 corrections). Kill ONLY our spawned pid
