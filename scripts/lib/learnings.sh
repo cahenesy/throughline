@@ -273,14 +273,20 @@ _files_intersect() {  # <spaceA> <spaceB> — 0 if any token shared
 #   evidence \t structural \t rework
 # Parsed by jq → python3 → fail-closed (FR-74 #3: never hand-roll a JSON parser
 # for untrusted text). Both parsers escape any tab/newline INSIDE a field so the
-# caller's IFS=$'\t' split is unambiguous. Echoes nothing for an out-of-range
-# index. This is what makes acceptance injection-proof: the candidate's summary /
-# evidence (free review prose that may contain quotes, $(…), or backticks) is read
-# from the JSON HERE and handed to append_accepted_learning as positional args —
-# it is NEVER interpolated into a shell command line.
+# caller's tab-walk split is unambiguous. An out-of-range index yields empty
+# output with a zero status; a genuine PARSE failure (malformed JSON) propagates
+# the parser's NON-ZERO status (and its diagnostic on stderr) so the caller's `||`
+# handler fires and leaves the queue unreviewed — the error path is live, not
+# dead. This is also what makes acceptance injection-proof: the candidate's
+# summary / evidence (free review prose that may contain quotes, $(…), or
+# backticks) is read from the JSON HERE and handed to append_accepted_learning as
+# positional args — it is NEVER interpolated into a shell command line.
 _candidate_record() {  # <cl> <index>
   local cl="$1" i="$2"
   if command -v jq >/dev/null 2>&1; then
+    # No stderr suppression / no forced `return 0`: jq's own exit status is this
+    # function's status, so malformed JSON surfaces instead of masquerading as an
+    # empty (out-of-range) result.
     jq -r --argjson i "$i" '
       if (length > $i) then .[$i] as $o |
         [ $o.class,
@@ -291,11 +297,11 @@ _candidate_record() {  # <cl> <index>
           ($o.summary // ""), ($o.evidence // ""),
           (($o.was_structural // false)|tostring), (($o.triggered_rework // false)|tostring)
         ] | @tsv
-      else empty end' "$cl" 2>/dev/null
-    return 0
+      else empty end' "$cl"
+    return
   fi
   if command -v python3 >/dev/null 2>&1; then
-    python3 - "$cl" "$i" <<'PY' 2>/dev/null
+    python3 - "$cl" "$i" <<'PY'
 import json, sys
 cl, i = sys.argv[1], int(sys.argv[2])
 a = json.load(open(cl))
@@ -309,7 +315,7 @@ if 0 <= i < len(a):
               str(o.get("was_structural", False)).lower(), str(o.get("triggered_rework", False)).lower()]
     sys.stdout.write("\t".join(esc(f) for f in fields))
 PY
-    return 0
+    return
   fi
   echo "error: _candidate_record: neither jq nor python3 available to parse $cl (FR-74 #3 — fail closed rather than hand-roll a JSON parser)" >&2
   return 1
@@ -331,8 +337,9 @@ apply_accepted_learnings() {  # <logdir> [<index>...]
   local cl="$logdir/candidate-learnings.json"
   [ -r "$cl" ] || { echo "error: apply_accepted_learnings: no readable candidate-learnings.json at $cl" >&2; return 1; }
   local mainrepo="$PWD" runid; runid="$(basename "$logdir")"
-  local idx rec fail=0
+  local idx rec fail=0 _rest
   local cls files tags tdds sev summ evid struct rew
+  local -a _F
   for idx in "$@"; do
     case "$idx" in ''|*[!0-9]*) echo "error: apply_accepted_learnings: non-numeric index '$idx' rejected" >&2; fail=1; continue ;; esac
     rec="$(_candidate_record "$cl" "$idx")" || { echo "error: apply_accepted_learnings: cannot parse candidate index $idx" >&2; fail=1; continue; }
@@ -342,8 +349,9 @@ apply_accepted_learnings() {  # <logdir> [<index>...]
     # — e.g. files_csv when the involved TDDs declared no `## Touched files` — would
     # be dropped and every later field (summary, evidence, …) would shift left. The
     # @tsv producer escapes any in-field tab/newline, so a literal tab here is
-    # always a field boundary; walk them explicitly.
-    local _rest="$rec"; local -a _F=()
+    # always a field boundary; walk them explicitly. Reset the accumulator each
+    # iteration (declared once, above the loop).
+    _rest="$rec"; _F=()
     while :; do
       _F+=("${_rest%%$'\t'*}")
       case "$_rest" in *$'\t'*) _rest="${_rest#*$'\t'}" ;; *) break ;; esac
