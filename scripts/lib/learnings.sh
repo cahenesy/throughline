@@ -371,7 +371,7 @@ apply_accepted_learnings() {  # <logdir> [<index>...]
     || { echo "error: apply_accepted_learnings: cannot resolve the repo root from logdir '$logdir'" >&2; return 1; }
   [ -d "$mainrepo/docs/tdd" ] \
     || { echo "error: apply_accepted_learnings: derived repo root '$mainrepo' has no docs/tdd (logdir not in the expected layout?)" >&2; return 1; }
-  local idx rec fail=0 _rest
+  local idx rec fail=0 _rest _dec
   local cls files tags tdds sev summ evid struct rew
   local -a _F
   for idx in "$@"; do
@@ -391,10 +391,25 @@ apply_accepted_learnings() {  # <logdir> [<index>...]
       case "$_rest" in *$'\t'*) _rest="${_rest#*$'\t'}" ;; *) break ;; esac
     done
     # Reverse the @tsv transport escaping so a backslash / newline in any field is
-    # persisted faithfully (not doubled / left as a literal \n).
-    cls="$(_untsv "${_F[0]:-}")"; files="$(_untsv "${_F[1]:-}")"; tags="$(_untsv "${_F[2]:-}")"
-    tdds="$(_untsv "${_F[3]:-}")"; sev="$(_untsv "${_F[4]:-}")"; summ="$(_untsv "${_F[5]:-}")"
-    evid="$(_untsv "${_F[6]:-}")"; struct="$(_untsv "${_F[7]:-}")"; rew="$(_untsv "${_F[8]:-}")"
+    # persisted faithfully (not doubled / left as a literal \n). CHECK every
+    # decode's exit status: a failed _untsv (e.g. awk unavailable) yields empty
+    # output, and silently persisting empty fields + marking the queue reviewed
+    # would lose the learning with no retry (FR-74 #1). On any failure, skip this
+    # index so `fail=1` leaves the queue unreviewed.
+    _dec=1
+    cls="$(_untsv "${_F[0]:-}")"    || _dec=0
+    files="$(_untsv "${_F[1]:-}")"  || _dec=0
+    tags="$(_untsv "${_F[2]:-}")"   || _dec=0
+    tdds="$(_untsv "${_F[3]:-}")"   || _dec=0
+    sev="$(_untsv "${_F[4]:-}")"    || _dec=0
+    summ="$(_untsv "${_F[5]:-}")"   || _dec=0
+    evid="$(_untsv "${_F[6]:-}")"   || _dec=0
+    struct="$(_untsv "${_F[7]:-}")" || _dec=0
+    rew="$(_untsv "${_F[8]:-}")"    || _dec=0
+    if [ "$_dec" -ne 1 ]; then
+      echo "error: apply_accepted_learnings: field decode (_untsv) failed for index $idx; not persisting (queue left unreviewed)" >&2
+      fail=1; continue
+    fi
     append_accepted_learning "$mainrepo" "$cls" "$files" "$tags" "$tdds" "$sev" "$summ" "$evid" "$runid" "$struct" "$rew" \
       || { echo "error: apply_accepted_learnings: persist failed for index $idx ($cls)" >&2; fail=1; }
   done
