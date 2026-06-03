@@ -166,7 +166,15 @@ _render_build_prompt() {  # <slug> <tdd>
     echo "error: _render_build_prompt: defensive-coding norms file not found or unreadable ($norms_file); refusing to render a build prompt without its FR-74 norms" >&2
     return 1
   fi
-  norms="$(cat "$norms_file")"
+  # Guard the read itself: a `cat` that fails (the file vanished/became unreadable
+  # after the [ -r ] pre-flight) OR an EMPTY norms file would otherwise leave
+  # $norms empty and substitute NOTHING — the silent empty substitution this
+  # function explicitly forbids (norm #1, fail loud). Check at the point of
+  # assignment so no later `local` masks the cat's exit code.
+  if ! norms="$(cat "$norms_file")" || [ -z "$norms" ]; then
+    echo "error: _render_build_prompt: defensive-coding norms file is empty or unreadable ($norms_file); refusing to render a build prompt without its FR-74 norms" >&2
+    return 1
+  fi
   prompt="$(sed "s#{{TDD}}#${tdd}#g" "$tmpl")"
   cleared="$(_cleared_steps_csv "$slug")"
   prompt="${prompt//\{\{CLEARED_STEPS\}\}/$cleared}"
