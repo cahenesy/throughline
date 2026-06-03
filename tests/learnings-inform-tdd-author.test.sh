@@ -175,11 +175,33 @@ _intersects() {  # <set-A> <set-B>
 
 # Echo MATCH / NOMATCH for <learnings-file> vs <tdd-file> per the documented floor.
 mech_prefilter() {  # <learnings-file> <tdd-file>
-  # NOT YET IMPLEMENTED — a bare stub so EVERY behavioral assertion below is RED:
-  # no files=/tags= match decision (the overlap assertions expect MATCH but get
-  # NOMATCH), and no integrity guards (the malformed-fixture assertions expect a
-  # FATAL exit 2 but get rc=0). The step(3) implementation commit adds the
-  # extraction, the integrity guards, and the match decision.
+  local learnings="$1" tdd="$2" hints files_csv tags_csv learn_files learn_tags tdd_files tdd_kw
+  hints="$(grep -m1 'Subject-area hints:' "$learnings" || true)"
+  files_csv="$(printf '%s' "$hints" | sed -n 's/.*files=\[\([^]]*\)\].*/\1/p')"
+  tags_csv="$(printf '%s'  "$hints" | sed -n 's/.*tags=\[\([^]]*\)\].*/\1/p')"
+  learn_files="$(_csv_to_lines "$files_csv")"
+  learn_tags="$(_csv_to_lines "$tags_csv" | tr '[:upper:]' '[:lower:]')"
+  # The TDD's declared `## Touched files` paths (first token of each `- ` bullet).
+  tdd_files="$(awk '/^## Touched files/{f=1;next} f && /^## /{exit} f && /^- /{print}' "$tdd" \
+               | sed -n 's/^-[[:space:]]*\([^[:space:]]*\).*/\1/p')"
+  # Keyword tokens drawn from the TDD's working title (`# TDD ...`) and PRD refs.
+  tdd_kw="$( { grep -m1 '^# TDD ' "$tdd"; grep -m1 '^PRD refs:' "$tdd"; } \
+             | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9-' '\n' | grep -v '^$' )"
+
+  # Integrity guards (run BEFORE any match decision): a well-formed learning
+  # always carries a Subject-area-hints line, and a well-formed TDD always carries
+  # a `## Touched files` section and a title/PRD-ref line to draw keywords from.
+  # An empty parse here means the fixture or the extractor broke — abort loudly
+  # rather than let the empty set fall through to a misleading NOMATCH.
+  [ -n "$hints" ]     || _fatal "no 'Subject-area hints:' line parsed from $learnings"
+  [ -n "$tdd_files" ] || _fatal "no '## Touched files' paths parsed from $tdd"
+  [ -n "$tdd_kw" ]    || _fatal "no title/PRD-ref keywords parsed from $tdd"
+
+  # The documented floor (SKILL.md step 5 item 1): candidate match iff files=[...]
+  # intersect the TDD's `## Touched files`, OR tags=[...] intersect its title /
+  # PRD-ref keywords.
+  if _intersects "$learn_files" "$tdd_files"; then printf 'MATCH'; return 0; fi
+  if _intersects "$learn_tags"  "$tdd_kw";    then printf 'MATCH'; return 0; fi
   printf 'NOMATCH'
 }
 
