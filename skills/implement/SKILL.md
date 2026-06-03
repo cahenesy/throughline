@@ -133,29 +133,33 @@ A run with no `candidate-learnings.json` skips this step silently.
    `was_structural`, `triggered_rework`, `subject_area_hints.{files,tags}`,
    `summary`, `evidence`).
 2. Present ALL candidates in ONE `AskUserQuestion` with **`multiSelect: true`** —
-   one option per class, labeled with the class name, the TDDs it recurred in,
-   and its one-line summary. **Selected = accept, unselected = discard** (FR-72:
-   discarded candidates are NOT persisted).
-3. For each ACCEPTED class, persist it with `append_accepted_learning` (it
-   appends to `docs/tdd/LEARNINGS.md`, idempotently — a recurrence of an existing
-   class reinforces its entry rather than duplicating). Call it once per accepted
-   class; `<runid>` is the run logdir's basename:
+   one option per class, in array order, labeled with the class name, the TDDs it
+   recurred in, and its one-line summary. **Selected = accept, unselected =
+   discard** (FR-72: discarded candidates are NOT persisted). Keep track of each
+   option's 0-based INDEX in the JSON array.
+3. Persist the accepted set with `apply_accepted_learnings`, passing the run
+   **logdir** and the selected integer **indices** — and NOTHING else. Do NOT
+   paste the candidates' `summary` / `evidence` / `class` text into the command:
+   those are free review prose that may contain quotes, `$(…)`, or backticks, and
+   interpolating them into a shell command would break or inject it. The function
+   reads each accepted field from the JSON by index, appends it to
+   `docs/tdd/LEARNINGS.md` (idempotently — a recurrence of an existing class
+   reinforces its entry rather than duplicating), and then marks the queue
+   reviewed by renaming `candidate-learnings.json` →
+   `candidate-learnings.reviewed.json` (error-checked: a failure leaves the queue
+   UNREVIEWED to retry, never silently lost). The bash body below is FIXED — only
+   the trailing arguments (the scripts dir, the logdir, and the indices) vary:
 
    ```
-   bash -c '
-     . "${CLAUDE_PLUGIN_ROOT}/scripts/lib/state.sh"
-     . "${CLAUDE_PLUGIN_ROOT}/scripts/lib/learnings.sh"
-     append_accepted_learning "$PWD" "<class>" "<files_csv>" "<tags_csv>" \
-       "<tdds_csv>" "<severity_min>–<severity_max>" "<summary>" "<evidence>" \
-       "<runid>" "<was_structural>" "<triggered_rework>"
-   '
+   bash -c '. "$1/lib/state.sh"; . "$1/lib/learnings.sh"; shift; apply_accepted_learnings "$@"' \
+     _ "${CLAUDE_PLUGIN_ROOT}/scripts" "<logdir>" <accepted-index>...
    ```
 
-4. Mark the report reviewed by renaming `candidate-learnings.json` →
-   `candidate-learnings.reviewed.json` (so neither the auto nor the fallback path
-   re-surfaces it).
-5. If the user CANCELS the `AskUserQuestion`, leave `candidate-learnings.json`
-   unreviewed (it re-surfaces next invocation) and persist nothing.
+   If the user accepted NOTHING (all discarded), call it with the logdir and NO
+   indices — that persists nothing and still marks the queue reviewed.
+4. If the user CANCELS the `AskUserQuestion`, do NOT call it — leave
+   `candidate-learnings.json` unreviewed (it re-surfaces next invocation) and
+   persist nothing.
 
 ## Prepare
 1. Show the queue: the TDD(s) in scope and their Status. Confirm.

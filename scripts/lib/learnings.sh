@@ -267,6 +267,93 @@ _files_intersect() {  # <spaceA> <spaceB> — 0 if any token shared
   return 1
 }
 
+# _candidate_record <candidate-learnings.json> <index>  — emit ONE candidate
+# object's persistence fields as a TAB-joined record:
+#   class \t files_csv \t tags_csv \t tdds_csv \t severity_range \t summary \t
+#   evidence \t structural \t rework
+# Parsed by jq → python3 → fail-closed (FR-74 #3: never hand-roll a JSON parser
+# for untrusted text). Both parsers escape any tab/newline INSIDE a field so the
+# caller's IFS=$'\t' split is unambiguous. Echoes nothing for an out-of-range
+# index. This is what makes acceptance injection-proof: the candidate's summary /
+# evidence (free review prose that may contain quotes, $(…), or backticks) is read
+# from the JSON HERE and handed to append_accepted_learning as positional args —
+# it is NEVER interpolated into a shell command line.
+_candidate_record() {  # <cl> <index>
+  local cl="$1" i="$2"
+  if command -v jq >/dev/null 2>&1; then
+    jq -r --argjson i "$i" '
+      if (length > $i) then .[$i] as $o |
+        [ $o.class,
+          (($o.subject_area_hints.files // []) | join(",")),
+          (($o.subject_area_hints.tags  // []) | join(",")),
+          (($o.distinct_tdds // []) | join(",")),
+          (($o.severity_range // []) | join("–")),
+          ($o.summary // ""), ($o.evidence // ""),
+          (($o.was_structural // false)|tostring), (($o.triggered_rework // false)|tostring)
+        ] | @tsv
+      else empty end' "$cl" 2>/dev/null
+    return 0
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$cl" "$i" <<'PY' 2>/dev/null
+import json, sys
+cl, i = sys.argv[1], int(sys.argv[2])
+a = json.load(open(cl))
+if 0 <= i < len(a):
+    o = a[i]; h = o.get("subject_area_hints", {}) or {}
+    def j(x): return ",".join(x or [])
+    def esc(s): return str(s).replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n").replace("\r", "\\r")
+    fields = [o.get("class", ""), j(h.get("files")), j(h.get("tags")),
+              j(o.get("distinct_tdds")), "–".join(o.get("severity_range", []) or []),
+              o.get("summary", ""), o.get("evidence", ""),
+              str(o.get("was_structural", False)).lower(), str(o.get("triggered_rework", False)).lower()]
+    sys.stdout.write("\t".join(esc(f) for f in fields))
+PY
+    return 0
+  fi
+  echo "error: _candidate_record: neither jq nor python3 available to parse $cl (FR-74 #3 — fail closed rather than hand-roll a JSON parser)" >&2
+  return 1
+}
+
+# apply_accepted_learnings <logdir> [<index>...]  — persist the human-ACCEPTED
+# candidate classes (identified by their 0-based index into
+# <logdir>/candidate-learnings.json) to docs/tdd/LEARNINGS.md, then mark the queue
+# reviewed (rename → candidate-learnings.reviewed.json). The skill calls this with
+# ONLY the logdir + integer indices, so no untrusted candidate prose ever reaches
+# the command line (the field values are read from the JSON by _candidate_record).
+# Zero indices = accept nothing, just mark reviewed (the all-discarded case). If
+# ANY accepted class fails to persist, the queue is left UNREVIEWED and the call
+# returns non-zero so the human can retry — never a silent false completion
+# (FR-74 #1).
+apply_accepted_learnings() {  # <logdir> [<index>...]
+  local logdir="${1:-}"; [ "$#" -gt 0 ] && shift
+  [ -n "$logdir" ] || { echo "error: apply_accepted_learnings: no logdir given" >&2; return 1; }
+  local cl="$logdir/candidate-learnings.json"
+  [ -r "$cl" ] || { echo "error: apply_accepted_learnings: no readable candidate-learnings.json at $cl" >&2; return 1; }
+  local mainrepo="$PWD" runid; runid="$(basename "$logdir")"
+  local idx rec fail=0
+  local cls files tags tdds sev summ evid struct rew
+  for idx in "$@"; do
+    case "$idx" in ''|*[!0-9]*) echo "error: apply_accepted_learnings: non-numeric index '$idx' rejected" >&2; fail=1; continue ;; esac
+    rec="$(_candidate_record "$cl" "$idx")" || { echo "error: apply_accepted_learnings: cannot parse candidate index $idx" >&2; fail=1; continue; }
+    [ -z "$rec" ] && { echo "error: apply_accepted_learnings: candidate index $idx out of range" >&2; fail=1; continue; }
+    IFS=$'\t' read -r cls files tags tdds sev summ evid struct rew <<< "$rec"
+    append_accepted_learning "$mainrepo" "$cls" "$files" "$tags" "$tdds" "$sev" "$summ" "$evid" "$runid" "$struct" "$rew" \
+      || { echo "error: apply_accepted_learnings: persist failed for index $idx ($cls)" >&2; fail=1; }
+  done
+  if [ "$fail" -ne 0 ]; then
+    echo "error: apply_accepted_learnings: one or more accepted learnings did not persist; leaving $cl UNREVIEWED for retry" >&2
+    return 1
+  fi
+  # Error-checked reviewed-rename: a failed mv must NOT pass silently — the queue
+  # has to visibly re-surface, never vanish (FR-74 #1; no silent false completion).
+  if ! mv "$cl" "$logdir/candidate-learnings.reviewed.json"; then
+    echo "error: apply_accepted_learnings: could not mark $cl reviewed (mv failed); it will re-surface next run" >&2
+    return 1
+  fi
+  return 0
+}
+
 append_accepted_learning() {  # <mainrepo> <class> <files_csv> <tags_csv> <tdds_csv> <severity_range> <summary> <evidence> <runid> [<structural>] [<rework>]
   local mainrepo="$1" class="$2" files_csv="$3" tags_csv="$4" tdds_csv="$5"
   local sev_range="$6" summary="$7" evidence="$8" runid="$9"
