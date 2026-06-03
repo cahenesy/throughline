@@ -18,7 +18,6 @@
 # Run: bash tests/step-commit-protocol.test.sh
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-IMPL="$REPO/scripts/implement.sh"
 LINT="$REPO/scripts/lib/tdd-lint.sh"
 # ok/bad run inside `( … )` subshells, so tally via a file (a parent-scope
 # counter would never see the subshell increments — the same pattern
@@ -223,7 +222,8 @@ EOF
   printf '%s' "$out" | grep -q 'sequencing.labels' && ok "tl_lint_all surfaces the sequencing.labels finding" || bad "tl_lint_all must run tl_lint_sequencing (got: $out)"
 ) || true
 
-PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null || echo 0)"
-FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null || echo 0)"
+# grep -c prints the count and exits 1 when zero — keep the count, drop the rc.
+PASS="$(grep -c '^ok$'   "$RESULTS")" || true
+FAIL="$(grep -c '^fail$' "$RESULTS")" || true
 echo "=== step-commit-protocol eval: $PASS passed, $FAIL failed ==="
 [ "$FAIL" -eq 0 ]
