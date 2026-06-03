@@ -650,6 +650,14 @@ echo "[S29] a field-decode (_untsv) failure fails loud — no silent empty write
   { [ -f "$LOG/candidate-learnings.json" ] && [ ! -f "$LOG/candidate-learnings.reviewed.json" ]; } && ok "queue left UNREVIEWED for retry" || bad "must not mark reviewed when decode failed"
 ) || true
 
+# --- §Sequencing 5: the suite is regression-gated by ci-checks ----------------
+
+echo "[S30] this suite is wired into the implement-gate aggregator (so ci-checks runs it)"
+( AGG="$REPO/tests/implement-gate.test.sh"
+  grep -q 'build-phase-learning-capture.test.sh' "$AGG" 2>/dev/null && ok "aggregator invokes build-phase-learning-capture.test.sh" || bad "implement-gate.test.sh must run the FR-72 suite (ci-checks gate)"
+  grep -qE '\[ "\$BPL_FAIL" -eq 0 \]' "$AGG" 2>/dev/null && ok "a BPL failure fails the aggregator (in the pass-gate chain)" || bad "BPL_FAIL must be in the aggregator's final pass-gate conjunction"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
