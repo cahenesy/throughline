@@ -228,7 +228,35 @@ EOF
   printf '%s' "$out" | grep -q 'sequencing.labels' && ok "tl_lint_all surfaces the sequencing.labels finding" || bad "tl_lint_all must run tl_lint_sequencing (got: $out)"
 ) || true
 
+# ============================================================================
+# §2 / Verification 9 — prompt text present (layers 2 + 5).
+# ============================================================================
+echo "[P1] build-prompt.md carries the 1-based-ordinal fallback rule (layer 2)"
+(
+  F="$REPO/scripts/build-prompt.md"
+  grep -q '1-based ordinal' "$F" \
+    && ok "build-prompt names the 1-based ordinal fallback" || bad "build-prompt.md must carry the literal '1-based ordinal' rule (Verification 9)"
+  grep -q 'plain integer' "$F" \
+    && ok "build-prompt requires a plain integer step-id" || bad "build-prompt.md must state <step-id> MUST be a plain integer"
+  grep -q '5b' "$F" \
+    && ok "build-prompt gives the 5b → ordinal example" || bad "build-prompt.md must show the non-integer-label example (5b)"
+) || true
+
+echo "[P2] skills/implement/SKILL.md carries the protocol-correction sentence (layer 5)"
+(
+  F="$REPO/skills/implement/SKILL.md"
+  grep -qi 'malformed' "$F" && grep -q 'STEP_COMMIT' "$F" \
+    && ok "SKILL.md describes the malformed-STEP_COMMIT handling" || bad "SKILL.md must describe the malformed STEP_COMMIT handling"
+  grep -qiE 'protocol-correction|protocol correction' "$F" \
+    && ok "SKILL.md names the bounded protocol-correction reply" || bad "SKILL.md must name the bounded protocol-correction BLOCK reply"
+  grep -qiE 'never .*transient|not .*transient' "$F" \
+    && ok "SKILL.md states exhaustion is never classified transient" || bad "SKILL.md must state exhaustion FAILs via the fatal pathway, never transient"
+) || true
+
+# <<INSERT NEW SECTIONS ABOVE THIS LINE>>
+
 # grep -c prints the count and exits 1 when zero — keep the count, drop the rc.
+# Tallied LAST so every section above has appended its results first.
 PASS="$(grep -c '^ok$'   "$RESULTS")" || true
 FAIL="$(grep -c '^fail$' "$RESULTS")" || true
 echo "=== step-commit-protocol eval: $PASS passed, $FAIL failed ==="
