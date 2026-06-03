@@ -631,14 +631,32 @@ of progress; not asked to drive between findings and convergence."
   system detects an issue as structural — meaning the fix would (a)
   touch files outside the TDD's declared touched-file set (FR-53),
   (b) exceed the TDD's per-file bound for the touched file, or
-  (c) be explicitly classified as structural by the reviewer — the
-  finding produces a `BLOCKED` outcome and a design-level entry in
-  `docs/tdd/BLOCKERS.md`, not a large in-iteration refactor. —
-  Acceptance: any finding meeting one or more of the three structural
-  criteria results in a `BLOCKED` outcome (not `FAIL`, not a rework
-  attempt), and a corresponding entry appears in
-  `docs/tdd/BLOCKERS.md` naming the TDD, the gate, and the structural
-  trigger.
+  (c) be explicitly classified as structural by the reviewer *because it
+  requires reconsidering the design itself* — its interfaces, approach, or
+  the TDD's declared decomposition (a fix that cannot be expressed as a
+  bounded edit within the existing design) — the finding produces a
+  `BLOCKED` outcome and a design-level entry in `docs/tdd/BLOCKERS.md`,
+  not a large in-iteration refactor. Criterion (c) is reserved for
+  genuine design-level reconsideration: a *mechanical* fix that stays
+  within the declared touched-file set (a) AND within the per-file bound
+  (b) — a relocation, reordering, anchor-tightening, or rename — is NOT
+  structural and MUST be routed to bounded rework (FR-62), even when it
+  spans regions of the file or moves a block across a region boundary. A
+  reviewer invoking (c) must name the specific design reconsideration the
+  fix requires; absent a named design-level reason, an in-scope finding
+  is reworkable, not structural. (This closes a deadlock observed in
+  practice: an in-scope block relocation classified structural under the
+  old, unbounded (c) could neither be reworked — the runner refuses
+  structural findings — nor resumed without a TDD revision, even though
+  the design was already correct.) — Acceptance: a finding meeting
+  criterion (a) or (b), or (c) *with a named design-level reason*,
+  results in a `BLOCKED` outcome (not `FAIL`, not a rework attempt) with
+  a corresponding `docs/tdd/BLOCKERS.md` entry naming the TDD, the gate,
+  and the structural trigger; AND a finding whose fix stays within the
+  declared touched-file set and per-file bound and carries no named
+  design-level reason is routed to bounded rework — it appears in the
+  run-state record (FR-27) as a rework attempt, not as a structural
+  `BLOCKED` outcome.
 - **FR-68 Rework cost less than original build cost (observable).** The
   token spend per rework attempt is meaningfully less than the token
   spend on the original build attempt for the same TDD. The
