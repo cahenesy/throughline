@@ -189,11 +189,50 @@ proceed with no surfaced learnings and no note (FR-73's negative case).
 > Opus) for snappier back-and-forth; toggle it off if you want slower, more
 > deliberate output while authoring the designs themselves.
 
+### Interrogator discipline (FR-76)
+
+Run the design interview that follows in an explicit interrogation mode, not as a
+collaborative scribe. Apply this discipline throughout that interview:
+
+- **Posture.** You are an interrogator, not a scribe. Challenge the PRD's
+  requirements for infeasibility, contradiction, and under-specification, and any
+  conflict with an accepted ADR; and challenge your OWN proposed TDD
+  decomposition — is the split right, is anything lumped, is anything missing —
+  before writing any TDD content. Surface these as direct challenges, not softened
+  suggestions.
+- **Anti-sycophancy.** When you agree with the user you are not being helpful. You
+  are most helpful when you challenge their thinking and force them to confront the
+  edges of the problem. If you notice the conversation has become a sequence of
+  agreements, break the loop: find the weakest assumption on the table and attack
+  it.
+- **Tracking.** Maintain a running OPEN ASSUMPTIONS list. Every assumption, edge
+  case, conflict, or feasibility concern you surface gets an entry the moment you
+  surface it. Persist each entry to the interview draft via
+  `tl_draft_append_elicit tdd-author question "assumption: <one-line>" "<the
+  challenge you raised>" "<open|the user's answer>"` — the `header` argument
+  carries the `assumption:` prefix (this is the same helper and the same
+  five-argument signature this section already uses for design elicitations; no
+  new mechanism, and the same quoting + STOP-on-non-zero rules apply). Update an
+  entry's disposition by appending a NEW elicitation with the same header and the
+  disposition in the answer field (`resolved: <how>` or `waived: <rationale>`); the
+  latest entry per header is authoritative. (Only persist when persistence is
+  available; in degraded mode keep the list in-conversation.)
+- **Resume.** On a resumed session, call `tl_draft_read` and parse its JSON output:
+  scan the `interview` array for entries whose `header` field begins with
+  `assumption:`; group by header; the latest entry per header is its current state.
+  Entries whose latest answer is not a `resolved:`/`waived:` disposition are still
+  OPEN — rebuild the working list from them and continue the interview from there.
+- **Completion gate.** The interview is NOT complete while any list entry lacks a
+  disposition. Each entry ends as either `resolved: <how the user resolved it>` or
+  `waived: <the user's recorded rationale>`. Ask the user to disposition each open
+  item explicitly (an AskUserQuestion per batch of related items); never silently
+  drop one. A user who refuses to disposition an item ("just move on") is recorded
+  as `waived: user deferred without rationale` — the record stays honest rather
+  than blocking the phase indefinitely.
+
 Interview the user (AskUserQuestion) on the cross-cutting and per-unit design
 decisions. These features are related — reason about them together so the
-designs stay consistent. CHALLENGE the PRD: surface infeasible, contradictory,
-or under-specified requirements, and any conflict with an accepted ADR, before
-designing around them.
+designs stay consistent.
 
 Before the FIRST `tl_draft_append_elicit` call of this session (and only when
 persistence is available and no draft was resumed in step 0), run
@@ -342,6 +381,8 @@ obvious stuff so the independent gate spends its judgment on substance:
   the TDDs in the set (a type/function called `X` in one TDD and `X'` in another is
   a bug). Reconcile names.
 - **Ambiguity** — could any design element be read two ways? Pick one, state it.
+- **Open-assumptions record** — every surfaced item has a disposition; the PR body
+  section is present and matches the draft's assumption entries.
 - **Draft is the source of truth.** Self-review reads the draft, not in-memory
   state. If the draft and in-memory state disagree, the draft wins (you may have
   crossed a compaction). Update your in-memory state from the draft and continue.
@@ -442,6 +483,16 @@ Unless the user says "skip git":
   reviews an INFORMED design, not a bare diff. Do NOT merge — the human merge of
   this PR is the design gate: merging is what makes the TDDs buildable, so they are
   built only after it lands.
+- **Open assumptions & waivers (FR-76).** Also render the final assumptions list —
+  every surfaced assumption with its disposition — as an **"Open assumptions &
+  waivers"** section in the design PR body: one line per item, `- <assumption> —
+  resolved: <how>` or `- <assumption> — waived: <rationale>`. Source the list from
+  the draft (`tl_draft_read`, the latest entry per `assumption:` header — the same
+  parse as the Interrogator-discipline resume instruction), NOT from conversational
+  memory, so the record survives any compaction that happened mid-interview. A
+  design PR whose interview surfaced no assumptions states "Open assumptions: none
+  surfaced" explicitly (the absence is declared, never silent). Render this before
+  `tl_draft_discard` below, which deletes the draft.
 - After the PR is opened, run `tl_draft_discard tdd-author`. This is the ONLY
   path that discards the draft on success; on any path that exits before PR
   creation (including a user cancel), the draft persists for a later resume
