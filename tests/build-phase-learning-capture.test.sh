@@ -593,6 +593,21 @@ echo "[S25] empty subject-area files (realistic) must NOT shift persisted fields
   grep -q '^- Pattern class: empty-files-class$' "$LM" 2>/dev/null && ok "class aligned" || bad "class misaligned"
 ) || true
 
+echo "[S26] a JSON parse error fails loud through the live || error path, leaving the queue UNREVIEWED"
+( D="$ROOT/S26"; mkdir -p "$D/run" "$D/docs/tdd"
+  . "$STATE_LIB"; . "$LEARN_LIB"
+  printf '{ this is not valid json' > "$D/run/candidate-learnings.json"
+  err="$D/err.txt"
+  ( cd "$D" && apply_accepted_learnings "$D/run" 0 ) 2>"$err"; rc=$?
+  [ "$rc" -ne 0 ] && ok "apply returns non-zero on a parse error" || bad "parse error should fail (rc=$rc)"
+  # The distinguishing observation: a real parse error must hit the `|| cannot
+  # parse` branch (the error path is LIVE), not be silently swallowed and
+  # misreported as an out-of-range empty result (which a `return 0` + 2>/dev/null
+  # would do).
+  grep -qi 'cannot parse' "$err" 2>/dev/null && ok "the || parse-error path fires (not dead code)" || bad "a parse error must reach the cannot-parse branch (err: $(cat "$err" 2>/dev/null))"
+  { [ -f "$D/run/candidate-learnings.json" ] && [ ! -f "$D/run/candidate-learnings.reviewed.json" ]; } && ok "queue left UNREVIEWED on failure" || bad "must not mark reviewed when persistence failed"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
