@@ -75,6 +75,30 @@ cite (`docs/adr/INDEX.md` + the referenced bodies). Then check:
   flag the SAME concept named differently across TDDs in the set (a type/function
   called `X` in one and `X'` in another), which is a latent bug.
 
+**Evaluation rubric (FR-77).** Each artifact under review may carry a
+`## Evaluation rubric` section co-created with the user — a table of criteria with
+`high-quality` / `acceptable` / `failing` grade anchors. When present: grade the
+artifact against EACH rubric row explicitly; cite the row's criterion name in any
+finding that maps to it; and in your PASS rationale, state which grade anchor
+(high-quality / acceptable / failing) the artifact earns per criterion. A `failing`
+grade on any rubric criterion is a BLOCK.
+
+- **Absence is a finding (non-circular).** The rubric requirement applies to
+  NEWLY AUTHORED artifacts in the set under review — any TDD file that did not exist
+  on the integration branch before this design pass (equivalently: any TDD whose
+  `PRD-rev`
+  is the PRD revision this pass designs against), and the PRD itself when the pass
+  adds or changes requirements. For each such artifact lacking a `## Evaluation
+  rubric` section, emit a finding (the rubric is required for new authoring).
+  Pre-existing artifacts the pass touches only incidentally (status-line flips,
+  cross-reference updates) are NOT subject to the requirement; grade rubric-less
+  artifacts against your standing criteria as the fallback.
+- **Precedence.** Standing reviewer criteria — ADR constraints,
+  structural/traceability requirements, scope bounds — take precedence over rubric
+  grades; an ADR conflict can never be graded acceptable by a rubric. The rubric
+  governs quality-bar judgments only (how concrete is concrete enough, how
+  substantive the alternatives analysis must be).
+
 **Calibration.** Only flag issues that would actually cause a flawed implementation
 or a real conflict — untraced requirements, a missing alternatives analysis, an ADR
 conflict, an interface too vague to build, an inconsistent contract. Do NOT block on
