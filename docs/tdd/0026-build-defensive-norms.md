@@ -303,8 +303,9 @@ commitment until that work is designed.
 - `scripts/lib/gates.sh` — `_render_build_prompt` substitutes `{{BUILD_NORMS}}` (fail-loud); new `_build_norms_reminder` + BLOCK-only wiring in `_per_step_review_loop` (§2, §3).
 - `tests/build-defensive-norms.test.sh` — new eval covering verification points §1–§5.
 - `tests/implement-gate.test.sh` — wire the new eval into the aggregator.
+- `tests/build-coprocess-lifecycle.test.sh` — provide a `build-norms.md` stub in its `setup_repo`: making `build-norms.md` mandatory in `_render_build_prompt` (§2) means any test that stubs `TMPL` into a temp scripts dir must also supply the norms file, or every `_per_step_review_loop` call aborts at render.
 
-Total: 5 files touched.
+Total: 6 files touched.
 
 ## Expected diff size
 
@@ -313,5 +314,6 @@ Total: 5 files touched.
 - `scripts/lib/gates.sh` — ~45 lines added (`{{BUILD_NORMS}}` substitution + fail-loud guard in `_render_build_prompt`; `_build_norms_reminder` helper; BLOCK-branch wiring).
 - `tests/build-defensive-norms.test.sh` — ~140 lines added (new eval, 5 cases + stub).
 - `tests/implement-gate.test.sh` — ~6 lines added (aggregator wire-in).
+- `tests/build-coprocess-lifecycle.test.sh` — ~9 lines added (`build-norms.md` stub in `setup_repo`).
 
-Total expected diff: ~227 lines across 5 files. No exceptions needed.
+Total expected diff: ~236 lines across 6 files. No exceptions needed.
