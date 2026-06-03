@@ -116,12 +116,13 @@ echo "[§2] a missing norms file is FATAL at render (non-zero + stderr diagnosti
 ) || true
 
 # ===========================================================================
-# §3: substitution is bash parameter expansion, not sed. A norms file containing
-# sed-breaking characters (&, /) and a {{TDD}}-like token must survive verbatim:
-# the chars are not corrupted, and the {{TDD}}-like token inside the norms is NOT
-# re-substituted with the TDD path (proving the norms go in LAST and are never
-# re-scanned).
-echo "[§3] substitution is PE not sed: &, / survive; a {{TDD}}-like token in the norms is NOT re-substituted"
+# §3: the norms are inserted literally — not by sed, and not by a bash PE replace
+# (in bash >=5.2 an unescaped `&` in a ${v//p/r} REPLACEMENT is the matched-text
+# reference too, the same hazard norm #3 cites for sed). A norms file containing
+# &, / and a {{TDD}}-like token must survive verbatim: the chars are not
+# corrupted, and the {{TDD}}-like token inside the norms is NOT re-substituted
+# with the TDD path (proving the norms go in LAST and are never re-scanned).
+echo "[§3] norms inserted literally: &, / survive; a {{TDD}}-like token in the norms is NOT re-substituted"
 ( D="$ROOT/r3"; TDDS=()
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
   mk_prompt_dir "$D"

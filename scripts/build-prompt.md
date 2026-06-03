@@ -138,6 +138,11 @@ do NOT silently work around it. Stop and end with
 docs/tdd/BLOCKERS.md for `/tdd-author` to revise the design. Use this only for
 design-level problems, not ordinary bugs you can fix.
 
+Defensive-coding norms (FR-74). The following norms are non-negotiable; apply
+them to every commit, including late ones:
+
+{{BUILD_NORMS}}
+
 Close:
 - Run the FULL test suite, typecheck, and linter; confirm green. An INDEPENDENT
   gate will re-run these (ci-checks.sh — tests + typecheck + lint, with clippy at

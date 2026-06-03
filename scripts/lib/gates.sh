@@ -114,25 +114,69 @@ _cleared_steps_csv() {  # <slug>
   if [ -z "$csv" ]; then printf 'none'; else printf '%s' "$csv"; fi
 }
 
-# _render_build_prompt <slug> <tdd> (TDD 0024 / FR-40) — render the build-prompt
-# template: substitute {{TDD}} and the {{CLEARED_STEPS}} RESUME SIGNAL (the
-# comma-separated cleared step IDs from _cleared_steps_csv, or `none` for a fresh
-# build). Resolves the template from $TMPL with a fallback to the file beside the
-# scripts dir (TMPL is only set in real-run mode, not under the source-only test
-# harness) — same pattern as _render_review_prompt. {{TDD}} is substituted via
-# sed first; {{CLEARED_STEPS}} via bash parameter expansion (the value is integers
-# or `none`, so it cannot break a sed delimiter or double-expand a placeholder).
+# _build_norms_file (TDD 0026 / FR-74) — resolve the path to the defensive-coding
+# norms file. It lives beside the build-prompt template (the same scripts dir as
+# $TMPL, or beside this module's scripts dir under the source-only test harness —
+# the same dirname resolution _render_build_prompt uses for $tmpl). Echoes the
+# path ONLY; existence is the caller's call (§2 render is fail-loud, §3 reminder
+# degrades), so both render and reminder agree on one location.
+_build_norms_file() {
+  local tmpl="${TMPL:-}"
+  [ -z "$tmpl" ] && tmpl="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/build-prompt.md"
+  printf '%s' "$(dirname "$tmpl")/build-norms.md"
+}
+
+# _render_build_prompt <slug> <tdd> (TDD 0024 / FR-40; TDD 0026 / FR-74) — render
+# the build-prompt template: substitute {{TDD}}, the {{CLEARED_STEPS}} RESUME
+# SIGNAL (the comma-separated cleared step IDs from _cleared_steps_csv, or `none`
+# for a fresh build), and the {{BUILD_NORMS}} defensive-coding norms (FR-74).
+# Resolves the template from $TMPL with a fallback to the file beside the scripts
+# dir (TMPL is only set in real-run mode, not under the source-only test harness)
+# — same pattern as _render_review_prompt.
+#
+# Substitution order: {{TDD}} via sed first; then {{CLEARED_STEPS}} via bash
+# parameter expansion (the value is integers or `none`, so it cannot break a sed
+# delimiter or double-expand a placeholder); then {{BUILD_NORMS}} LAST. The norms
+# go LAST so the norms text — which may contain {{...}}-like sequences in examples —
+# is never re-scanned for the earlier placeholders.
+#
+# The norms are inserted by split-and-concatenate, NOT by sed and NOT by a
+# ${prompt//…/$norms} parameter-expansion replace. Both would corrupt norms text
+# containing `&`: in sed AND (since bash 5.2, the box runs 5.3) in a PE
+# replacement, an unescaped `&` is the matched-text back-reference — the exact
+# hazard norm #3 cites. Splitting the template on the literal placeholder and
+# concatenating the three pieces inserts $norms with ZERO metacharacter
+# interpretation (no `&`, `/`, or backslash is special in a concatenation).
+#
+# A missing or unreadable build-norms.md is FATAL (return 1 + stderr diagnostic),
+# NOT a silent empty substitution: a build prompt that silently drops its norms is
+# exactly the failure mode FR-74 exists to prevent (norm #1, fail loud; the
+# review-rerun-1 precedent treats a failed render as a build-launch abort, not a
+# degraded `claude -p ""`).
 _render_build_prompt() {  # <slug> <tdd>
-  local slug="$1" tdd="$2" tmpl prompt cleared
+  local slug="$1" tdd="$2" tmpl prompt cleared norms_file norms
   tmpl="${TMPL:-}"
   [ -z "$tmpl" ] && tmpl="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/build-prompt.md"
   if [ ! -f "$tmpl" ]; then
     echo "error: _render_build_prompt: build prompt template not found ($tmpl)" >&2
     return 1
   fi
+  norms_file="$(_build_norms_file)"
+  if [ ! -r "$norms_file" ]; then
+    echo "error: _render_build_prompt: defensive-coding norms file not found or unreadable ($norms_file); refusing to render a build prompt without its FR-74 norms" >&2
+    return 1
+  fi
+  norms="$(cat "$norms_file")"
   prompt="$(sed "s#{{TDD}}#${tdd}#g" "$tmpl")"
   cleared="$(_cleared_steps_csv "$slug")"
   prompt="${prompt//\{\{CLEARED_STEPS\}\}/$cleared}"
+  # {{BUILD_NORMS}} LAST, via split-and-concatenate (no `&`/`/` corruption — see
+  # the header note). The template carries exactly one placeholder (§4); guard the
+  # absent case so a template without it is left unchanged rather than duplicated.
+  local ph='{{BUILD_NORMS}}'
+  if [[ "$prompt" == *"$ph"* ]]; then
+    prompt="${prompt%%"$ph"*}$norms${prompt#*"$ph"}"
+  fi
   printf '%s' "$prompt"
 }
 
