@@ -117,6 +117,15 @@ section each gain:
   folds the section into the body it passes to `gh pr create`, not as a bullet
   that follows the create call — a post-creation render leaves the primary
   record deliverable out of the published PR body.**
+  **Concrete mechanism (mirror the proven prd-author pattern, do not reinvent):**
+  prd-author already does this correctly — it puts the rendered section in the
+  commit-message body so `gh pr create --fill` carries it into the PR body (or
+  passes it via `--body`), with the render bullet placed BEFORE the create bullet.
+  tdd-author MUST use the same shape: the "Open assumptions & waivers" render bullet
+  precedes the `gh pr create` bullet, and the create bullet explicitly names both
+  the design-critique verdict AND the rendered section as required body content.
+  This keeps the two skills' git steps structurally identical and removes any
+  ambiguity about when/how the section reaches the published body.
 - prd-author only: "Items dispositioned as `waived` are ALSO appended to the
   PRD's `## Open questions` section, so the artifact records what was
   consciously deferred without re-reading the PR."
@@ -336,8 +345,8 @@ Total: 4 files touched.
 ## Expected diff size
 
 - `skills/prd-author/SKILL.md` — ~65 lines added (interrogator block + PR-body record with the pre-creation assembly clause + self-review item; the verbatim anti-sycophancy and tracking instructions are intrinsically multi-line).
-- `skills/tdd-author/SKILL.md` — ~65 lines added (same block, design-flavored, plus removal of the subsumed one-line directive and the §3 pre-creation ordering clause).
+- `skills/tdd-author/SKILL.md` — ~72 lines added (same block, design-flavored, plus removal of the subsumed one-line directive and the §3 pre-creation reorder: the "Open assumptions & waivers" render bullet moved before `gh pr create` and the create bullet expanded to require both the critique verdict and the section in the body, mirroring prd-author).
 - `tests/interrogator-discipline.test.sh` — ~155 lines added (new eval: ~10 mechanical anchors greped across both SKILL.mds, plus the subsumed-directive removal check hardened to fail closed on grep exit ≥2, plus the file-readable guards and per-assertion `ok`/`bad` reporting required by the Verification plan's mechanical-check robustness rules).
 - `tests/implement-gate.test.sh` — ~18 lines added (aggregator wire-in: `*_FAIL` accumulator + conditional run block + final-expression AND, matching the sibling-eval pattern).
 
-Total expected diff: ~303 lines across 4 files. No exceptions needed (the eval at ~155 lines is under the 300-line per-file bound).
+Total expected diff: ~310 lines across 4 files. No exceptions needed (the eval at ~155 lines and tdd-author at ~72 are both under the 300-line per-file bound).
