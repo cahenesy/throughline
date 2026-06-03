@@ -88,6 +88,46 @@ relocated. The canonical record is `docs/PRD.md`.
 2. **Scope check first.** If the ask is really several independent products or
    subsystems, say so before spending questions on details — help the user split it
    and PRD the first piece. A PRD should describe one coherent product/effort.
+
+### Interrogator discipline (FR-75)
+
+Run the interview that follows (step 3) in an explicit interrogation mode, not as
+a collaborative scribe. Apply this discipline throughout that interview:
+
+- **Posture.** You are an interrogator, not a scribe. For every capability the
+  user describes, actively hunt for: the unstated assumption it rests on, the edge
+  case that breaks it, the goal it conflicts with, and the feasibility concern
+  nobody raised. Surface these as direct challenges, not softened suggestions.
+- **Anti-sycophancy.** When you agree with the user you are not being helpful. You
+  are most helpful when you challenge their thinking and force them to confront the
+  edges of the problem. If you notice the conversation has become a sequence of
+  agreements, break the loop: find the weakest assumption on the table and attack
+  it.
+- **Tracking.** Maintain a running OPEN ASSUMPTIONS list. Every assumption, edge
+  case, conflict, or feasibility concern you surface gets an entry the moment you
+  surface it. Persist each entry to the interview draft via
+  `tl_draft_append_elicit prd-author question "assumption: <one-line>" "<the
+  challenge you raised>" "<open|the user's answer>"` — the `header` argument
+  carries the `assumption:` prefix (this is the same helper and the same
+  five-argument signature the interview already uses in step 3; no new mechanism,
+  and the same quoting + STOP-on-non-zero rules apply). Update an entry's
+  disposition by appending a NEW elicitation with the same header and the
+  disposition in the answer field (`resolved: <how>` or `waived: <rationale>`); the
+  latest entry per header is authoritative. (Only persist when persistence is
+  available; in degraded mode keep the list in-conversation.)
+- **Resume.** On a resumed session, call `tl_draft_read` and parse its JSON output:
+  scan the `interview` array for entries whose `header` field begins with
+  `assumption:`; group by header; the latest entry per header is its current state.
+  Entries whose latest answer is not a `resolved:`/`waived:` disposition are still
+  OPEN — rebuild the working list from them and continue the interview from there.
+- **Completion gate.** The interview is NOT complete while any list entry lacks a
+  disposition. Each entry ends as either `resolved: <how the user resolved it>` or
+  `waived: <the user's recorded rationale>`. Ask the user to disposition each open
+  item explicitly (an AskUserQuestion per batch of related items); never silently
+  drop one. A user who refuses to disposition an item ("just move on") is recorded
+  as `waived: user deferred without rationale` — the record stays honest rather
+  than blocking the phase indefinitely.
+
 3. Interview the user with the AskUserQuestion tool. Surface scope, non-goals,
    constraints, and edge cases the user hasn't stated. Skip obvious questions; dig
    into ambiguity and conflicting goals. Prefer multiple-choice options; don't
@@ -148,6 +188,8 @@ After writing the PRD, reread it with fresh eyes and fix issues inline:
 - **Missing acceptance criterion** — every NEW requirement carries an *observable
   acceptance criterion* phrased as an observation of the artifact's surface (see
   above), not "a test exists for X". A new requirement without one is not done.
+- **Open-assumptions record** — every surfaced item has a disposition; the PR body
+  section is present and matches the draft's assumption entries.
 - **Draft is the source of truth.** Self-review reads the draft, not in-memory
   state. If the draft and in-memory state disagree, the draft wins (you may have
   crossed a compaction). Update your in-memory state from the draft and continue.
@@ -170,6 +212,21 @@ Fix and move on (no re-review loop) then commit and open the PR.
 ## Git (phase gate)
 Unless the user says "skip git":
 - Work on a branch `docs/prd/<change-slug>` off `main`.
+- **Open assumptions & waivers (FR-75).** Source the final list from the draft
+  (`tl_draft_read`, the latest entry per `assumption:` header — the same parse as
+  the Interrogator-discipline resume instruction), NOT from conversational memory,
+  so the record survives any compaction that happened mid-interview. Then:
+  - **Before committing**, fold every item dispositioned as `waived` into the
+    PRD's `## Open questions` section (one line each, `- <assumption> — waived:
+    <rationale>`), so the artifact itself records what was consciously deferred
+    without re-reading the PR.
+  - **Render the final list** — every surfaced assumption with its disposition —
+    as an **"Open assumptions & waivers"** section in the PR body: one line per
+    item, `- <assumption> — resolved: <how>` or `- <assumption> — waived:
+    <rationale>`. Put it in the commit message body so `gh pr create --fill`
+    carries it into the PR (or pass it via `--body`).
+  - A PR whose interview surfaced no assumptions states "Open assumptions: none
+    surfaced" explicitly (the absence is declared, never silent).
 - Commit `docs/PRD.md` with a message like "PRD: <summary of change>".
 - **Cascade audit (in the commit message body).** If the PRD change makes any
   existing TDD or accepted ADR stale — typical for scope-tightening,
