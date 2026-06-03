@@ -636,6 +636,20 @@ echo "[S28] apply_accepted_learnings locates the repo root from the logdir, not 
   [ ! -f "$ROOT/docs/tdd/LEARNINGS.md" ] && ok "nothing written under the unrelated cwd" || bad "wrote LEARNINGS.md under the cwd (silent wrong-path)"
 ) || true
 
+echo "[S29] a field-decode (_untsv) failure fails loud — no silent empty write, queue stays UNREVIEWED"
+( D="$ROOT/S29"; LOG="$D/docs/tdd/.implement-logs/run1"; mkdir -p "$LOG"
+  . "$STATE_LIB"; . "$LEARN_LIB"
+  printf '[{"class":"c","distinct_tdds":["0010-a","0011-b"],"distinct_steps":2,"severity_range":["major","major"],"was_structural":false,"triggered_rework":false,"subject_area_hints":{"files":["src/a.sh"],"tags":["c"]},"summary":"s","evidence":"e","occurrences":[]}]\n' > "$LOG/candidate-learnings.json"
+  # Simulate a decode failure (e.g. awk unavailable): _untsv returns non-zero +
+  # empty. The unchecked-rc bug would persist empty fields and mark reviewed.
+  _untsv() { return 1; }
+  err="$D/err.txt"
+  ( cd "$D" && apply_accepted_learnings "$LOG" 0 ) 2>"$err"; rc=$?
+  [ "$rc" -ne 0 ] && ok "apply fails when a field decode fails" || bad "should fail on _untsv failure (rc=$rc)"
+  [ ! -f "$D/docs/tdd/LEARNINGS.md" ] && ok "no partial/empty entry written on decode failure" || bad "must not write on decode failure ($(cat "$D/docs/tdd/LEARNINGS.md" 2>/dev/null))"
+  { [ -f "$LOG/candidate-learnings.json" ] && [ ! -f "$LOG/candidate-learnings.reviewed.json" ]; } && ok "queue left UNREVIEWED for retry" || bad "must not mark reviewed when decode failed"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
