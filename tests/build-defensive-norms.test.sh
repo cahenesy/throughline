@@ -116,6 +116,27 @@ echo "[§2] a missing norms file is FATAL at render (non-zero + stderr diagnosti
 ) || true
 
 # ===========================================================================
+# §2b: an EMPTY (or otherwise unreadable-at-read-time) norms file is ALSO FATAL —
+# the "NOT a silent empty substitution" contract (§2) must hold even when the file
+# exists and passes the [ -r ] pre-flight but yields no content. A norms-less build
+# prompt is the failure mode FR-74 prevents; the cat must be guarded (norm #1).
+echo "[§2b] an empty norms file is FATAL at render (no silent empty-norms substitution)"
+( D="$ROOT/r2b"; TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  mk_prompt_dir "$D"
+  : > "$D/build-norms.md"        # present + readable, but EMPTY
+  export TMPL="$D/build-prompt.md"; unset STATE_DIR
+  err="$ROOT/r2b.err"
+  prompt="$(_render_build_prompt 0026-x docs/tdd/0026-x.md 2>"$err")"; rc=$?
+  [ "$rc" -ne 0 ] && ok "render returns non-zero when the norms file is empty" \
+    || bad "render must fail on an empty norms file, not substitute empty norms (got rc=$rc)"
+  grep -qF 'build-norms.md' "$err" 2>/dev/null \
+    && ok "stderr diagnostic names the norms file on the empty path" || bad "stderr should name build-norms.md (got: $(cat "$err" 2>/dev/null))"
+  printf '%s' "$prompt" | grep -qF 'Implement docs/tdd/0026-x.md' \
+    && bad "no partial prompt should be emitted on the empty-norms fatal path" || ok "no partial prompt emitted on the empty-norms fatal path"
+) || true
+
+# ===========================================================================
 # §3: the norms are inserted literally — not by sed, and not by a bash PE replace
 # (in bash >=5.2 an unescaped `&` in a ${v//p/r} REPLACEMENT is the matched-text
 # reference too, the same hazard norm #3 cites for sed). A norms file containing
