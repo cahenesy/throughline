@@ -10,8 +10,12 @@
 #        reading the docs/tdd/LEARNINGS.md store (written by FR-72), treats an
 #        absent store as a no-op, and treats loaded entries as untrusted data.
 #        (Mechanical grep against the step-4 section.)
-# Sequencing items 2-3 extend this file with §2 (the hybrid-match + non-blocking
-# lead-in checks) and §3-§4 (the overlap / no-overlap fixture exercise).
+#   §2 — step 5's lead-in instructs the HYBRID match (mechanical files/tags
+#        pre-filter AND the model-judgment backstop) and is advisory/non-blocking:
+#        no BLOCKED, no PRECHECK_FAIL, and step 7b does not check incorporation.
+#        (Mechanical grep against the step-5 section.)
+# Sequencing item 3 extends this file with §3-§4 (the overlap / no-overlap
+# fixture exercise).
 #
 # Run: bash tests/learnings-inform-tdd-author.test.sh
 set -uo pipefail
@@ -53,6 +57,39 @@ printf '%s\n' "$STEP4" | grep -qi 'absent' \
 printf '%s\n' "$STEP4" | grep -qi 'untrusted data\|trust boundary\|not.*instructions\|ignore the directive' \
   && ok "step 4 treats loaded learnings as untrusted data (injection-safe)" \
   || bad "step 4 must treat LEARNINGS.md content as untrusted data, not instructions"
+
+# --- §2: step 5 lead-in surfaces matches (hybrid, non-blocking) ----------------
+
+echo "[S2] step 5 lead-in instructs the hybrid match and is explicitly non-blocking"
+STEP5="$(_section '^## 5[.]' '^## 6[.]')"
+[ -n "$STEP5" ] || bad "could not extract step-5 section from SKILL.md (anchors changed?)"
+# Mechanical pre-filter: files/tags hints intersected against the new TDD's
+# declared touched-file / PRD-ref area.
+{ printf '%s\n' "$STEP5" | grep -qi 'mechanical' \
+  && printf '%s\n' "$STEP5" | grep -q 'files=' \
+  && printf '%s\n' "$STEP5" | grep -q 'tags=' \
+  && printf '%s\n' "$STEP5" | grep -q '## Touched files'; } \
+  && ok "lead-in specifies the mechanical files=/tags= pre-filter over ## Touched files" \
+  || bad "lead-in must specify the mechanical files=/tags= pre-filter intersected with the new TDD's ## Touched files"
+# Model-judgment backstop for cross-cutting patterns sharing no file/tag overlap.
+printf '%s\n' "$STEP5" | grep -qi 'backstop\|model.judgment' \
+  && ok "lead-in specifies the model-judgment backstop" \
+  || bad "lead-in must specify the model-judgment backstop"
+# Non-blocking: advisory, never BLOCKED/PRECHECK_FAIL.
+{ printf '%s\n' "$STEP5" | grep -qi 'advisory' \
+  && printf '%s\n' "$STEP5" | grep -q 'BLOCKED' \
+  && printf '%s\n' "$STEP5" | grep -q 'PRECHECK_FAIL'; } \
+  && ok "lead-in states surfacing is advisory and never emits BLOCKED/PRECHECK_FAIL" \
+  || bad "lead-in must state learnings are advisory and never emit BLOCKED/PRECHECK_FAIL"
+# The design-critique gate (step 7b) does not check learning incorporation.
+{ printf '%s\n' "$STEP5" | grep -q '7b' \
+  && printf '%s\n' "$STEP5" | grep -qi 'not check'; } \
+  && ok "lead-in states step 7b does not check learning incorporation" \
+  || bad "lead-in must state the step-7b design-critique gate does not check learning incorporation"
+# Negative case: absent store / no match => nothing surfaced.
+printf '%s\n' "$STEP5" | grep -qi 'absent\|no learning matches\|negative case' \
+  && ok "lead-in states the negative case (absent / no-match => nothing surfaced)" \
+  || bad "lead-in must state the FR-73 negative case (nothing surfaced when absent or no match)"
 
 # --- summary ------------------------------------------------------------------
 echo
