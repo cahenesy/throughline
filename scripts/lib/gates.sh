@@ -748,6 +748,64 @@ _run_per_step_review() {  # <slug> <tdd> <step-id> <sha> <build-start-sha> <main
   esac
 }
 
+# _sequencing_labels_ok <tdd-path> -> rc 0 ok | rc 1 violation (details on stdout)
+# (TDD 0032 §3 / FR-51, FR-41) — the runner-side pre-flight twin of
+# tl_lint_sequencing (scripts/lib/tdd-lint.sh): refuse to spend a single build
+# token on a TDD whose `## Sequencing / implementation plan` top-level labels are
+# not exactly integer 1..N, because the build would copy a non-integer label into
+# STEP_COMMIT and deadlock (the TDD 0021 incident). The awk is MIRRORED from
+# tl_lint_sequencing rather than sourced — the established FR-67 convention
+# (gates.sh mirrors tdd-lint.sh parsers with a cross-reference comment, as the
+# structural check already does) — because sourcing tdd-lint.sh's entry-point
+# dispatch into the runner adds fragility for a ~15-line awk block. Echoes the
+# offending detail and returns 1 on a violation; returns 0 when the labels are
+# 1..N or there is no numbered plan (a prose-only plan degrades to end-of-build
+# review). Read-once: the file is read by a single awk pass.
+_sequencing_labels_ok() {  # <tdd-path>
+  local f="$1"
+  # A missing file is not this check's concern — _render_build_prompt's own
+  # existence checks own that failure mode; pass through so the refusal we own
+  # is only the label violation.
+  [ -f "$f" ] || return 0
+  local out awk_rc
+  out="$(awk '
+    BEGIN { in_sec=0; in_fence=0; n=0 }
+    /^[[:space:]]*(```|~~~)/ { in_fence = !in_fence; next }
+    !in_fence && /^## Sequencing \/ implementation plan[[:space:]]*$/ { in_sec=1; next }
+    !in_fence && /^## / { in_sec=0; next }
+    in_sec && !in_fence && /^[0-9]+[a-zA-Z]*\./ {
+      lbl = $0; sub(/\..*/, "", lbl); n++; labels[n] = lbl
+    }
+    END {
+      if (n == 0) exit 0
+      for (i = 1; i <= n; i++) {
+        if (labels[i] ~ /[^0-9]/) { printf "non-integer label %s", labels[i]; exit 1 }
+      }
+      list = ""; bad = 0
+      for (i = 1; i <= n; i++) {
+        list = list (i > 1 ? "," : "") labels[i]
+        if (labels[i] + 0 != i) bad = 1
+      }
+      if (bad) { printf "labels not 1..N sequential (found: %s)", list; exit 1 }
+      exit 0
+    }
+  ' "$f")"
+  awk_rc=$?
+  if [ "$awk_rc" -eq 1 ]; then
+    printf '%s' "$out"
+    return 1
+  fi
+  # awk_rc 0 = conforming (or no numbered plan). Any other awk exit is an
+  # anomaly that would have crashed tl_lint_sequencing at design time too; the
+  # runtime malformed-sentinel branch (layer 4) remains the backstop, so the
+  # pre-flight degrades to "let the build proceed" rather than blocking a build
+  # on an awk crash. Surface it on stderr so it is not wholly silent.
+  if [ "$awk_rc" -ne 0 ]; then
+    echo "warning: _sequencing_labels_ok: awk exited $awk_rc on $f; deferring to runtime protocol guard" >&2
+  fi
+  return 0
+}
+
 # _per_step_review_loop <slug> <tdd> <log> — drive the multi-turn build coprocess
 # (§"Build subprocess protocol"). Reads the build's stream-json stdout line by
 # line, intercepts STEP_COMMIT sentinels (→ per-step review → STEP_REVIEW reply
@@ -771,6 +829,18 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
   prompt="$(_render_build_prompt "$slug" "$tdd" 2>>"$log")"
   if [ $? -ne 0 ] || [ -z "$prompt" ]; then
     echo "FATAL: _per_step_review_loop: build prompt render failed for $slug; refusing to spawn claude -p with an empty prompt" >>"$log"
+    return 1
+  fi
+  # Layer 3 pre-flight (TDD 0032 §3 / FR-51, FR-41): a TDD with non-integer
+  # Sequencing labels would make the build copy a non-integer label into
+  # STEP_COMMIT and deadlock. Refuse BEFORE the coproc spawn so zero build tokens
+  # are spent. The diagnostic carries no _recoverable_patterns token and we return
+  # 1 (not a signal code), so _classify_cause routes it to fatal → FAIL (NFR-4: a
+  # deterministic, retry-proof failure never masquerades as transient/paused).
+  local _seq_details
+  if ! _seq_details="$(_sequencing_labels_ok "$tdd")"; then
+    printf 'THROUGHLINE_PROTOCOL_PREFLIGHT: non-integer sequencing labels in %s (%s); refusing to spawn the build (fatal)\n' \
+      "$tdd" "$_seq_details" >> "$log"
     return 1
   fi
   build_start="$(git rev-parse HEAD 2>/dev/null || echo "")"
