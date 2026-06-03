@@ -902,8 +902,12 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
   # build_active_seconds accumulates committed intervals; _active_exceeded flags an
   # active-budget kill and _backstop_exceeded an inline-backstop kill for the
   # post-loop classifier.
-  local evt text step_id sha verdict read_rc=0
+  local evt text step_id sha verdict read_rc=0 attempt
   local build_active_seconds=0 interval_start clock_active=1 _active_exceeded=0 _backstop_exceeded=0 _now _active
+  # TDD 0032 §4: per-build-attempt protocol-correction budget. Loop-local (a
+  # pause/resume spawns a fresh coprocess + fresh counters — the budget is "2
+  # corrections per build attempt", not per TDD lifetime). No fragment-schema change.
+  local _protocol_errors=0 _protocol_fatal=0
   interval_start=$(date +%s)   # the spawn → first-STEP_COMMIT interval begins now
   while :; do
     # Capture read's OWN status directly — NOT via `if ! read; then read_rc=$?`,
@@ -979,6 +983,36 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
               # TDD 0030 §5: RESTART the active clock — the verdict write completed,
               # so the next active interval (to the next sentinel) begins now.
               interval_start=$(date +%s)
+            else
+              # TDD 0032 §4 (FR-56, FR-42, FR-41, NFR-4): the line contains
+              # "STEP_COMMIT: " but did NOT parse into an integer step-id + sha.
+              # A GENUINE malformed attempt is a line-anchored sentinel with no
+              # template placeholder; a template echo (`STEP_COMMIT: <step-id>
+              # <sha>`) carries a `<`, and a prose mention is not line-anchored.
+              attempt="$(printf '%s' "$text" | grep -a '^STEP_COMMIT:' | grep -av '<' | tail -1)"
+              if [ -n "$attempt" ]; then
+                _protocol_errors=$((_protocol_errors + 1))
+                printf 'THROUGHLINE_PROTOCOL_ERROR: unparseable STEP_COMMIT sentinel (attempt %s/2): %.200s\n' \
+                  "$_protocol_errors" "$attempt" >> "$log"
+                if [ "$_protocol_errors" -le 2 ]; then
+                  verdict='STEP_REVIEW: BLOCK protocol-error: STEP_COMMIT must be exactly "STEP_COMMIT: <integer-step-index> <full-commit-sha>". <integer-step-index> is the 1-based ordinal of the Sequencing item (a TDD label like "5b" maps to its ordinal position). Re-emit the sentinel for the SAME completed work in that exact format — do not redo the work.'
+                  printf '%s\n' "$verdict" >> "$log"
+                  # Same SIGPIPE-safe write as the review-verdict path: a coproc
+                  # that died mid-correction breaks to the post-loop classifier.
+                  _coproc_write "${build_in}" "$(_user_turn_json "$verdict")" || break
+                  interval_start=$(date +%s)   # same clock handling as the review-verdict path
+                else
+                  # Budget exhausted (>2 corrections). Kill ONLY our spawned pid
+                  # (_kill_pid guards the pid-0/empty edge that would signal the
+                  # runner's own process group) and route to fatal post-loop.
+                  printf 'THROUGHLINE_PROTOCOL_FATAL: build emitted %s unparseable STEP_COMMIT sentinels despite correction; killing build pid %s (protocol-error)\n' \
+                    "$_protocol_errors" "$bpid" >> "$log"
+                  _kill_pid "$bpid"
+                  _protocol_fatal=1
+                  break
+                fi
+              fi
+              # No real attempt (template echo / prose) → ignore, exactly as before.
             fi
             ;;
           *"BATCH_RESULT: "*)
@@ -1045,6 +1079,17 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
   if [ "$_backstop_exceeded" -eq 1 ]; then
     printf 'THROUGHLINE_BUILD_BACKSTOP: hard backstop fired at %ss active — build timed out (runner accounting bug?) (build-overall-timeout) (transient)\n' "$backstop" >> "$log"
     return 124
+  fi
+  # TDD 0032 §4: protocol-correction budget exhausted — we killed the coproc after
+  # >2 unparseable STEP_COMMIT sentinels. `wait` above collected our own SIGTERM
+  # (143), which the line below would map to transient; a deterministic,
+  # retry-proof protocol error must NEVER pause/retry (NFR-4). Return 1 — with the
+  # THROUGHLINE_PROTOCOL_FATAL log line (no _recoverable_patterns token),
+  # _classify_cause routes it to fatal → FAIL (FR-41), downstream TDDs BLOCKED
+  # (FR-16). The three kill flags are mutually exclusive by construction, so this
+  # check's position among them is free; placed last-before-read_rc per §4.
+  if [ "$_protocol_fatal" -eq 1 ]; then
+    return 1
   fi
   # Deadlock kill path: surface a SIGTERM-equivalent code → transient.
   [ "$read_rc" -gt 128 ] && return 143
