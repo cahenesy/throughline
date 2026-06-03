@@ -60,34 +60,62 @@ printf '%s\n' "$STEP4" | grep -qi 'untrusted data\|trust boundary\|not.*instruct
 
 # --- §2: step 5 lead-in surfaces matches (hybrid, non-blocking) ----------------
 
+# Extract ONLY the step-5 lead-in: bounded by its own opening marker and the
+# `> Tip:` line that begins the original step-5 body, AND required to sit WITHIN
+# section 5 (piped through the section-5 extractor). This keeps the assertions
+# structurally scoped to the lead-in rather than incidentally matching the rest
+# of the ~150-line authoring section (e.g. its existing "BLOCKS a TDD" text).
+_leadin() {
+  _section '^## 5[.]' '^## 6[.]' | awk '
+    /^\*\*Surface relevant prior learnings/ { inb=1 }
+    inb && /^> Tip:/ { exit }
+    inb { print }
+  '
+}
+
 echo "[S2] step 5 lead-in instructs the hybrid match and is explicitly non-blocking"
-STEP5="$(_section '^## 5[.]' '^## 6[.]')"
-[ -n "$STEP5" ] || bad "could not extract step-5 section from SKILL.md (anchors changed?)"
+LEADIN="$(_leadin)"
+LN_COUNT="$(printf '%s\n' "$LEADIN" | grep -c .)"
+{ [ -n "$LEADIN" ] && [ "$LN_COUNT" -ge 5 ] && [ "$LN_COUNT" -le 40 ]; } \
+  && ok "step-5 lead-in present and tightly bounded ($LN_COUNT lines, within section 5)" \
+  || bad "step-5 lead-in not found within section 5 / not tightly bounded (got $LN_COUNT lines)"
+# Flatten to one line so multi-token polarity phrases ("no `BLOCKED`") are not
+# missed when prose wrapping splits them across two lines. Polarity sensitivity
+# is preserved: an inverted impl still would not contain "no BLOCKED" anywhere.
+FLAT="$(printf '%s\n' "$LEADIN" | tr '\n' ' ')"
 # Mechanical pre-filter: files/tags hints intersected against the new TDD's
 # declared touched-file / PRD-ref area.
-{ printf '%s\n' "$STEP5" | grep -qi 'mechanical' \
-  && printf '%s\n' "$STEP5" | grep -q 'files=' \
-  && printf '%s\n' "$STEP5" | grep -q 'tags=' \
-  && printf '%s\n' "$STEP5" | grep -q '## Touched files'; } \
+{ printf '%s' "$FLAT" | grep -qi 'mechanical' \
+  && printf '%s' "$FLAT" | grep -q 'files=' \
+  && printf '%s' "$FLAT" | grep -q 'tags=' \
+  && printf '%s' "$FLAT" | grep -q '## Touched files'; } \
   && ok "lead-in specifies the mechanical files=/tags= pre-filter over ## Touched files" \
   || bad "lead-in must specify the mechanical files=/tags= pre-filter intersected with the new TDD's ## Touched files"
 # Model-judgment backstop for cross-cutting patterns sharing no file/tag overlap.
-printf '%s\n' "$STEP5" | grep -qi 'backstop\|model.judgment' \
+printf '%s' "$FLAT" | grep -qi 'backstop\|model.judgment' \
   && ok "lead-in specifies the model-judgment backstop" \
   || bad "lead-in must specify the model-judgment backstop"
-# Non-blocking: advisory, never BLOCKED/PRECHECK_FAIL.
-{ printf '%s\n' "$STEP5" | grep -qi 'advisory' \
-  && printf '%s\n' "$STEP5" | grep -q 'BLOCKED' \
-  && printf '%s\n' "$STEP5" | grep -q 'PRECHECK_FAIL'; } \
-  && ok "lead-in states surfacing is advisory and never emits BLOCKED/PRECHECK_FAIL" \
-  || bad "lead-in must state learnings are advisory and never emit BLOCKED/PRECHECK_FAIL"
-# The design-critique gate (step 7b) does not check learning incorporation.
-{ printf '%s\n' "$STEP5" | grep -q '7b' \
-  && printf '%s\n' "$STEP5" | grep -qi 'not check'; } \
+# Non-blocking, POLARITY-SENSITIVE: the gating tokens must appear under an
+# explicit negation. An inverted "learnings DO gate / emit BLOCKED" must FAIL.
+{ printf '%s' "$FLAT" | grep -qiE 'never[ -]?gate|does not gate|non-gating' \
+  && printf '%s' "$FLAT" | grep -qiE 'no .?BLOCKED' \
+  && printf '%s' "$FLAT" | grep -qiE 'no .?PRECHECK_FAIL'; } \
+  && ok "lead-in negates gating: never gates, no BLOCKED, no PRECHECK_FAIL" \
+  || bad "lead-in must state surfacing NEVER gates and never emits BLOCKED/PRECHECK_FAIL (polarity-sensitive)"
+# The design-critique gate (step 7b) does NOT check learning incorporation.
+{ printf '%s' "$FLAT" | grep -q '7b' \
+  && printf '%s' "$FLAT" | grep -qiE '(does not|do not|not) check'; } \
   && ok "lead-in states step 7b does not check learning incorporation" \
   || bad "lead-in must state the step-7b design-critique gate does not check learning incorporation"
-# Negative case: absent store / no match => nothing surfaced.
-printf '%s\n' "$STEP5" | grep -qi 'absent\|no learning matches\|negative case' \
+# Indirect-injection guard re-asserted AT the surfacing point: the untrusted
+# Summary is surfaced as inert text, not acted on (recurrent injection class).
+{ printf '%s' "$FLAT" | grep -qiE 'untrusted|inert|never act on' \
+  && printf '%s' "$FLAT" | grep -q 'Summary'; } \
+  && ok "lead-in re-asserts the injection guard when surfacing the untrusted Summary" \
+  || bad "lead-in must re-assert that the surfaced Summary is untrusted/inert, not acted on"
+# Negative case, POLARITY-SENSITIVE: absent / no-match => NOTHING surfaced.
+{ printf '%s' "$FLAT" | grep -qi 'absent' \
+  && printf '%s' "$FLAT" | grep -qiE 'no surfaced learnings|nothing surfaced|no note|no learning'; } \
   && ok "lead-in states the negative case (absent / no-match => nothing surfaced)" \
   || bad "lead-in must state the FR-73 negative case (nothing surfaced when absent or no match)"
 
