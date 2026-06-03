@@ -95,6 +95,8 @@ EOF
   [ "$rc" -eq 2 ] && ok "gap exits 2" || bad "1,2,5 should exit 2 (rc=$rc)"
   printf '%s' "$out" | grep -qi 'sequential' && printf '%s' "$out" | grep -q '1,2,5' \
     && ok "names the non-sequential set (1,2,5)" || bad "finding should name found:1,2,5 (got: $out)"
+  n="$(printf '%s\n' "$out" | grep -c 'sequencing.labels')"
+  [ "$n" -eq 1 ] && ok "exactly one finding" || bad "should be exactly one finding (got $n: $out)"
 ) || true
 
 echo "[L2c] tl_lint_sequencing rejects a duplicate (1,2,2)"
@@ -109,6 +111,8 @@ EOF
   out="$(tl_lint_sequencing "$f")"; rc=$?
   [ "$rc" -eq 2 ] && ok "duplicate exits 2" || bad "1,2,2 should exit 2 (rc=$rc)"
   printf '%s' "$out" | grep -q '1,2,2' && ok "names the duplicate set (1,2,2)" || bad "finding should name found:1,2,2 (got: $out)"
+  n="$(printf '%s\n' "$out" | grep -c 'sequencing.labels')"
+  [ "$n" -eq 1 ] && ok "exactly one finding" || bad "should be exactly one finding (got $n: $out)"
 ) || true
 
 echo "[L2d] tl_lint_sequencing rejects a list not starting at 1 (2,3)"
@@ -122,6 +126,8 @@ EOF
   out="$(tl_lint_sequencing "$f")"; rc=$?
   [ "$rc" -eq 2 ] && ok "not-starting-at-1 exits 2" || bad "2,3 should exit 2 (rc=$rc)"
   printf '%s' "$out" | grep -q '2,3' && ok "names the offending set (2,3)" || bad "finding should name found:2,3 (got: $out)"
+  n="$(printf '%s\n' "$out" | grep -c 'sequencing.labels')"
+  [ "$n" -eq 1 ] && ok "exactly one finding" || bad "should be exactly one finding (got $n: $out)"
 ) || true
 
 # ============================================================================
