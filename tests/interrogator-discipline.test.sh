@@ -31,6 +31,7 @@
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 PRD_SKILL="$REPO/skills/prd-author/SKILL.md"
+TDD_SKILL="$REPO/skills/tdd-author/SKILL.md"
 
 # Distinguish an infrastructure failure (a missing tool / unreadable skill) from a
 # genuine content failure: a missing grep or an empty file would otherwise feed
@@ -100,6 +101,25 @@ check_common "$PRD_SKILL" "FR-75" "prd-author"
 { grep -qF 'Open questions' "$PRD_SKILL" && grep -qiF 'waived' "$PRD_SKILL"; } \
   && ok "prd-author: waived items folded into the PRD's ## Open questions section" \
   || bad "prd-author: waived items must ALSO be appended to the PRD's ## Open questions section"
+
+# --- tdd-author (FR-76) -------------------------------------------------------
+echo "[tdd-author] interrogator block, completion gate, draft integration, self-review (FR-76)"
+check_common "$TDD_SKILL" "FR-76" "tdd-author"
+# tdd-author specific: the design-flavored block challenges the PRD for
+# infeasibility / contradiction / under-specification AND the model's OWN
+# proposed decomposition (FR-76's two challenge targets).
+{ grep -qiF 'infeasib' "$TDD_SKILL" && grep -qiF 'contradict' "$TDD_SKILL" \
+  && grep -qiF 'under-spec' "$TDD_SKILL" && grep -qiF 'decomposition' "$TDD_SKILL"; } \
+  && ok "tdd-author: block challenges PRD infeasibility/contradiction/under-specification AND own decomposition" \
+  || bad "tdd-author: block must challenge the PRD (infeasibility/contradiction/under-specification) AND the model's own decomposition"
+# The pre-existing one-sentence "CHALLENGE the PRD:" directive in step 5 is
+# SUBSUMED by the new block and REMOVED — keeping both would leave two overlapping
+# challenge instructions of different strengths (TDD 0028 §2). Anchored on the
+# distinctive uppercase "CHALLENGE the PRD:" so it cannot collide with the new
+# block's lowercase "challenge the PRD's requirements" phrasing.
+grep -qF 'CHALLENGE the PRD:' "$TDD_SKILL" \
+  && bad "tdd-author: the subsumed one-sentence 'CHALLENGE the PRD:' directive must be REMOVED (new block is authoritative)" \
+  || ok "tdd-author: the subsumed one-sentence 'CHALLENGE the PRD:' directive was removed"
 
 # --- report -------------------------------------------------------------------
 echo
