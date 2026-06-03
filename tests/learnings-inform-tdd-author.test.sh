@@ -14,8 +14,15 @@
 #        pre-filter AND the model-judgment backstop) and is advisory/non-blocking:
 #        no BLOCKED, no PRECHECK_FAIL, and step 7b does not check incorporation.
 #        (Mechanical grep against the step-5 section.)
-# Sequencing item 3 extends this file with §3-§4 (the overlap / no-overlap
-# fixture exercise).
+#   §3-§4 — the overlap / no-overlap fixture exercise. The mechanical pre-filter
+#        (SKILL.md step 5 item 1) is the FALSIFIABLE FLOOR of verification §3-§4:
+#        given a fixture LEARNINGS.md entry and a fixture TDD, the floor surfaces
+#        on a files= OR tags= intersection and stays silent with neither. This
+#        replicates the documented predicate over canonical fixtures so the floor
+#        is pinned deterministically. The FULL surfacing (the model-judgment
+#        backstop and the advisory framing) is a model behavior observed in a
+#        live /tdd-author session — that is the runtime-verification gate's job,
+#        not this build-time content/floor check.
 #
 # Run: bash tests/learnings-inform-tdd-author.test.sh
 set -uo pipefail
@@ -138,6 +145,156 @@ BACKSTOP="$(printf '%s\n' "$LEADIN" | awk '
   && printf '%s' "$FLAT" | grep -qiE 'no surfaced learnings|nothing surfaced|no note|no learning'; } \
   && ok "lead-in states the negative case (absent / no-match => nothing surfaced)" \
   || bad "lead-in must state the FR-73 negative case (nothing surfaced when absent or no match)"
+
+# --- §3-§4: the mechanical pre-filter floor over fixtures ----------------------
+#
+# Replicate the documented predicate (SKILL.md step 5 item 1): a learning is a
+# candidate match when its Subject-area-hints files=[...] intersect the new TDD's
+# planned `## Touched files`, OR its tags=[...] intersect keywords drawn from the
+# TDD's PRD refs / working title. We re-implement it here ONLY to prove the
+# canonical fixtures are discriminated as §3-§4 require — overlap surfaces, no
+# overlap stays silent. Keeping the predicate self-contained avoids driving the
+# live skill (the runtime-verify gate's job).
+
+# Abort the whole run (exit 2) on an infrastructure/parse failure — distinct from
+# a content FAIL — matching this file's mktemp/awk FATAL convention.
+_fatal() { echo "FATAL: $1" >&2; exit 2; }
+
+# Split a `[a, b, c]`-style CSV body into one trimmed, non-empty token per line.
+_csv_to_lines() { printf '%s' "$1" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$'; }
+
+# 0 iff set A (newline-delimited, arg 1) shares an exact element with set B (arg 2).
+_intersects() {  # <set-A> <set-B>
+  local a
+  while IFS= read -r a; do
+    [ -n "$a" ] || continue
+    printf '%s\n' "$2" | grep -Fxq -- "$a" && return 0
+  done <<<"$1"
+  return 1
+}
+
+# Echo MATCH / NOMATCH for <learnings-file> vs <tdd-file> per the documented floor.
+mech_prefilter() {  # <learnings-file> <tdd-file>
+  # NOT YET IMPLEMENTED — a bare stub so EVERY behavioral assertion below is RED:
+  # no files=/tags= match decision (the overlap assertions expect MATCH but get
+  # NOMATCH), and no integrity guards (the malformed-fixture assertions expect a
+  # FATAL exit 2 but get rc=0). The step(3) implementation commit adds the
+  # extraction, the integrity guards, and the match decision.
+  printf 'NOMATCH'
+}
+
+# Score a well-formed fixture pair and assert the expected result. Called at TOP
+# LEVEL (never inside a `$(...)`), so when mech_prefilter's integrity guard trips
+# `_fatal`, the exit 2 propagates here and aborts the whole run — a broken fixture
+# is an infra failure, never a MATCH/NOMATCH result to score. Any non-zero status
+# (not just 2) is treated as that infra failure; a rc=1 is never swallowed.
+assert_prefilter() {  # <learnings-file> <tdd-file> <expected MATCH|NOMATCH> <label>
+  local out rc
+  out="$(mech_prefilter "$1" "$2")"; rc=$?
+  [ "$rc" -eq 0 ] || _fatal "mech_prefilter signalled failure (rc=$rc) on a well-formed fixture pair ($1 vs $2) — infra/parse failure, not a result"
+  [ "$out" = "$3" ] \
+    && ok "$4" \
+    || bad "$4 (expected $3, got '$out')"
+}
+
+echo "[S3] mechanical pre-filter floor: files/tags overlap surfaces; no overlap stays silent"
+
+# Fixture LEARNINGS.md entry (TDD 0022's `## L-NNN` schema) hinting one file + tags.
+LFIX="$ROOT/LEARNINGS.md"
+cat >"$LFIX" <<'EOF' || { echo "FATAL: cannot write fixture LEARNINGS.md" >&2; exit 2; }
+# Build-phase learnings (accepted)
+
+## L-001: state-persistence-atomicity
+- Pattern class: state-persistence
+- Recurred across: 0014-foo, 0020-bar (first observed run 20260501-000000)
+- Severity range: major–major
+- Subject-area hints: files=[scripts/lib/state.sh] tags=[atomicity, persistence]
+- Flags: structural=false rework=true
+- Summary: state writes must be atomic temp-file + mv to survive concurrent runs
+- Representative evidence: "non-atomic write to state.sh truncated under concurrency"
+EOF
+
+# §3 overlap: a TDD whose `## Touched files` includes scripts/lib/state.sh.
+T_FILE="$ROOT/overlap.tdd.md"
+cat >"$T_FILE" <<'EOF' || { echo "FATAL: cannot write overlap fixture" >&2; exit 2; }
+# TDD 9001: rework the resume cursor
+Status: draft
+PRD refs: FR-99
+
+## Touched files
+- scripts/lib/state.sh — adjust the persisted resume cursor
+- scripts/implement.sh — call site
+EOF
+
+# tags-only overlap: no shared file, but the title carries a tag keyword.
+T_TAG="$ROOT/tagmatch.tdd.md"
+cat >"$T_TAG" <<'EOF' || { echo "FATAL: cannot write tag-match fixture" >&2; exit 2; }
+# TDD 9003: queue persistence hardening
+Status: draft
+PRD refs: FR-50
+
+## Touched files
+- scripts/lib/queue.sh — new queue persistence layer
+EOF
+
+# §4 no overlap: docs-only TDD, unrelated PRD ref, no file or tag intersection.
+T_NONE="$ROOT/nooverlap.tdd.md"
+cat >"$T_NONE" <<'EOF' || { echo "FATAL: cannot write no-overlap fixture" >&2; exit 2; }
+# TDD 9002: clarify PRD wording
+Status: draft
+PRD refs: FR-12
+
+## Touched files
+- docs/PRD.md — clarify a requirement's wording
+EOF
+
+assert_prefilter "$LFIX" "$T_FILE" MATCH \
+  "§3 file overlap (scripts/lib/state.sh) surfaces the learning"
+assert_prefilter "$LFIX" "$T_TAG" MATCH \
+  "tags= overlap (title keyword) surfaces the learning with no shared file"
+assert_prefilter "$LFIX" "$T_NONE" NOMATCH \
+  "§4 no file/tag overlap surfaces nothing (FR-73 negative case)"
+
+# Silent-failure guards: a malformed fixture (no Subject-area hints line, no
+# `## Touched files`, no title/PRD-ref keywords) leaves an extraction empty. An
+# empty extraction that silently returns NOMATCH would let a broken fixture be
+# mis-scored as a legitimate "no match" — the false-result-on-infrastructure-
+# failure class. The predicate must instead ABORT (exit 2) on a broken parse.
+echo "[S3-guard] malformed fixtures FATAL (exit 2) rather than silently scoring NOMATCH"
+
+BADL="$ROOT/bad-learnings.md"
+printf '## L-001: x\n- Summary: an entry that lost its Subject-area hints line\n' >"$BADL" \
+  || { echo "FATAL: cannot write bad-learnings fixture" >&2; exit 2; }
+( mech_prefilter "$BADL" "$T_FILE" >/dev/null 2>&1 ); rc=$?
+[ "$rc" -eq 2 ] \
+  && ok "a learning with no 'Subject-area hints' line FATALs (rc=2), not a silent NOMATCH" \
+  || bad "missing 'Subject-area hints' must abort the parse, got rc=$rc"
+
+BADT="$ROOT/bad-touched.tdd.md"
+printf '# TDD 9004: no touched-files section\nStatus: draft\nPRD refs: FR-1\n' >"$BADT" \
+  || { echo "FATAL: cannot write bad-touched fixture" >&2; exit 2; }
+( mech_prefilter "$LFIX" "$BADT" >/dev/null 2>&1 ); rc=$?
+[ "$rc" -eq 2 ] \
+  && ok "a TDD with no '## Touched files' paths FATALs (rc=2), not a silent NOMATCH" \
+  || bad "missing '## Touched files' must abort the parse, got rc=$rc"
+
+BADK="$ROOT/bad-title.tdd.md"
+printf '## Touched files\n- scripts/lib/queue.sh — body only, no title or PRD refs\n' >"$BADK" \
+  || { echo "FATAL: cannot write bad-title fixture" >&2; exit 2; }
+( mech_prefilter "$LFIX" "$BADK" >/dev/null 2>&1 ); rc=$?
+[ "$rc" -eq 2 ] \
+  && ok "a TDD with no title/PRD-ref keywords FATALs (rc=2), not a silent NOMATCH" \
+  || bad "missing title/PRD-ref keywords must abort the parse, got rc=$rc"
+
+# The good-path scorer must PROPAGATE a guard trip as a whole-run abort, not
+# absorb it in a command-substitution subshell and downgrade it to a content
+# fail. Run assert_prefilter against a malformed fixture in a subshell and
+# confirm the subshell exits 2 (the FATAL reached script level, not just the
+# inner $(...)).
+( assert_prefilter "$BADL" "$T_FILE" MATCH "unreachable" >/dev/null 2>&1 ); rc=$?
+[ "$rc" -eq 2 ] \
+  && ok "assert_prefilter propagates a guard trip as a FATAL script abort (rc=2)" \
+  || bad "assert_prefilter must abort the run (exit 2) on a guard trip, got rc=$rc"
 
 # --- summary ------------------------------------------------------------------
 echo
