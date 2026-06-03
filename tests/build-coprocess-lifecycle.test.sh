@@ -66,6 +66,15 @@ TDD
   cat > scripts/build-prompt.md <<'TMPL'
 build {{TDD}} cleared={{CLEARED_STEPS}}
 TMPL
+  # TDD 0026 / FR-74: _render_build_prompt now requires a build-norms.md beside
+  # the build-prompt template (fail-loud if missing). This suite stubs TMPL into
+  # a temp scripts/ dir, so it must provide a well-formed norms file or every
+  # _per_step_review_loop call aborts at render. Minimal but anchor-valid.
+  cat > scripts/build-norms.md <<'NORMS'
+## Defensive-coding norms
+1. Fail loud. Never swallow an error into a silent empty result.
+2. Validate inputs. Reject malformed data at the boundary.
+NORMS
   git add -A
   git commit -q -m "init"
 }

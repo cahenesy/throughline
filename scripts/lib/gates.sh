@@ -114,26 +114,117 @@ _cleared_steps_csv() {  # <slug>
   if [ -z "$csv" ]; then printf 'none'; else printf '%s' "$csv"; fi
 }
 
-# _render_build_prompt <slug> <tdd> (TDD 0024 / FR-40) — render the build-prompt
-# template: substitute {{TDD}} and the {{CLEARED_STEPS}} RESUME SIGNAL (the
-# comma-separated cleared step IDs from _cleared_steps_csv, or `none` for a fresh
-# build). Resolves the template from $TMPL with a fallback to the file beside the
-# scripts dir (TMPL is only set in real-run mode, not under the source-only test
-# harness) — same pattern as _render_review_prompt. {{TDD}} is substituted via
-# sed first; {{CLEARED_STEPS}} via bash parameter expansion (the value is integers
-# or `none`, so it cannot break a sed delimiter or double-expand a placeholder).
+# _build_norms_file (TDD 0026 / FR-74) — resolve the path to the defensive-coding
+# norms file. It lives beside the build-prompt template (the same scripts dir as
+# $TMPL, or beside this module's scripts dir under the source-only test harness —
+# the same dirname resolution _render_build_prompt uses for $tmpl). Echoes the
+# path ONLY; existence is the caller's call (§2 render is fail-loud, §3 reminder
+# degrades), so both render and reminder agree on one location.
+_build_norms_file() {
+  local tmpl="${TMPL:-}"
+  [ -z "$tmpl" ] && tmpl="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/build-prompt.md"
+  printf '%s' "$(dirname "$tmpl")/build-norms.md"
+}
+
+# _render_build_prompt <slug> <tdd> (TDD 0024 / FR-40; TDD 0026 / FR-74) — render
+# the build-prompt template: substitute {{TDD}}, the {{CLEARED_STEPS}} RESUME
+# SIGNAL (the comma-separated cleared step IDs from _cleared_steps_csv, or `none`
+# for a fresh build), and the {{BUILD_NORMS}} defensive-coding norms (FR-74).
+# Resolves the template from $TMPL with a fallback to the file beside the scripts
+# dir (TMPL is only set in real-run mode, not under the source-only test harness)
+# — same pattern as _render_review_prompt.
+#
+# Substitution order: {{TDD}} via sed first; then {{CLEARED_STEPS}} via bash
+# parameter expansion (the value is integers or `none`, so it cannot break a sed
+# delimiter or double-expand a placeholder); then {{BUILD_NORMS}} LAST. The norms
+# go LAST so the norms text — which may contain {{...}}-like sequences in examples —
+# is never re-scanned for the earlier placeholders.
+#
+# The norms are inserted by split-and-concatenate, NOT by sed and NOT by a
+# ${prompt//…/$norms} parameter-expansion replace. Both would corrupt norms text
+# containing `&`: in sed AND (since bash 5.2, the box runs 5.3) in a PE
+# replacement, an unescaped `&` is the matched-text back-reference — the exact
+# hazard norm #3 cites. Splitting the template on the literal placeholder and
+# concatenating the three pieces inserts $norms with ZERO metacharacter
+# interpretation (no `&`, `/`, or backslash is special in a concatenation).
+#
+# A missing or unreadable build-norms.md is FATAL (return 1 + stderr diagnostic),
+# NOT a silent empty substitution: a build prompt that silently drops its norms is
+# exactly the failure mode FR-74 exists to prevent (norm #1, fail loud; the
+# review-rerun-1 precedent treats a failed render as a build-launch abort, not a
+# degraded `claude -p ""`).
 _render_build_prompt() {  # <slug> <tdd>
-  local slug="$1" tdd="$2" tmpl prompt cleared
+  local slug="$1" tdd="$2" tmpl prompt cleared norms_file norms
   tmpl="${TMPL:-}"
   [ -z "$tmpl" ] && tmpl="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/build-prompt.md"
   if [ ! -f "$tmpl" ]; then
     echo "error: _render_build_prompt: build prompt template not found ($tmpl)" >&2
     return 1
   fi
+  norms_file="$(_build_norms_file)"
+  if [ ! -r "$norms_file" ]; then
+    echo "error: _render_build_prompt: defensive-coding norms file not found or unreadable ($norms_file); refusing to render a build prompt without its FR-74 norms" >&2
+    return 1
+  fi
+  # Guard the read itself: a `cat` that fails (the file vanished/became unreadable
+  # after the [ -r ] pre-flight) OR an EMPTY norms file would otherwise leave
+  # $norms empty and substitute NOTHING — the silent empty substitution this
+  # function explicitly forbids (norm #1, fail loud). Check at the point of
+  # assignment so no later `local` masks the cat's exit code.
+  if ! norms="$(cat "$norms_file")" || [ -z "$norms" ]; then
+    echo "error: _render_build_prompt: defensive-coding norms file is empty or unreadable ($norms_file); refusing to render a build prompt without its FR-74 norms" >&2
+    return 1
+  fi
   prompt="$(sed "s#{{TDD}}#${tdd}#g" "$tmpl")"
   cleared="$(_cleared_steps_csv "$slug")"
   prompt="${prompt//\{\{CLEARED_STEPS\}\}/$cleared}"
+  # {{BUILD_NORMS}} LAST, via split-and-concatenate (no `&`/`/` corruption — see
+  # the header note). The template carries exactly one placeholder (§4); guard the
+  # absent case so a template without it is left unchanged rather than duplicated.
+  local ph='{{BUILD_NORMS}}'
+  if [[ "$prompt" == *"$ph"* ]]; then
+    prompt="${prompt%%"$ph"*}$norms${prompt#*"$ph"}"
+  fi
   printf '%s' "$prompt"
+}
+
+# _build_norms_reminder (TDD 0026 / FR-74 §3) — a SHORT reminder echoed onto the
+# build's stdin ALONGSIDE a STEP_REVIEW: BLOCK verdict, re-pointing the build at
+# the FR-74 norms already in its retained context at the moment a finding was just
+# raised and a fix is imminent. NOT the full file: a one-line lead-in plus the
+# seven TERSE norm headlines — for each `N. ` line under the `## Defensive-coding
+# norms` anchor, the leading number plus the label clause up to and INCLUDING the
+# first period of the clause (e.g. `1. Fail loud.`). The first period of the clause
+# is the one AFTER the `N. ` prefix, not the period in the number itself, so the
+# prefix is stripped before locating it. Continuation lines (no leading `N. `) are
+# ignored. Pure awk, no model call.
+#
+# Degrades gracefully: if the norms file is unreadable or yields no headlines at
+# reminder time, emit a generic one-liner rather than failing the in-flight build
+# — the full norms are already in the build's retained context, and aborting a live
+# build over a missing reminder is a worse outcome than a degraded reminder
+# (deliberately asymmetric vs §2's fail-loud render, which is the build's ONLY
+# exposure to the norms).
+_build_norms_reminder() {
+  local nf headlines=""
+  nf="$(_build_norms_file)"
+  if [ -r "$nf" ]; then
+    headlines="$(awk '
+      /^## Defensive-coding norms/ { inblk = 1; next }
+      inblk && match($0, /^[0-9]+\. /) {
+        prefix = substr($0, 1, RLENGTH)        # the `N. ` lead
+        rest   = substr($0, RLENGTH + 1)       # the clause after it
+        p = index(rest, ".")                   # first period OF THE CLAUSE
+        if (p > 0) print prefix substr(rest, 1, p)
+        else       print prefix rest
+      }
+    ' "$nf" 2>/dev/null)"
+  fi
+  if [ -z "$headlines" ]; then
+    printf 're-check the FR-74 defensive-coding norms in your initial prompt'
+    return 0
+  fi
+  printf 'Reminder — re-apply the FR-74 defensive-coding norms from your initial prompt when you fix this:\n%s' "$headlines"
 }
 
 # _render_review_prompt <tdd> <scope-base> <scope-head> <branch> <prior-tags-csv>
@@ -791,6 +882,17 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
               build_active_seconds=$((build_active_seconds + $(date +%s) - interval_start))
               verdict="$(_run_per_step_review "$slug" "$tdd" "$step_id" "$sha" "$build_start" "$log")"
               printf '%s\n' "$verdict" >> "$log"
+              # TDD 0026 §3 / FR-74: on a BLOCK verdict ONLY, append a compact
+              # FR-74 norms reminder to the STDIN message (reinforcement at the
+              # rework moment — the build is about to write a fix). The LOG write
+              # above keeps the BARE $verdict (the reviewer's actual verdict;
+              # mutating it before the log would pollute the gate log with the
+              # reminder). A PASS verdict is sent unchanged — the coprocess retains
+              # the initial-prompt norms across steps, so PASS needs no reminder.
+              local augmented="$verdict"
+              case "$verdict" in
+                *"STEP_REVIEW: BLOCK"*) augmented="$verdict"$'\n'"$(_build_norms_reminder)" ;;
+              esac
               # TDD 0030 §1 / FR-42: the review may have run long enough for the
               # overall watchdog to kill the coproc (the observed incident). Write
               # the verdict through _coproc_write so a dead coproc never SIGPIPE-
@@ -799,7 +901,7 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
               # break so the post-loop `wait` collects the dead coproc's status and
               # _classify_cause routes the return code (124 + timeout log, or 143)
               # to the transient/pause path — exactly as a clean watchdog kill.
-              if ! _coproc_write "${build_in}" "$(_user_turn_json "$verdict")"; then
+              if ! _coproc_write "${build_in}" "$(_user_turn_json "$augmented")"; then
                 printf 'THROUGHLINE_COPROC_DEAD: build coprocess exited before verdict delivery (step %s verdict was %s); cleared work is preserved (transient)\n' \
                   "$step_id" "$(printf '%s' "$verdict" | grep -aoE 'PASS|BLOCK' | head -1)" >> "$log"
                 break
