@@ -1,7 +1,6 @@
 ---
 name: tdd-author
 description: Reconcile the current PRD against the previous PRD version and the existing TDDs, decide how many Technical Design Docs the change needs and their scope, then author them. Run once per PRD update, in its own session. Invoke with /tdd-author.
-disable-model-invocation: true
 ---
 
 # TDD authoring
