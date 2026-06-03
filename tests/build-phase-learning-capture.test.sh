@@ -536,7 +536,7 @@ echo "[S22] run-end watcher-wake PID guard rejects 0 / negative / non-numeric (n
 # --- §5: skill launch + review step (mechanical grep; the interactive review is
 #         exercised by the human at run time / the runtime-verify gate) ---------
 
-echo "[S23] SKILL.md carries the watcher launch + the Detect-pending-candidate-learnings review step"
+echo "[S23] SKILL.md carries the watcher launch + the injection-safe Detect-pending-candidate-learnings review step"
 ( S="$SKILL"
   grep -q 'implement-watch.sh' "$S" 2>/dev/null && ok "launches via implement-watch.sh" || bad "SKILL.md should launch the watcher"
   grep -q 'run_in_background' "$S" 2>/dev/null && ok "watcher launched as harness-tracked background (run_in_background)" || bad "SKILL.md should launch the watcher with run_in_background"
@@ -547,7 +547,36 @@ echo "[S23] SKILL.md carries the watcher launch + the Detect-pending-candidate-l
   grep -qi 'fallback' "$S" 2>/dev/null && ok "describes the fallback path" || bad "should describe the fallback review path"
   grep -q 'multiSelect' "$S" 2>/dev/null && ok "review uses one multiSelect AskUserQuestion" || bad "review should use a multiSelect AskUserQuestion"
   grep -q 'candidate-learnings.reviewed.json' "$S" 2>/dev/null && ok "marks reviewed by renaming to candidate-learnings.reviewed.json" || bad "should rename to candidate-learnings.reviewed.json after review"
-  grep -q 'append_accepted_learning' "$S" 2>/dev/null && ok "accepted classes call append_accepted_learning" || bad "should call append_accepted_learning for accepted classes"
+  # Injection-safe: accept through apply_accepted_learnings, passing INDICES only —
+  # the field values (summary/evidence) must NEVER be interpolated into a shell
+  # command (BLOCKER-1). So the dangerous "<summary>"/"<evidence>" command
+  # placeholders must be GONE.
+  grep -q 'apply_accepted_learnings' "$S" 2>/dev/null && ok "accepts via apply_accepted_learnings (index-based)" || bad "should call apply_accepted_learnings (index-based, injection-safe)"
+  grep -qi 'index' "$S" 2>/dev/null && ok "passes selected indices, not field values" || bad "review should pass selected indices to the accept entrypoint"
+  grep -q '"<summary>"' "$S" 2>/dev/null && bad "must NOT interpolate <summary> into a shell command (injection)" || ok "no <summary> interpolated into a command"
+  grep -q '"<evidence>"' "$S" 2>/dev/null && bad "must NOT interpolate <evidence> into a shell command (injection)" || ok "no <evidence> interpolated into a command"
+) || true
+
+echo "[S24] apply_accepted_learnings persists by index, injection-safe, error-checked reviewed-rename"
+( D="$ROOT/S24"; mkdir -p "$D/run" "$D/docs/tdd"
+  . "$STATE_LIB"; . "$LEARN_LIB"
+  # A candidate whose summary/evidence carry shell metacharacters: $(...), backticks, quotes.
+  cat > "$D/run/candidate-learnings.json" <<'JSON'
+[{"class":"evil-class","distinct_tdds":["0010-a","0011-b"],"distinct_steps":2,"severity_range":["major","major"],"was_structural":false,"triggered_rework":false,"subject_area_hints":{"files":["src/a.sh"],"tags":["evil-class"]},"summary":"has $(touch /tmp/PWNED_S24) and 'quotes'","evidence":"line `touch /tmp/PWNED_S24b` end","occurrences":[]}]
+JSON
+  rm -f /tmp/PWNED_S24 /tmp/PWNED_S24b
+  ( cd "$D" && apply_accepted_learnings "$D/run" 0 ) || bad "S24 apply should succeed"
+  { [ ! -e /tmp/PWNED_S24 ] && [ ! -e /tmp/PWNED_S24b ]; } && ok "no shell injection from summary/evidence" || { bad "INJECTION: command in candidate prose executed"; rm -f /tmp/PWNED_S24 /tmp/PWNED_S24b; }
+  LM="$D/docs/tdd/LEARNINGS.md"
+  grep -q '## L-001: evil-class' "$LM" 2>/dev/null && ok "accepted class persisted by index" || bad "class should persist (got: $(cat "$LM" 2>/dev/null))"
+  grep -q 'touch /tmp/PWNED_S24' "$LM" 2>/dev/null && ok "candidate prose stored literally, not executed" || bad "summary should be stored verbatim"
+  { [ -f "$D/run/candidate-learnings.reviewed.json" ] && [ ! -f "$D/run/candidate-learnings.json" ]; } && ok "queue renamed reviewed after persist" || bad "should rename to candidate-learnings.reviewed.json"
+
+  # Zero indices = accept nothing, still mark reviewed (all-discarded case).
+  D2="$ROOT/S24b"; mkdir -p "$D2/run" "$D2/docs/tdd"
+  printf '[{"class":"c","distinct_tdds":["0010-a"],"distinct_steps":1,"severity_range":["minor","minor"],"was_structural":false,"triggered_rework":false,"subject_area_hints":{"files":[],"tags":["c"]},"summary":"s","evidence":"e","occurrences":[]}]\n' > "$D2/run/candidate-learnings.json"
+  ( cd "$D2" && apply_accepted_learnings "$D2/run" ) || bad "zero-index apply should succeed"
+  { [ -f "$D2/run/candidate-learnings.reviewed.json" ] && [ ! -f "$D2/docs/tdd/LEARNINGS.md" ]; } && ok "all-discarded marks reviewed, persists nothing" || bad "zero-index should mark reviewed without persisting"
 ) || true
 
 echo
