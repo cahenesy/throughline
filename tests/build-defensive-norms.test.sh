@@ -71,6 +71,45 @@ Close:
 EOF
 }
 
+# setup_step_repo <dir> — a git repo + scope-declaring TDD + a stub `claude` that
+# acts as BOTH the multi-turn build coprocess (runs ctl/build_plan, which emits
+# STEP_COMMIT and reads the STEP_REVIEW reply) and the per-step review (echoes
+# ctl/review.out, default PASS). Leaves PWD in the repo. Mirrors the
+# coproc-verdict-resilience eval's harness so the §4/§5 cases can drive the real
+# _per_step_review_loop with no model. The caller may override TMPL afterwards.
+setup_step_repo() {  # <dir>
+  local d="$1"; mkdir -p "$d/ctl" "$d/bin"
+  cd "$d" || return 1
+  git init -q -b master; git config user.email t@t.t; git config user.name t
+  mkdir -p src docs/tdd
+  printf 'ctl/\nbin/\n' > .gitignore
+  printf 'orig\n' > src/a.txt
+  cat > docs/tdd/0026-fix.md <<'EOF'
+# TDD 0026: fixture
+Status: draft
+PRD refs: 1
+
+## Touched files
+- `src/a.txt` — the in-scope file
+EOF
+  git add -A; git commit -qm "build start" >/dev/null
+  cat > "$d/bin/claude" <<EOF
+#!/usr/bin/env bash
+prompt=""
+while [ \$# -gt 0 ]; do case "\$1" in -p) prompt="\$2"; shift 2;; *) shift;; esac; done
+if printf '%s' "\$prompt" | grep -q 'INDEPENDENT review gate'; then
+  cat "$d/ctl/review.out" 2>/dev/null || echo "REVIEW_RESULT: PASS"
+  exit 0
+fi
+bash "$d/ctl/build_plan"
+EOF
+  chmod +x "$d/bin/claude"
+  export PATH="$d/bin:$PATH"
+  export TMPL="$REPO/scripts/build-prompt.md" RTMPL="$REPO/scripts/review-prompt.md"
+  export MODEL="" REVIEW_MODEL="" MAINREPO="$d"
+  printf 'REVIEW_RESULT: PASS\n' > "$d/ctl/review.out"
+}
+
 # ===========================================================================
 # §1: the norms reach the initial build prompt. _render_build_prompt must
 # substitute {{BUILD_NORMS}} with the full norms file content — the anchor and
@@ -165,6 +204,145 @@ EOF
   printf '%s' "$prompt" | grep -qF 'A token {{TDD}} inside the norms' \
     && ok "a {{TDD}}-like token inside the norms is NOT re-substituted (norms inserted last)" \
     || bad "the norms' {{TDD}}-like token should remain literal"
+) || true
+
+# ===========================================================================
+# §4-unit: _build_norms_reminder emits a one-line lead-in plus the seven TERSE
+# norm headlines (the leading number + the label clause up to the first period),
+# NOT the full norm bodies — the full norms are already in the build's retained
+# context; the reminder re-points at them by name.
+echo "[§4-unit] _build_norms_reminder emits a lead-in + the seven terse norm headlines"
+( D="$ROOT/u4"; TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  command -v _build_norms_reminder >/dev/null 2>&1 || { bad "_build_norms_reminder helper missing"; exit 0; }
+  mk_prompt_dir "$D"; cp "$NORMS" "$D/build-norms.md"
+  export TMPL="$D/build-prompt.md"
+  out="$(_build_norms_reminder)"; rc=$?
+  [ "$rc" -eq 0 ] && ok "_build_norms_reminder returns 0 with the norms file present" || bad "should return 0 (got $rc)"
+  miss=0
+  for lbl in "1. Fail loud." "2. Temp files." "3. Safe escaping." "4. Sourced-library hygiene." \
+             "5. Path / trust boundary." "6. Read once." "7. No hardcoding."; do
+    printf '%s' "$out" | grep -qF "$lbl" || { miss=1; bad "reminder missing terse headline: $lbl"; }
+  done
+  [ "$miss" -eq 0 ] && ok "all seven terse norm headlines present in the reminder"
+  # Terse: the headline stops at the label clause, so a norm BODY phrase must not appear.
+  printf '%s' "$out" | grep -qF "Check every command's return code" \
+    && bad "reminder should be terse headlines, not the full norm bodies" || ok "reminder is terse (full bodies excluded)"
+) || true
+
+# ===========================================================================
+# §5-unit: a missing norms file at reminder time degrades to a generic one-liner
+# (NOT a fatal) — the reminder is best-effort reinforcement and the full norms are
+# already in the build's retained context (distinct from §2's fail-loud render).
+echo "[§5-unit] _build_norms_reminder degrades to a generic one-liner when the norms file is gone"
+( D="$ROOT/u5"; TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  command -v _build_norms_reminder >/dev/null 2>&1 || { bad "_build_norms_reminder helper missing"; exit 0; }
+  mk_prompt_dir "$D"            # build-prompt.md but NO build-norms.md beside it
+  export TMPL="$D/build-prompt.md"
+  out="$(_build_norms_reminder)"; rc=$?
+  [ "$rc" -eq 0 ] && ok "_build_norms_reminder returns 0 (does NOT fail) when the file is gone" || bad "should not fail (got $rc)"
+  printf '%s' "$out" | grep -qiF 'defensive-coding norms' && printf '%s' "$out" | grep -qiF 'initial prompt' \
+    && ok "degrades to a generic one-line norms reminder" || bad "should emit the generic one-liner (got: $out)"
+  printf '%s' "$out" | grep -qF "1. Fail loud." \
+    && bad "the degraded reminder must not contain headlines (file is gone)" || ok "no headlines in the degraded reminder"
+) || true
+
+# ===========================================================================
+# §4: end-to-end — the message written to the build's stdin on a BLOCK verdict
+# carries BOTH the original finding AND the norm headlines; a PASS verdict is sent
+# UNCHANGED (no reminder). The build coprocess captures its stdin reply to ctl/reply.
+echo "[§4] BLOCK reply on the build's stdin carries the finding AND the norm headlines"
+( D="$ROOT/e4"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  export THROUGHLINE_BUILD_TIMEOUT=0 THROUGHLINE_BUILD_INTER_EVENT_TIMEOUT=30
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  setup_step_repo "$D/repo" || { bad "setup failed"; exit 0; }
+  printf 'REVIEW_RESULT: BLOCK found a real bug\n' > "$D/repo/ctl/review.out"
+  _write_tdd_fragment 0026-fix 26 docs/tdd/0026-fix.md 1 building build 1000 1000 "feat/0026-fix" "" log "" "" "" "" "" "" "" "" "" "" "" ""
+  cat > "$D/repo/ctl/build_plan" <<'EOF'
+IFS= read -r _init || true
+echo "line 1" >> src/a.txt
+git add -A >/dev/null 2>&1; git commit -q -m "step(1): work" >/dev/null 2>&1
+echo "STEP_COMMIT: 1 $(git rev-parse HEAD)"
+IFS= read -r _reply || true
+printf '%s\n' "$_reply" > ctl/reply
+echo "BATCH_RESULT: OK"
+EOF
+  _per_step_review_loop 0026-fix docs/tdd/0026-fix.md "$D/e4.log" >/dev/null 2>&1
+  reply="$(cat "$D/repo/ctl/reply" 2>/dev/null)"
+  printf '%s' "$reply" | grep -qF 'found a real bug' \
+    && ok "BLOCK reply preserves the original finding text" || bad "BLOCK reply should carry the finding (got: $reply)"
+  printf '%s' "$reply" | grep -qF 'Fail loud.' \
+    && ok "BLOCK reply carries the norm headlines (reinforcement at the rework moment)" || bad "BLOCK reply should carry norm headlines (got: $reply)"
+) || true
+
+echo "[§4-pass] a PASS reply is sent UNCHANGED (no norm reminder appended)"
+( D="$ROOT/e4p"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  export THROUGHLINE_BUILD_TIMEOUT=0 THROUGHLINE_BUILD_INTER_EVENT_TIMEOUT=30
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  setup_step_repo "$D/repo" || { bad "setup failed"; exit 0; }
+  # review.out defaults to PASS
+  _write_tdd_fragment 0026-fix 26 docs/tdd/0026-fix.md 1 building build 1000 1000 "feat/0026-fix" "" log "" "" "" "" "" "" "" "" "" "" "" ""
+  cat > "$D/repo/ctl/build_plan" <<'EOF'
+IFS= read -r _init || true
+echo "line 1" >> src/a.txt
+git add -A >/dev/null 2>&1; git commit -q -m "step(1): work" >/dev/null 2>&1
+echo "STEP_COMMIT: 1 $(git rev-parse HEAD)"
+IFS= read -r _reply || true
+printf '%s\n' "$_reply" > ctl/reply
+echo "BATCH_RESULT: OK"
+EOF
+  _per_step_review_loop 0026-fix docs/tdd/0026-fix.md "$D/e4p.log" >/dev/null 2>&1
+  reply="$(cat "$D/repo/ctl/reply" 2>/dev/null)"
+  printf '%s' "$reply" | grep -qF 'STEP_REVIEW: PASS' \
+    && ok "PASS reply reached the build's stdin" || bad "PASS reply should reach stdin (got: $reply)"
+  printf '%s' "$reply" | grep -qF 'Fail loud.' \
+    && bad "PASS reply must NOT carry a norm reminder (BLOCK-only by design)" || ok "PASS reply carries no norm reminder (sent unchanged)"
+) || true
+
+# ===========================================================================
+# §5: end-to-end degrade — with the norms file removed AFTER render but BEFORE the
+# BLOCK reminder, the BLOCK reply still reaches the build's stdin (build NOT
+# aborted) and carries the generic one-liner, not the headlines. TMPL points at a
+# fixture so the norms file can be safely removed mid-build.
+echo "[§5] degrade end-to-end: BLOCK reply still sent with the generic one-liner; build not aborted"
+( D="$ROOT/e5"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  export THROUGHLINE_BUILD_TIMEOUT=0 THROUGHLINE_BUILD_INTER_EVENT_TIMEOUT=30
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  setup_step_repo "$D/repo" || { bad "setup failed"; exit 0; }
+  # Point TMPL at a fixture (with the norms present) so the build_plan can remove
+  # the norms file mid-build without touching the real repo's norms.
+  mk_prompt_dir "$D/fix"; cp "$NORMS" "$D/fix/build-norms.md"
+  export TMPL="$D/fix/build-prompt.md"
+  printf 'REVIEW_RESULT: BLOCK found a real bug\n' > "$D/repo/ctl/review.out"
+  _write_tdd_fragment 0026-fix 26 docs/tdd/0026-fix.md 1 building build 1000 1000 "feat/0026-fix" "" log "" "" "" "" "" "" "" "" "" "" "" ""
+  # build_plan removes the fixture norms AFTER the loop already rendered the prompt
+  # (the loop reads it once at start) but BEFORE the BLOCK reminder is computed.
+  cat > "$D/repo/ctl/build_plan" <<EOF
+IFS= read -r _init || true
+rm -f "$D/fix/build-norms.md"
+echo "line 1" >> src/a.txt
+git add -A >/dev/null 2>&1; git commit -q -m "step(1): work" >/dev/null 2>&1
+echo "STEP_COMMIT: 1 \$(git rev-parse HEAD)"
+IFS= read -r _reply || true
+printf '%s\n' "\$_reply" > ctl/reply
+echo "BATCH_RESULT: OK"
+EOF
+  _per_step_review_loop 0026-fix docs/tdd/0026-fix.md "$D/e5.log" >/dev/null 2>&1
+  reply="$(cat "$D/repo/ctl/reply" 2>/dev/null)"
+  [ -n "$reply" ] && ok "the BLOCK reply still reached the build's stdin (build not aborted)" || bad "reply should still be written (got empty)"
+  printf '%s' "$reply" | grep -qF 'found a real bug' \
+    && ok "degraded BLOCK reply still carries the finding" || bad "degraded reply should carry the finding (got: $reply)"
+  printf '%s' "$reply" | grep -qiF 'initial prompt' \
+    && ok "degraded reply carries the generic one-liner reminder" || bad "degraded reply should carry the generic reminder (got: $reply)"
+  printf '%s' "$reply" | grep -qF '1. Fail loud.' \
+    && bad "degraded reply must NOT carry headlines (the file is gone)" || ok "no headlines once the file is gone"
 ) || true
 
 # --- report ----------------------------------------------------------------
