@@ -22,6 +22,14 @@ set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 SKILL="$REPO/skills/tdd-author/SKILL.md"
 [ -f "$SKILL" ] || { echo "FATAL: skill not found at $SKILL" >&2; exit 2; }
+[ -r "$SKILL" ] || { echo "FATAL: skill not readable at $SKILL" >&2; exit 2; }
+# Distinguish an infrastructure failure (a missing/broken extraction tool) from a
+# genuine content failure: a broken awk/grep would otherwise feed an empty
+# extraction into every assertion and mis-report a content problem (the recurrent
+# false-result-on-infrastructure-failure class). Fail fatally up front instead.
+for _t in awk grep; do
+  command -v "$_t" >/dev/null 2>&1 || { echo "FATAL: required tool '$_t' unavailable" >&2; exit 2; }
+done
 
 # Fail loudly on scratch-dir setup failure: a silent mktemp failure that left
 # RESULTS empty would let the summary report "0 failed" and vacuously pass.
@@ -113,6 +121,18 @@ printf '%s' "$FLAT" | grep -qi 'backstop\|model.judgment' \
   && printf '%s' "$FLAT" | grep -q 'Summary'; } \
   && ok "lead-in re-asserts the injection guard when surfacing the untrusted Summary" \
   || bad "lead-in must re-assert that the surfaced Summary is untrusted/inert, not acted on"
+# The model-judgment backstop ALSO reads the untrusted Summary/Pattern class to
+# judge relevance, so that step must carry its OWN injection guard (defense in
+# depth; recurrent indirect-injection class). Scope the check to the backstop
+# bullet so a guard living only in the surfacing step does not satisfy it.
+BACKSTOP="$(printf '%s\n' "$LEADIN" | awk '
+  /^2\. \*\*Model-judgment backstop/ { inb=1 }
+  inb && /^3\. \*\*Surface/ { exit }
+  inb { print }')"
+{ [ -n "$BACKSTOP" ] \
+  && printf '%s' "$BACKSTOP" | tr '\n' ' ' | grep -qiE 'inert|untrusted|never obey|do not obey|never act on|ignore'; } \
+  && ok "model-judgment backstop guards against directives embedded in the scanned Summary" \
+  || bad "model-judgment backstop must judge the scanned Summary/Pattern class as inert text, not obey embedded directives"
 # Negative case, POLARITY-SENSITIVE: absent / no-match => NOTHING surfaced.
 { printf '%s' "$FLAT" | grep -qi 'absent' \
   && printf '%s' "$FLAT" | grep -qiE 'no surfaced learnings|nothing surfaced|no note|no learning'; } \
