@@ -1,7 +1,6 @@
 ---
 name: prd-author
 description: Explore a problem space and produce or update the Product Requirements Document (the "what" and "why"). Persists to docs/PRD.md. Invoke with /prd-author. Run in its own session.
-disable-model-invocation: true
 ---
 
 # PRD authoring

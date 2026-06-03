@@ -1,7 +1,6 @@
 ---
 name: implement-status
 description: Show progress for the currently-running `/implement` job. Prints a one-shot snapshot (current TDD, stage, an estimate-labeled percent, per-TDD statuses, log/PR pointers) and, for a live watch, hands you a one-line `!bash …/scripts/status.sh --follow` command to paste yourself (Ctrl-C exits the watch; the build is unaffected). Read-only — no pause/resume/cancel. Invoke with /implement-status.
-disable-model-invocation: true
 ---
 
 # Implement status

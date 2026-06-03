@@ -1,7 +1,6 @@
 ---
 name: implement
 description: Turn features described in the PRD and designed in TDDs into code and tests, unattended. With no argument, implements every TDD that has been merged to the integration branch and is not yet `implemented`, as a batch (a batch of one is fine). Pass a TDD path to build just that one. Confirms the queue, then launches the build itself as a detached background job so can do further PRD and TDD updates while it builds. Invoke with /implement.
-disable-model-invocation: true
 ---
 
 # Implement
