@@ -579,6 +579,20 @@ JSON
   { [ -f "$D2/run/candidate-learnings.reviewed.json" ] && [ ! -f "$D2/docs/tdd/LEARNINGS.md" ]; } && ok "all-discarded marks reviewed, persists nothing" || bad "zero-index should mark reviewed without persisting"
 ) || true
 
+echo "[S25] empty subject-area files (realistic) must NOT shift persisted fields (tab-split keeps empty fields)"
+( D="$ROOT/S25"; mkdir -p "$D/run" "$D/docs/tdd"
+  . "$STATE_LIB"; . "$LEARN_LIB"
+  # files=[] (a candidate whose involved TDDs declared no ## Touched files). A
+  # whitespace-IFS read collapses the empty field and shifts summary/evidence.
+  printf '[{"class":"empty-files-class","distinct_tdds":["0010-a","0011-b"],"distinct_steps":2,"severity_range":["major","major"],"was_structural":false,"triggered_rework":false,"subject_area_hints":{"files":[],"tags":["empty-files-class"]},"summary":"SUMMARY_MARKER","evidence":"EVIDENCE_MARKER","occurrences":[]}]\n' > "$D/run/candidate-learnings.json"
+  ( cd "$D" && apply_accepted_learnings "$D/run" 0 ) || bad "S25 apply should succeed"
+  LM="$D/docs/tdd/LEARNINGS.md"
+  grep -q '^- Summary: SUMMARY_MARKER$'                "$LM" 2>/dev/null && ok "summary stays in the Summary field" || bad "summary field shifted ($(grep -n 'Summary\|evidence' "$LM" 2>/dev/null | tr '\n' '|'))"
+  grep -q '^- Representative evidence: EVIDENCE_MARKER$' "$LM" 2>/dev/null && ok "evidence stays in the evidence field" || bad "evidence field shifted"
+  grep -q '^- Subject-area hints: files=\[\] tags=\[empty-files-class\]$' "$LM" 2>/dev/null && ok "empty files + tags align correctly" || bad "files/tags misaligned ($(grep -n 'Subject-area' "$LM" 2>/dev/null))"
+  grep -q '^- Pattern class: empty-files-class$' "$LM" 2>/dev/null && ok "class aligned" || bad "class misaligned"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
