@@ -51,7 +51,13 @@ Build discipline:
   3. Emit a single line on your final output for that turn: `STEP_COMMIT:
      <step-id> <sha>` where `<sha>` is the full SHA of the commit you just
      made. The runner intercepts this sentinel and runs a scoped per-step
-     review on `<last-cleared>..<sha>`.
+     review on `<last-cleared>..<sha>`. `<step-id>` MUST be a plain integer.
+     If the TDD's Sequencing list labels an item with anything else (e.g.
+     `5b.`, `3a.`), use the item's **1-based ordinal position** in the
+     top-level list as `<step-id>` — e.g. a list labeled 1, 2, 3, 4, 5, 5b, 6
+     yields step-ids 1–7, with `5b` → 6 and the final item → 7. The runner's
+     sentinel parser only accepts integers; a non-integer `<step-id>` is
+     dropped, deadlocking the handshake.
   4. Block until STEP_REVIEW arrives on your next user-turn input. The runner
      writes ONE of two messages back:
        - `STEP_REVIEW: PASS` — proceed to the next Sequencing item.

@@ -546,4 +546,34 @@ if [ -f "$ERC" ]; then
   bash "$ERC" || ERC_FAIL=1
 fi
 
-[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ] && [ "$SMS_FAIL" -eq 0 ] && [ "$PRM_FAIL" -eq 0 ] && [ "$GRM_FAIL" -eq 0 ] && [ "$BRL_FAIL" -eq 0 ] && [ "$RR_FAIL" -eq 0 ] && [ "$BCL_FAIL" -eq 0 ] && [ "$BO_FAIL" -eq 0 ] && [ "$IDP_FAIL" -eq 0 ] && [ "$RES_FAIL" -eq 0 ] && [ "$CVR_FAIL" -eq 0 ] && [ "$HRS_FAIL" -eq 0 ] && [ "$SHR_FAIL" -eq 0 ] && [ "$BPL_FAIL" -eq 0 ] && [ "$BDN_FAIL" -eq 0 ] && [ "$IDISC_FAIL" -eq 0 ] && [ "$ERC_FAIL" -eq 0 ]
+# Run the step-commit-protocol eval (TDD 0032 / FR-51, FR-56, FR-42, FR-41,
+# NFR-4) as part of the same suite so the tl_lint_sequencing label check, the
+# build-prompt/SKILL.md protocol text, the _sequencing_labels_ok pre-flight, and
+# the runtime malformed-sentinel branch (fail-loud correction + fatal exhaustion)
+# are regression-gated by ci-checks, not orphaned from the aggregator. Same
+# rationale as the sibling evals above.
+SCP="$(dirname "$0")/step-commit-protocol.test.sh"
+SCP_FAIL=0
+if [ -f "$SCP" ]; then
+  echo
+  bash "$SCP" || SCP_FAIL=1
+fi
+
+# Run the integration-merge-on-resume eval (TDD 0033 / FR-40, FR-41, FR-39,
+# FR-15, FR-64, NFR-4) as part of the same suite so the _fetch_integration helper
+# and the broadened resume-merge block (integration merged into the build branch
+# on every accepted resume, with the conflict-refusal contract) are regression-
+# gated by ci-checks, not orphaned from the aggregator. Same rationale — and same
+# one-line registration shape — as the ~20 sibling evals above: this is test-
+# harness registration of an already-green eval, not product behavior. The
+# feature's behavior was driven failing-test-first in its own steps (the
+# _fetch_integration parsing/guard cases and the broadened-merge cases each landed
+# as a `test(failing):` red before their implementation in steps 1–2).
+IMR="$(dirname "$0")/integration-merge-on-resume.test.sh"
+IMR_FAIL=0
+if [ -f "$IMR" ]; then
+  echo
+  bash "$IMR" || IMR_FAIL=1
+fi
+
+[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ] && [ "$SMS_FAIL" -eq 0 ] && [ "$PRM_FAIL" -eq 0 ] && [ "$GRM_FAIL" -eq 0 ] && [ "$BRL_FAIL" -eq 0 ] && [ "$RR_FAIL" -eq 0 ] && [ "$BCL_FAIL" -eq 0 ] && [ "$BO_FAIL" -eq 0 ] && [ "$IDP_FAIL" -eq 0 ] && [ "$RES_FAIL" -eq 0 ] && [ "$CVR_FAIL" -eq 0 ] && [ "$HRS_FAIL" -eq 0 ] && [ "$SHR_FAIL" -eq 0 ] && [ "$BPL_FAIL" -eq 0 ] && [ "$BDN_FAIL" -eq 0 ] && [ "$IDISC_FAIL" -eq 0 ] && [ "$ERC_FAIL" -eq 0 ] && [ "$SCP_FAIL" -eq 0 ] && [ "$IMR_FAIL" -eq 0 ]

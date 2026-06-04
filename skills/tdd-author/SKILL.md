@@ -440,7 +440,9 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/lib/tdd-lint.sh" docs/tdd/<your-set>
 
 and address every finding. The pre-pass detects the structural-gap findings the
 design-reviewer would otherwise spend tokens on (missing required section,
-missing frontmatter, placeholder strings outside fences, untraced FR/NFR).
+missing frontmatter, placeholder strings outside fences, untraced FR/NFR,
+non-integer or non-sequential `## Sequencing` labels — the STEP_COMMIT protocol
+requires integer step ids 1..N).
 If `tl_lint_all` exits non-zero, fix the findings or record an explicit waiver
 in the design PR body before invoking the design-reviewer in 7b. The
 design-reviewer subagent is NOT invoked when there are unaddressed mechanical

@@ -318,6 +318,85 @@ EOF
   return "$rc"
 }
 
+# tl_lint_sequencing — the `## Sequencing / implementation plan` top-level labels
+# must be exactly 1, 2, 3, …, N (TDD 0032 §1 / FR-51). The STEP_COMMIT protocol
+# carries the Sequencing item's integer index as <step-id>; a non-integer label
+# (`5b.`, `3a.`) or a non-sequential list (gaps / duplicates / not starting at 1)
+# made an earlier build copy the literal label into the sentinel, which the
+# runner's integer-only parser dropped silently — a deadlock the inter-event
+# watchdog later mis-classified as transient. Catching it here, at design time,
+# is the cheapest of this TDD's four defense layers.
+#
+# Rules (all `blocker`, code `sequencing.labels`):
+#   - A top-level item is a line matching `^[0-9]+[a-zA-Z]*\.` at column 0 inside
+#     the section (section ends at the next `^## ` heading or EOF). Indented
+#     (nested) list items are not top-level and are excluded by the column-0
+#     anchor; fenced (``` or ~~~) lines are ignored (the tl_lint_placeholders
+#     convention, extended to ~~~ fences).
+#   - Non-integer label → one finding per offending label.
+#   - Non-sequential labels (gap / duplicate / not starting at 1) → one finding
+#     naming the found list. (Skipped when a non-integer label already fired —
+#     a `5b` is reported as non-integer, not also as out-of-sequence.)
+#   - No section, or a section with zero numbered items → no finding (a prose-only
+#     plan is valid; the build degrades to end-of-build review). Numbered lists in
+#     OTHER sections (e.g. `## Verification plan`) are out of scope.
+# Exit code follows _tl_emit: 2 on blocker, 0 clean.
+tl_lint_sequencing() {  # <tdd-path>
+  local f="$1"
+  if [ ! -f "$f" ]; then
+    echo "tdd-lint: sequencing: input not found: $f" >&2
+    return 2
+  fi
+  awk -v FILE="$f" -v Q="'" '
+    BEGIN { in_sec=0; in_fence=0; n=0 }
+    # Fence-aware: ``` or ~~~ toggles fenced state; fenced lines are literal text.
+    /^[[:space:]]*(```|~~~)/ { in_fence = !in_fence; next }
+    # Enter the section on its exact heading (checked before the generic ^##
+    # close, which the heading line would otherwise also match).
+    !in_fence && /^## Sequencing \/ implementation plan[[:space:]]*$/ { in_sec=1; next }
+    !in_fence && /^## / { in_sec=0; next }
+    in_sec && !in_fence && /^[0-9]+[a-zA-Z]*\./ {
+      lbl = $0
+      sub(/\..*/, "", lbl)       # keep the leading token before the first dot
+      n++
+      labels[n] = lbl
+      lines[n]  = NR
+    }
+    END {
+      if (n == 0) exit 0
+      bad = 0
+      for (i = 1; i <= n; i++) {
+        if (labels[i] ~ /[^0-9]/) {
+          printf "%s:%d blocker sequencing.labels: non-integer sequencing label %s%s%s — the STEP_COMMIT protocol requires integer step ids (1..N)\n", FILE, lines[i], Q, labels[i], Q
+          bad = 1
+        }
+      }
+      if (bad) exit 1
+      list = ""; seq_ok = 1
+      for (i = 1; i <= n; i++) {
+        list = list (i > 1 ? "," : "") labels[i]
+        if (labels[i] + 0 != i) seq_ok = 0
+      }
+      if (!seq_ok) {
+        printf "%s:%d blocker sequencing.labels: sequencing labels must be exactly 1..N sequential (found: %s)\n", FILE, lines[1], list
+        exit 1
+      }
+      exit 0
+    }
+  ' "$f"
+  # Map awk{0,1} → rc{0,2}; any other awk exit is a script error (rc 2 + stderr),
+  # never silently swallowed (NFR-4, matching tl_lint_placeholders' M2 fix).
+  local awk_rc=$?
+  case "$awk_rc" in
+    0) return 0 ;;
+    1) return 2 ;;
+    *)
+      echo "tdd-lint: sequencing: awk failed (exit $awk_rc) on $f" >&2
+      return 2
+      ;;
+  esac
+}
+
 # ============================================================================
 # Scope-bound checks (TDD 0014 / FR-53 + FR-54). These are a SEPARATE concern
 # from the tl_lint_* structural pre-pass: they enforce the declared-scope bounds
@@ -497,7 +576,7 @@ tl_check_bounds() {  # <tdd-path>...
 tl_lint_all() {  # <tdd-path>...
   local max=0 rc tdd
   for tdd in "$@"; do
-    for fn in tl_lint_structural tl_lint_placeholders tl_lint_traced; do
+    for fn in tl_lint_structural tl_lint_placeholders tl_lint_traced tl_lint_sequencing; do
       "$fn" "$tdd"
       rc=$?
       [ "$rc" -gt "$max" ] && max="$rc"

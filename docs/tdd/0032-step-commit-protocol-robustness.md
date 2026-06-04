@@ -1,6 +1,6 @@
 # TDD 0032: STEP_COMMIT protocol robustness — integer step-id enforcement, malformed-sentinel fail-loud, self-correcting protocol BLOCK
 
-Status: draft
+Status: implemented
 PRD refs: FR-51, FR-56, FR-42, FR-41, NFR-4
 PRD-rev: bfc8ad6
 ADR constraints: 0003, 0004, 0005, 0006, 0007

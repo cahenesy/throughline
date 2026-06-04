@@ -85,7 +85,13 @@ that asks.
    - If lock dies during the polling window, proceed to step 3.
 3. Surface the interrupted run via `AskUserQuestion`. Options:
    - **Resume from `<gate>` on `<slug>`** — re-launch the runner with
-     `--resume` so gates already completed are not re-run. For a
+     `--resume` so gates already completed are not re-run. Resuming first
+     merges the current integration branch into the build branch (fetching
+     `origin` when the integration ref is remote-tracking) so the resumed
+     gates run against current integration, not the branch's stale base
+     (TDD 0033 / FR-40); a merge conflict refuses the resume with
+     `resume-blocked-integration-conflict`, naming the manual
+     conflict-resolution step. For a
      `cause=structural-finding` line, label this option **"Resume `<slug>`
      (structural halt; requires the resolving TDD revision to be merged
      first)"** so the user is told the precondition at decision time (TDD
@@ -270,7 +276,13 @@ the sentinels off the build's stdout (stream-json) and writes the verdict to
 stdin. This makes review continuous and scoped per step rather than one
 end-of-build pass, so already-cleared code is never re-evaluated (FR-57). A
 build that never emits `STEP_COMMIT:` degrades gracefully to single-shot
-end-of-build review (the legacy shape).
+end-of-build review (the legacy shape). A malformed `STEP_COMMIT:` (a
+non-integer step id, e.g. copying a `5b.` Sequencing label literally) is not
+dropped silently: the runner logs a `THROUGHLINE_PROTOCOL_ERROR` and replies
+with a bounded protocol-correction `STEP_REVIEW: BLOCK` telling the build to
+re-emit the sentinel with the 1-based ordinal (2 corrections per build);
+exhausting that budget kills the build and FAILs the TDD via the fatal pathway
+— a protocol error is never classified transient (NFR-4).
 
 The build's own `BATCH_RESULT: OK` is NOT trusted as done. Before flipping a TDD
 to `implemented`, the runner enforces four independent gates:

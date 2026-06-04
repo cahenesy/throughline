@@ -1,6 +1,6 @@
 # TDD 0033: Integration merge on all resume paths — stale-base resumes inherit current integration
 
-Status: draft
+Status: implemented
 PRD refs: FR-40, FR-41, FR-39, FR-15, FR-64, NFR-4
 PRD-rev: bfc8ad6
 ADR constraints: 0005, 0006, 0007
