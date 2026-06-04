@@ -103,8 +103,23 @@ _fetch_integration() {  # <integration-ref> -> rc 0 always (fetch is best-effort
     */*/*) return 0 ;;                # 2+ slashes: not a <remote>/<branch> pair → no fetch
     */*)
       remote="${ref%%/*}"; branch="${ref#*/}"
+      # norms #3/#5 (trust boundary): INTEGRATION may be a THROUGHLINE_INTEGRATION_
+      # BRANCH override — an external value. Validate both components against a
+      # conservative ref charset BEFORE interpolating them into git/grep. The
+      # leading char is restricted to alnum/_/. so a value beginning with '-'
+      # cannot be parsed as a git option (arg injection), and the charset excludes
+      # newlines so a crafted value cannot smuggle extra lines into the `grep -xF`
+      # remote-membership test below. A value that fails validation skips the fetch
+      # with a warning — the merge proceeds against the local ref, never worse than
+      # pre-0033's no-fetch behavior.
+      local _safe='^[A-Za-z0-9_.][A-Za-z0-9_.-]*$'
+      if ! [[ "$remote" =~ $_safe ]] || ! [[ "$branch" =~ $_safe ]]; then
+        echo "warning: _fetch_integration: integration ref '$ref' is not a simple <remote>/<branch> name; skipping fetch (merging against the local ref)" >&2
+        return 0
+      fi
       # Read the remote list once (norm #6: avoid a re-read TOCTOU window). `--`
-      # ends option parsing on both grep and git fetch.
+      # ends option parsing on both grep and git fetch as defense-in-depth atop
+      # the charset validation above.
       if git remote 2>/dev/null | grep -qxF -- "$remote"; then
         if ! git fetch -- "$remote" "$branch" >/dev/null 2>&1; then
           echo "warning: _fetch_integration: could not fetch $remote $branch; merging against the local ref (may be stale)" >&2
