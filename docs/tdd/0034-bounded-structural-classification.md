@@ -1,6 +1,6 @@
 # TDD 0034: Bounded structural classification — (c) needs a named design reason, in-scope mechanical fixes rework
 
-Status: draft
+Status: implemented
 PRD refs: FR-67 (gap-closure), FR-62, FR-66
 PRD-rev: d289607
 ADR constraints: 0005, 0006, 0007
