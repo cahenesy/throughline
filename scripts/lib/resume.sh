@@ -86,6 +86,34 @@ _update_paused_cause() {
   fi
 }
 
+# _fetch_integration <integration-ref> (TDD 0033 §1) — best-effort refresh of the
+# integration ref before the resume merge, so the merge is against the remote's
+# current state rather than a stale local copy. ALWAYS returns 0: a fetch failure
+# (offline, remote gone) degrades to merging the local ref — never worse than the
+# pre-0033 behavior, which fetched nothing at all.
+#
+# Parsing rule: only a ref of the form <remote>/<branch> with EXACTLY one slash,
+# whose prefix names a configured remote, is split and fetched. A bare local name
+# (no slash), a detached SHA, or a multi-slash value (e.g. a THROUGHLINE_INTEGRATION_
+# BRANCH override that is not a remote-tracking ref) has nothing to fetch and is a
+# silent no-op — both degrade to the warn-and-proceed path, never worse than pre-0033.
+_fetch_integration() {  # <integration-ref> -> rc 0 always (fetch is best-effort)
+  local ref="$1" remote branch
+  case "$ref" in
+    */*/*) return 0 ;;                # 2+ slashes: not a <remote>/<branch> pair → no fetch
+    */*)
+      remote="${ref%%/*}"; branch="${ref#*/}"
+      # Read the remote list once (norm #6: avoid a re-read TOCTOU window).
+      if git remote 2>/dev/null | grep -qxF "$remote"; then
+        if ! git fetch "$remote" "$branch" >/dev/null 2>&1; then
+          echo "warning: _fetch_integration: could not fetch $remote $branch; merging against the local ref (may be stale)" >&2
+        fi
+      fi
+      return 0 ;;
+    *) return 0 ;;                    # no slash: local branch name / detached SHA → no fetch
+  esac
+}
+
 # _resume_from <slug> (TDD 0011 / FR-40; resume mechanism revised by TDD 0024)
 # Validate that <slug>'s paused fragment is resumable; if so, set the
 # RESUME_GATES_DONE_<slug> variable listing the gates already completed
