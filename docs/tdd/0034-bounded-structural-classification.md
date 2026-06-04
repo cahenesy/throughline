@@ -86,6 +86,13 @@ Two edits, both in the existing finding-extraction / rework path:
   caps). Thus an in-scope mechanical fix is applied by rework; an out-of-scope
   one is still caught — as structural-(a)/(b) — by the unchanged pre-pass.
 
+The legacy single-line `REVIEW_FINDING:` fallback format (the TDD 0021 degraded
+path read by `_rework_extract_finding`) carries no `structural_reason` token and
+is NOT extended to carry one — a legacy structural finding therefore has an empty
+`RWK_STRUCTURAL_REASON` and routes to rework, exactly the safe default of
+failure-mode #2. Only the primary `FINDING_BEGIN..FINDING_END` block can express
+a (c) escalation under the amended rule.
+
 No change to the FR-67(a)/(b) pre-pass, to `_rework_escalate`, to the halt
 taxonomy enum, or to the structural-finding resume path (TDD 0031): a genuine
 (c) escalation still records `halt_cause=structural-finding` and is still
@@ -113,6 +120,12 @@ persisted. A genuine (c) escalation records the same `halt_cause` /
    `tests/implement-gate.test.sh` in the SAME step — `*_FAIL` accumulator,
    conditional run, AND into the final pass/fail expression — so the eval is
    regression-gated by ci-checks, not orphaned.
+5. **Update the E2 regression case** in `tests/bounded-rework-loop.test.sh`: its
+   legacy single-line `structural=true` stub carries no reason, so Component 2
+   now routes it to rework. Replace E2's `do_rework` stub (was `exit 9`) with a
+   converging in-scope fix (mirroring E1) and invert its assertions to expect a
+   shipped rework + flip, NOT a `structural-finding` halt. The genuine
+   named-reason → (c) escalation path stays covered by the new eval (§3).
 
 ## Failure modes & edge cases
 
@@ -125,10 +138,12 @@ persisted. A genuine (c) escalation records the same `halt_cause` /
   applied if the reviewer tags it `structural: false`, which the tightened prompt
   directs.
 - **Missing `structural_reason` field entirely** (older prompt, malformed
-  finding). The parser yields an empty `RWK_STRUCTURAL_REASON`; an empty reason is
-  treated as "no named reason" → the finding routes to rework (the safe,
-  non-escalating direction). A genuinely out-of-scope rework is then caught by the
-  (a)/(b) pre-pass, so no out-of-scope change ships.
+  finding, or the legacy single-line `REVIEW_FINDING:` fallback format, which
+  carries no reason token). The parser yields an empty `RWK_STRUCTURAL_REASON`;
+  an empty reason is treated as "no named reason" → the finding routes to rework
+  (the safe, non-escalating direction). A genuinely out-of-scope rework is then
+  caught by the (a)/(b) pre-pass, so no out-of-scope change ships. Regression-
+  covered end-to-end by `tests/bounded-rework-loop.test.sh` E2.
 - **`structural: false` with a non-empty `structural_reason`.** Ignored: the (c)
   branch keys on `RWK_STRUCTURAL` first; a false structural flag never escalates
   via (c) regardless of the reason text.
@@ -222,8 +237,9 @@ halt model (ADR 0007); it introduces no new cross-cutting decision.
 - `scripts/lib/gates.sh` — parse `structural_reason` into the finding record / `RWK_STRUCTURAL_REASON`; gate the FR-67(c) escalation on a non-empty named reason.
 - `tests/structural-classification-bound.test.sh` — new eval (prompt greps + classification routing against stub findings).
 - `tests/implement-gate.test.sh` — wire the new eval into the aggregator.
+- `tests/bounded-rework-loop.test.sh` — update the E2 case: a legacy single-line `structural=true` finding carries no `structural_reason`, so under Component 2 it now routes to bounded rework (failure-mode #2), not (c)-escalation. Re-point E2's `do_rework` stub + assertions to the rework-converges outcome.
 
-Total: 4 files touched.
+Total: 5 files touched.
 
 ## Expected diff size
 
@@ -231,5 +247,6 @@ Total: 4 files touched.
 - `scripts/lib/gates.sh` — ~32 lines added/changed (awk field capture + `RWK_STRUCTURAL_REASON` export + the (c)-branch guard).
 - `tests/structural-classification-bound.test.sh` — ~150 lines added (new eval: prompt greps + 4 stub-finding classification cases with per-assertion ok/bad reporting and fail-closed file guards).
 - `tests/implement-gate.test.sh` — ~14 lines added (aggregator wire-in).
+- `tests/bounded-rework-loop.test.sh` — ~10 lines changed (E2 `do_rework` stub + inverted assertions; no new case).
 
-Total expected diff: ~212 lines across 4 files. No exceptions needed (each file is under the 300-line per-file bound).
+Total expected diff: ~222 lines across 5 files. No exceptions needed (each file is under the 300-line per-file bound).
