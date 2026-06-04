@@ -79,6 +79,7 @@ Emit EVERY finding as a `FINDING_BEGIN .. FINDING_END` block in this exact shape
 FINDING_BEGIN
 severity: <blocker | major | minor | nit>
 structural: <true | false>
+structural_reason: <one-line design-level reason | none>
 region: <file>:<line>-<line>
 region_lines: <int>
 pattern_tags: [<tag1>, <tag2>, ...]
@@ -101,10 +102,18 @@ Severity definitions:
 `blocker` and `major` are the HALTING severities; the runner drives its rework
 loop on exactly that set (FR-58). `minor` and `nit` accumulate without blocking.
 `region_lines` is the cited region's line span (it bounds the rework scope cap,
-FR-66); `structural: true` marks a finding whose fix would reach beyond the
-finding's local region, so the runner escalates it rather than fixing it
-in-iteration (FR-67c). Explicitly call out any drift from the governing TDD or an
-accepted ADR as a finding.
+FR-66). `structural: true` marks a finding whose fix requires reconsidering the
+design itself — its interfaces, approach, or the TDD's declared decomposition —
+i.e. a fix that cannot be expressed as a bounded edit within the existing design.
+A *mechanical* fix that stays within the TDD's declared touched files and
+per-file bound — a relocation, reordering, anchor-tightening, or rename — is NOT
+structural even when it spans regions of a file; mark it `structural: false` and
+let bounded rework apply it. When (and only when) you set `structural: true`,
+`structural_reason` MUST name the specific design reconsideration required (not a
+restatement of the finding, not boilerplate); the runner escalates such a finding
+(FR-67c) rather than fixing it in-iteration. For `structural: false`, set
+`structural_reason: none`. Explicitly call out any drift from the governing TDD
+or an accepted ADR as a finding.
 
 `pattern_tags` are short (≤ 4 words) categorical labels — e.g.
 `unchecked-fragment-write-return`, `missing-shellcheck-disable-justification`,

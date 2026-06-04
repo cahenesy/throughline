@@ -16,8 +16,11 @@
 #   - _rework_pre_pass enforces FR-66 scope cap + FR-67(a) touched-file set +
 #     FR-67(b) per-file bound against a rework commit's diff, with the §5
 #     build-start-SHA fallback when no cleared SHA is supplied.
-#   - the gate_one review gate drives the bounded loop: structural(c) tag →
-#     immediate BLOCK; budget exhaustion → rework-budget-exhausted BLOCK;
+#   - the gate_one review gate drives the bounded loop: a structural finding with
+#     a named structural_reason → immediate (c) BLOCK (covered by
+#     tests/structural-classification-bound.test.sh under TDD 0034); a structural
+#     finding with no named reason (e.g. the legacy single-line fallback) → routes
+#     to bounded rework (E2); budget exhaustion → rework-budget-exhausted BLOCK;
 #     oversized/out-of-set/over-bound rework → reset + structural/scope BLOCK.
 #
 # Run: bash tests/bounded-rework-loop.test.sh
@@ -593,7 +596,7 @@ EOF
   grep -q '"model":"sonnet"' "$F" 2>/dev/null && ok "rework ran on sonnet" || bad "rework attempt should be model sonnet"
 ) || true
 
-echo "[E2] reviewer-tagged structural(c) → no rework, BLOCKED + BLOCKERS (c)"
+echo "[E2] legacy single-line structural=true carries no reason → routes to rework (TDD 0034)"
 ( D="$ROOT/E2"; mkdir -p "$D/state.d"
   export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
   export INTEGRATION="master" CHANGE="ci" LOGDIR="$D" MAINREPO="$D/repo"
@@ -607,14 +610,25 @@ echo "[E2] reviewer-tagged structural(c) → no rework, BLOCKED + BLOCKERS (c)"
   # the canned review.out regardless of diff content, so the loop's behavior is
   # unchanged; this only keeps the scope realistic.
   printf 'build-output\n' >> src/a.txt; git add -A; git commit -qm "build: simulated output past build-start" >/dev/null
+  # The legacy single-line REVIEW_FINDING fallback carries NO structural_reason
+  # token, so under TDD 0034 / FR-67 it is treated as a structural finding with no
+  # named reason → it falls through to bounded rework (failure-mode #2), NOT a
+  # (c)-escalation. The genuine named-reason → (c) path is covered by
+  # tests/structural-classification-bound.test.sh (S3).
   printf 'REVIEW_FINDING: severity=major structural=true region_lines=8 ref=review-1:3 | cross-module refactor needed\nREVIEW_RESULT: BLOCK structural\n' > "$D/repo/ctl/review.out"
-  printf 'echo "do_rework should NOT run" >&2; exit 9\n' > "$D/repo/ctl/do_rework"
+  # rework: small in-scope fix that converges; re-review then PASSes with a
+  # per-file disposition for the reworked file (mirrors E1).
+  cat > "$D/repo/ctl/do_rework" <<EOF
+printf 'fixed\n' > src/a.txt
+git add -A >/dev/null 2>&1; git commit -q -m "rework: fix src/a.txt" >/dev/null 2>&1
+printf 'FILE_REVIEWED_NO_FINDINGS: src/a.txt\nREVIEW_RESULT: PASS\n' > "$D/repo/ctl/review.out"
+EOF
   st="$(gate_one docs/tdd/0099-fix.md "$BS" "$D/e2.log")"; rc=$?
   F="$STATE_DIR/0099-fix.json"
-  [ "$rc" -ne 0 ] && ok "gate_one returns non-zero (blocked)" || bad "structural(c) should block (rc=$rc)"
-  ! grep -q '"outcome"' "$F" 2>/dev/null && ok "no rework_log entry (rework skipped)" || bad "structural(c) must not run a rework"
-  grep -q '"halt_cause":"structural-finding"' "$F" 2>/dev/null && ok "halt_cause=structural-finding" || bad "halt_cause should be structural-finding"
-  grep -qE '\(c\)' "$D/repo/docs/tdd/BLOCKERS.md" 2>/dev/null && ok "BLOCKERS.md names criterion (c)" || bad "BLOCKERS.md should name criterion (c) (got: $(cat "$D/repo/docs/tdd/BLOCKERS.md" 2>/dev/null))"
+  [ "$rc" -eq 0 ] && ok "gate_one converges (no-reason structural reworked + flipped)" || bad "no-reason structural should rework + converge (rc=$rc, st=$st)"
+  grep -q '"outcome":"shipped"' "$F" 2>/dev/null && ok "rework_log records a shipped attempt" || bad "rework_log should record shipped (got: $(_read_fragment_raw_array "$F" rework_log))"
+  grep -q '"model":"sonnet"' "$F" 2>/dev/null && ok "rework ran on sonnet" || bad "rework attempt should be model sonnet"
+  ! grep -q '"halt_cause":"structural-finding"' "$F" 2>/dev/null && ok "did NOT escalate structural-finding (no named reason)" || bad "no-reason structural must not escalate (got halt_cause structural-finding)"
 ) || true
 
 echo "[E3] oversized rework → rejected pre-ship → reset + rework-scope-exceeded"

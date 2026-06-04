@@ -407,6 +407,19 @@ if [ -f "$BRL" ]; then
   bash "$BRL" || BRL_FAIL=1
 fi
 
+# Run the structural-classification-bound eval (TDD 0034 / FR-67 gap-closure,
+# FR-62, FR-66) as part of the same suite — it pins the review-prompt
+# structural_reason field + tightened definition and the runner's (c)-escalation
+# gating (a named reason escalates; an in-scope unnamed structural routes to
+# bounded rework), so a regression in either surface fails here under ci-checks
+# rather than in a real build.
+SCB="$(dirname "$0")/structural-classification-bound.test.sh"
+SCB_FAIL=0
+if [ -f "$SCB" ]; then
+  echo
+  bash "$SCB" || SCB_FAIL=1
+fi
+
 # Run the run-recovery eval (TDD 0011 / FR-39..FR-45 + TDD 0019 carry-over
 # fail-loud fixes) as part of the same suite so the resume + carry-over
 # fixtures are gated by CI, not orphaned from the aggregator.
@@ -576,4 +589,4 @@ if [ -f "$IMR" ]; then
   bash "$IMR" || IMR_FAIL=1
 fi
 
-[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ] && [ "$SMS_FAIL" -eq 0 ] && [ "$PRM_FAIL" -eq 0 ] && [ "$GRM_FAIL" -eq 0 ] && [ "$BRL_FAIL" -eq 0 ] && [ "$RR_FAIL" -eq 0 ] && [ "$BCL_FAIL" -eq 0 ] && [ "$BO_FAIL" -eq 0 ] && [ "$IDP_FAIL" -eq 0 ] && [ "$RES_FAIL" -eq 0 ] && [ "$CVR_FAIL" -eq 0 ] && [ "$HRS_FAIL" -eq 0 ] && [ "$SHR_FAIL" -eq 0 ] && [ "$BPL_FAIL" -eq 0 ] && [ "$BDN_FAIL" -eq 0 ] && [ "$IDISC_FAIL" -eq 0 ] && [ "$ERC_FAIL" -eq 0 ] && [ "$SCP_FAIL" -eq 0 ] && [ "$IMR_FAIL" -eq 0 ]
+[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ] && [ "$SMS_FAIL" -eq 0 ] && [ "$PRM_FAIL" -eq 0 ] && [ "$GRM_FAIL" -eq 0 ] && [ "$BRL_FAIL" -eq 0 ] && [ "$SCB_FAIL" -eq 0 ] && [ "$RR_FAIL" -eq 0 ] && [ "$BCL_FAIL" -eq 0 ] && [ "$BO_FAIL" -eq 0 ] && [ "$IDP_FAIL" -eq 0 ] && [ "$RES_FAIL" -eq 0 ] && [ "$CVR_FAIL" -eq 0 ] && [ "$HRS_FAIL" -eq 0 ] && [ "$SHR_FAIL" -eq 0 ] && [ "$BPL_FAIL" -eq 0 ] && [ "$BDN_FAIL" -eq 0 ] && [ "$IDISC_FAIL" -eq 0 ] && [ "$ERC_FAIL" -eq 0 ] && [ "$SCP_FAIL" -eq 0 ] && [ "$IMR_FAIL" -eq 0 ]
