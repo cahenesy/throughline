@@ -69,8 +69,8 @@ echo "[§6-unit] _fetch_integration: remote-prefixed ref fetches; local ref does
   : > "$rec"
   _fetch_integration "origin/master"; rc=$?
   [ "$rc" -eq 0 ] && ok "remote-prefixed ref returns rc 0" || bad "should return 0 (got $rc)"
-  grep -qxF 'fetch origin master' "$rec" 2>/dev/null \
-    && ok "remote-prefixed ref invokes git fetch <remote> <branch>" || bad "should have run 'fetch origin master' (got: $(cat "$rec" 2>/dev/null))"
+  grep -qxF 'fetch -- origin master' "$rec" 2>/dev/null \
+    && ok "remote-prefixed ref invokes git fetch -- <remote> <branch>" || bad "should have run 'fetch -- origin master' (got: $(cat "$rec" 2>/dev/null))"
 
   # (b) bare local branch name (no slash) → no fetch.
   : > "$rec"
@@ -96,6 +96,20 @@ echo "[§6-unit] _fetch_integration: remote-prefixed ref fetches; local ref does
   [ "$rc" -eq 0 ] && ok "fetch failure still returns rc 0 (best-effort)" || bad "fetch failure must return 0 (got $rc)"
   printf '%s' "$err" | grep -q 'could not fetch origin master' \
     && ok "fetch failure warns to stderr (names the remote + branch)" || bad "fetch failure should warn (got: '$err')"
+
+  # (f) trust boundary: a branch component beginning with '-' would be a git option
+  # (arg injection) — validation rejects it, so no fetch runs (rc 0, degraded).
+  printf '0\n' > "$rcfile"; : > "$rec"
+  _fetch_integration "origin/-x"; rc=$?
+  [ "$rc" -eq 0 ] && ok "dash-leading branch returns rc 0 (degraded)" || bad "dash-leading branch should return 0 (got $rc)"
+  [ ! -s "$rec" ] && ok "dash-leading branch invokes no fetch (option-injection guarded)" || bad "dash-leading branch must not fetch (got: $(cat "$rec" 2>/dev/null))"
+
+  # (g) trust boundary: a remote component carrying an embedded newline would let
+  # `grep -xF` match an unintended remote line — validation rejects it, no fetch.
+  : > "$rec"
+  _fetch_integration "$(printf 'origin\nmaster')/branch"; rc=$?
+  [ "$rc" -eq 0 ] && ok "newline-bearing remote returns rc 0 (degraded)" || bad "newline-bearing remote should return 0 (got $rc)"
+  [ ! -s "$rec" ] && ok "newline-bearing remote invokes no fetch (grep-bypass guarded)" || bad "newline-bearing remote must not fetch (got: $(cat "$rec" 2>/dev/null))"
 ) || true
 
 # --- report ----------------------------------------------------------------
