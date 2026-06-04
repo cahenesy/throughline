@@ -355,6 +355,30 @@ echo "[§5] mid-build resume (empty gates_completed) merges before the build gat
     && ok "integration is an ancestor of the build branch" || bad "integration should be an ancestor"
 ) || true
 
+# ===========================================================================
+# §7 (review-scope pin, §4): after a resume-merge, integration is an ancestor of
+# HEAD, so _review_base <integration-ref> = git merge-base <integration> HEAD =
+# the integration head. The consolidated review scope is therefore exactly the
+# build's own work (incl. any conflict resolutions in the merge commit) as it
+# applies on top of CURRENT integration — the honest scope (ADR 0006). No code
+# change in this TDD; this pins the non-stacked case so a future _review_base
+# change cannot silently regress it. RED without §2's merge: HEAD stays at the
+# fork, so _review_base returns the build-start fork point, not the integration head.
+echo "[§7] review scope after the resume-merge: _review_base returns the integration head"
+( TDDS=(); THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  command -v _review_base >/dev/null 2>&1 || { bad "_review_base helper missing"; exit 0; }
+  _mk_local_fixture "$ROOT/s7" 1 0 || { bad "setup failed"; exit 0; }   # INTEGRATION=master, advanced
+  fork="$(git merge-base feat/x master)"                                 # build-start, pre-merge
+  _write_paused_fragment feat/x "$FEAT_HEAD" || { bad "fragment write failed"; exit 0; }
+  _resume_from 0033-x 2>/dev/null; rc=$?
+  [ "$rc" -eq 0 ] && ok "resume accepted (merge applied)" || bad "should accept rc 0 (got $rc)"
+  rb="$(_review_base master)"
+  [ "$rb" = "$INTEG_HEAD" ] \
+    && ok "_review_base master == integration head after the merge" || bad "_review_base should equal the integration head (got '$rb' want '$INTEG_HEAD')"
+  [ "$rb" != "$fork" ] \
+    && ok "review base is post-merge, NOT the stale build-start fork point" || bad "_review_base must not be the fork point (the stale-base scope)"
+) || true
+
 # --- report ----------------------------------------------------------------
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
