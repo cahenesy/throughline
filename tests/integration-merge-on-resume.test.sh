@@ -326,6 +326,35 @@ echo "[§8] unrevised structural halt still refuses pre-merge (no merge commit)"
   _head_is_merge && bad "a merge commit was created before the structural precondition refused" || ok "no merge commit (refused before the merge block)"
 ) || true
 
+# ===========================================================================
+# §5 (regression pin for §2's behavior): a MID-BUILD resume — a fragment whose
+# gates_completed is EMPTY (the build never reached BATCH_RESULT: OK) — merges
+# integration into the build branch BEFORE the build gate re-enters. No code
+# beyond §2 is involved (the build gate re-enters on the now-merged branch
+# because "build" is absent from the done-list, TDD 0033 §3); this pins that the
+# merge lands first so the re-entering build observes current integration.
+echo "[§5] mid-build resume (empty gates_completed) merges before the build gate re-enters"
+( TDDS=(); THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  _mk_local_fixture "$ROOT/s5" 1 0 || { bad "setup failed"; exit 0; }   # integration adds src/integration.txt
+  # Mid-build interruption shape: status=paused/transient, stage=build, EMPTY
+  # gates_completed (param 14 = "").
+  _write_tdd_fragment 0033-x 33 docs/tdd/0033-x.md 1 paused build 1000 1000 \
+    feat/x "" log "" transient "" "" "$FEAT_HEAD" "" "" "" "" "" "" "" "" "" \
+    || { bad "fragment write failed"; exit 0; }
+  _resume_from 0033-x 2>"$ROOT/s5.err"; rc=$?
+  [ "$rc" -eq 0 ] && ok "mid-build resume accepted (rc 0)" || bad "should accept rc 0 (got $rc; stderr=$(cat "$ROOT/s5.err" 2>/dev/null))"
+  var="$(_resume_gates_var 0033-x)"; done_list="${!var:-}"
+  case ",$done_list," in
+    *",build,"*) bad "build must NOT be in the done-list (it has to re-run on the merged branch)" ;;
+    *)           ok "build gate will re-enter (build absent from the resume done-list)" ;;
+  esac
+  _head_is_merge && ok "branch HEAD is a merge commit before any build re-entry" || bad "HEAD should be a merge commit"
+  [ -f src/integration.txt ] \
+    && ok "integration's file is present in the worktree the build gate will read" || bad "integration content should be merged in before the build gate"
+  git merge-base --is-ancestor "$INTEG_HEAD" HEAD 2>/dev/null \
+    && ok "integration is an ancestor of the build branch" || bad "integration should be an ancestor"
+) || true
+
 # --- report ----------------------------------------------------------------
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
