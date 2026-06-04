@@ -1411,7 +1411,12 @@ _rework_one() {  # <tdd> <log> <finding-ref> <finding-text> <cap>
 
 # _iter_finding_blocks <review-log> [<pre-log-size>] (TDD 0021 §1) — print the
 # review pass's structured findings, one per line, as a Unit-Separator (\x1f)
-# delimited record `severity␟structural␟region␟region_lines␟pattern_tags␟summary␟evidence`.
+# delimited record
+# `severity␟structural␟region␟region_lines␟pattern_tags␟summary␟evidence␟structural_reason`.
+# `structural_reason` (TDD 0034 / FR-67) is appended AFTER `evidence` so the
+# existing field positions are unchanged; readers that want it add one trailing
+# `read` variable, and readers that don't still MUST add the trailing variable so
+# the new field cannot leak into `evidence` (the last positional read target).
 # Parses each `FINDING_BEGIN .. FINDING_END` block the review prompt emits
 # (§1 schema). Field lines tolerate leading whitespace / fence indentation;
 # multi-line `evidence` is collapsed to one space-joined line so each finding is
@@ -1429,11 +1434,15 @@ _iter_finding_blocks() {  # <review-log> [<pre-log-size>]
   fi
   printf '%s\n' "$slice" | awk -v US="$US" '
     function trim(s){ sub(/^[[:space:]]+/,"",s); sub(/[[:space:]]+$/,"",s); return s }
-    /FINDING_BEGIN/ { inblk=1; sev="";st="";rg="";rl="";tg="";sm="";ev="";evon=0; next }
-    /FINDING_END/   { if(inblk){ printf "%s%s%s%s%s%s%s%s%s%s%s%s%s\n", sev,US,st,US,rg,US,rl,US,tg,US,sm,US,ev } inblk=0; evon=0; next }
+    /FINDING_BEGIN/ { inblk=1; sev="";st="";sr="";rg="";rl="";tg="";sm="";ev="";evon=0; next }
+    /FINDING_END/   { if(inblk){ printf "%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n", sev,US,st,US,rg,US,rl,US,tg,US,sm,US,ev,US,sr } inblk=0; evon=0; next }
     inblk {
-      if ($0 ~ /^[[:space:]]*severity:/)     { v=$0; sub(/^[[:space:]]*severity:[[:space:]]*/,"",v);     sev=trim(v); evon=0; next }
-      if ($0 ~ /^[[:space:]]*structural:/)   { v=$0; sub(/^[[:space:]]*structural:[[:space:]]*/,"",v);   st=trim(v);  evon=0; next }
+      if ($0 ~ /^[[:space:]]*severity:/)         { v=$0; sub(/^[[:space:]]*severity:[[:space:]]*/,"",v);         sev=trim(v); evon=0; next }
+      # structural_reason: must be matched BEFORE structural: — the regexes are
+      # already disjoint (structural: requires a colon right after "structural"),
+      # but ordering it first keeps the disjointness obvious (TDD 0034 / FR-67).
+      if ($0 ~ /^[[:space:]]*structural_reason:/) { v=$0; sub(/^[[:space:]]*structural_reason:[[:space:]]*/,"",v); sr=trim(v);  evon=0; next }
+      if ($0 ~ /^[[:space:]]*structural:/)       { v=$0; sub(/^[[:space:]]*structural:[[:space:]]*/,"",v);       st=trim(v);  evon=0; next }
       if ($0 ~ /^[[:space:]]*region_lines:/) { v=$0; sub(/^[[:space:]]*region_lines:[[:space:]]*/,"",v); rl=trim(v);  evon=0; next }
       if ($0 ~ /^[[:space:]]*region:/)       { v=$0; sub(/^[[:space:]]*region:[[:space:]]*/,"",v);       rg=trim(v);  evon=0; next }
       if ($0 ~ /^[[:space:]]*pattern_tags:/) { v=$0; sub(/^[[:space:]]*pattern_tags:[[:space:]]*/,"",v); sub(/^\[/,"",v); sub(/\][[:space:]]*$/,"",v); gsub(/,[[:space:]]*/,",",v); tg=trim(v); evon=0; next }
@@ -1465,9 +1474,12 @@ _normalize_severity() {  # <raw-severity>
 # (severity treated as blocker/major) so the caller drives the §2 halt boundary.
 _record_review_findings() {  # <review-log> <pre-log-size> <slug> <pass_id>
   local log="$1" pre="${2:-0}" slug="$3" pass_id="$4"
-  local sev st rg rl tg sm ev recorded treated halting=0
-  while IFS=$'\x1f' read -r sev st rg rl tg sm ev; do
-    [ -z "$sev$st$rg$rl$tg$sm$ev" ] && continue   # defensive: skip empty record
+  # `sr` (structural_reason, TDD 0034) is read so the trailing record field does
+  # not leak into `ev`; this helper does not persist it (it is consumed only at
+  # classification time by _rework_extract_finding / _rework_loop).
+  local sev st rg rl tg sm ev sr recorded treated halting=0
+  while IFS=$'\x1f' read -r sev st rg rl tg sm ev sr; do
+    [ -z "$sev$st$rg$rl$tg$sm$ev$sr" ] && continue   # defensive: skip empty record
     recorded="$sev"; treated="$(_normalize_severity "$sev")"
     if [ -z "$sev" ]; then
       recorded="major"
@@ -1504,7 +1516,9 @@ _record_review_findings() {  # <review-log> <pre-log-size> <slug> <pass_id>
 # ignored, §5) is the consolidated review pass's job, NOT this helper's; this
 # helper only lands the FR-60 audit trail + telemetry counter.
 _record_self_review_findings() {  # <slug> <build-log>
-  local slug="$1" log="$2" region n=0 sev st rg rl tg sm ev recorded
+  # `sr` (structural_reason, TDD 0034) is read so the trailing record field does
+  # not leak into `ev`; self-review findings do not persist it.
+  local slug="$1" log="$2" region n=0 sev st rg rl tg sm ev sr recorded
   [ -n "$log" ] && [ -f "$log" ] || { printf '0'; return 0; }
   # Body of the LAST SELF_REVIEW_BEGIN..SELF_REVIEW_END pair. A BEGIN (re)starts
   # the buffer; END snapshots it as the running "last" so a malformed unterminated
@@ -1516,8 +1530,8 @@ _record_self_review_findings() {  # <slug> <build-log>
     END { if(have) printf "%s", last }
   ' "$log")"
   [ -z "$region" ] && { printf '0'; return 0; }
-  while IFS=$'\x1f' read -r sev st rg rl tg sm ev; do
-    [ -z "$sev$st$rg$rl$tg$sm$ev" ] && continue   # defensive: skip empty record
+  while IFS=$'\x1f' read -r sev st rg rl tg sm ev sr; do
+    [ -z "$sev$st$rg$rl$tg$sm$ev$sr" ] && continue   # defensive: skip empty record
     recorded="${sev:-major}"                       # empty severity → conservative major (mirrors §2 review default)
     if _record_finding "$slug" self-review "self-review" "$recorded" "$st" "$rg" "$rl" "$tg" "$sm" "$ev"; then
       n=$((n + 1))
@@ -1602,8 +1616,13 @@ _per_file_coverage_check() {  # <review-log> <pre-log-size> <slug> <scope-base> 
 }
 
 # _rework_extract_finding <review-log> [<pre-log-size>]  — set RWK_STRUCTURAL /
-# RWK_REGION / RWK_REF / RWK_TEXT for the FIRST halting finding in the review
-# output. Primary source is the §1 `FINDING_BEGIN .. FINDING_END` schema (TDD
+# RWK_STRUCTURAL_REASON / RWK_REGION / RWK_REF / RWK_TEXT for the FIRST halting
+# finding in the review output. RWK_STRUCTURAL_REASON (TDD 0034 / FR-67) carries
+# the finding's `structural_reason` field, used by _rework_loop to gate the
+# FR-67(c) escalation; the legacy single-line `REVIEW_FINDING:` fallback carries
+# no such token, so it leaves RWK_STRUCTURAL_REASON empty (→ routes to rework, the
+# safe default of failure-mode #2).
+# Primary source is the §1 `FINDING_BEGIN .. FINDING_END` schema (TDD
 # 0021): the first block whose normalized severity is blocker/major (an absent /
 # out-of-set tag normalizes to major, matching _record_review_findings so the
 # finding the halt boundary counted is the one selected here). Falls back to the
@@ -1619,16 +1638,17 @@ _per_file_coverage_check() {  # <review-log> <pre-log-size> <slug> <scope-base> 
 # the TDD 0019 review-rerun-2 MAJOR for line 460.
 _rework_extract_finding() {  # <review-log> [<pre-log-size>]
   local log="$1" pre="${2:-0}" line r log_content
-  RWK_STRUCTURAL=0; RWK_REGION=""; RWK_REF="review:1"; RWK_TEXT=""
+  RWK_STRUCTURAL=0; RWK_STRUCTURAL_REASON=""; RWK_REGION=""; RWK_REF="review:1"; RWK_TEXT=""
   # Primary: first halting FINDING_BEGIN..END block (§1).
-  local sev st rg rl tg sm ev treated found=0
-  while IFS=$'\x1f' read -r sev st rg rl tg sm ev; do
+  local sev st rg rl tg sm ev sr treated found=0
+  while IFS=$'\x1f' read -r sev st rg rl tg sm ev sr; do
     [ "$found" -eq 1 ] && continue
     treated="$(_normalize_severity "$sev")"
     case "$treated" in
       blocker|major)
         found=1
         if [ "$st" = "true" ]; then RWK_STRUCTURAL=1; else RWK_STRUCTURAL=0; fi
+        RWK_STRUCTURAL_REASON="$sr"
         RWK_REGION="$rl"
         [ -n "$rg" ] && RWK_REF="$rg"
         RWK_TEXT="$sm"
@@ -1794,8 +1814,20 @@ _rework_loop() {  # <slug> <tdd> <rbase> <log>
     # current rework against the wrong finding (TDD 0019 review-rerun-2
     # MAJOR — companion fix to the verdict_in_new technique above).
     _rework_extract_finding "$log" "$pre_log_size"
-    # FR-67(c): reviewer explicitly tagged it structural → no rework.
-    if [ "${RWK_STRUCTURAL:-0}" = "1" ]; then
+    # FR-67(c) (TDD 0034): escalate ONLY when the reviewer both tagged the finding
+    # `structural: true` AND supplied a non-empty, non-`none` `structural_reason`
+    # naming the design-level reconsideration required. A `structural: true`
+    # finding with no named reason (empty, `none`, or the legacy single-line
+    # fallback that carries no reason token) is treated as an ordinary halting
+    # finding: it falls through to the bounded-rework attempt, where the
+    # FR-67(a)/(b) pre-pass remains the guardrail — an in-scope mechanical fix
+    # ships; an out-of-scope one is still caught as structural-(a)/(b).
+    local _sr_trim _sr_lc
+    _sr_trim="${RWK_STRUCTURAL_REASON:-}"
+    _sr_trim="${_sr_trim#"${_sr_trim%%[![:space:]]*}"}"   # ltrim
+    _sr_trim="${_sr_trim%"${_sr_trim##*[![:space:]]}"}"   # rtrim
+    _sr_lc="$(printf '%s' "$_sr_trim" | tr '[:upper:]' '[:lower:]')"
+    if [ "${RWK_STRUCTURAL:-0}" = "1" ] && [ -n "$_sr_trim" ] && [ "$_sr_lc" != "none" ]; then
       _rework_escalate "$slug" "$tdd" "$gate" "$step" structural-finding "$RWK_REF" "(c)" "$RWK_TEXT"
       _terminal_state "$slug" blocked "" "structural-finding(c): $RWK_TEXT"
       return 1
