@@ -182,6 +182,79 @@ EOF
   grep -qE '\(c\)' "$D/repo/docs/tdd/BLOCKERS.md" 2>/dev/null && ok "BLOCKERS.md names criterion (c)" || bad "BLOCKERS.md should name criterion (c) (got: $(cat "$D/repo/docs/tdd/BLOCKERS.md" 2>/dev/null))"
 ) || true
 
+echo "[S4] out-of-scope rework + no reason → still caught as structural-(a) by the pre-pass"
+( D="$ROOT/S4"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D" MAINREPO="$D/repo"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  scb_setup_repo "$D/repo" || { bad "setup failed"; exit 0; }
+  BS="$(git rev-parse HEAD)"; scb_build_output
+  cat > "$D/repo/ctl/review.out" <<'EOF'
+FINDING_BEGIN
+severity: major
+structural: true
+structural_reason: none
+region: src/a.txt:1-1
+region_lines: 8
+pattern_tags: [in-scope-relocation]
+summary: relocate the block within src/a.txt
+evidence: src/a.txt:1 block out of place
+FINDING_END
+REVIEW_RESULT: BLOCK in-scope relocation
+EOF
+  # The no-reason finding routes to rework, but the rework edits an out-of-set
+  # file → the FR-67(a) pre-pass must still escalate structural-(a). The no-reason
+  # path did NOT make an out-of-scope change shippable.
+  cat > "$D/repo/ctl/do_rework" <<'EOF'
+printf 'x\n' > src/out_of_scope.txt
+git add -A >/dev/null 2>&1; git commit -q -m "rework: edits out-of-set file" >/dev/null 2>&1
+EOF
+  : > "$D/s4.log"
+  st="$(gate_one docs/tdd/0099-fix.md "$BS" "$D/s4.log")"; rc=$?
+  F="$STATE_DIR/0099-fix.json"
+  [ "$rc" -ne 0 ] && ok "gate_one blocks (out-of-set rework)" || bad "out-of-set rework should block (rc=$rc, st=$st)"
+  grep -q '"outcome":"rejected:structural-finding"' "$F" 2>/dev/null && ok "rework_log records rejected:structural-finding" || bad "should record rejected:structural-finding (got: $(_read_fragment_raw_array "$F" rework_log))"
+  grep -q '"halt_cause":"structural-finding"' "$F" 2>/dev/null && ok "halt_cause=structural-finding" || bad "halt_cause should be structural-finding"
+  grep -qE '\(a\)' "$D/repo/docs/tdd/BLOCKERS.md" 2>/dev/null && ok "BLOCKERS.md names criterion (a)" || bad "BLOCKERS.md should name criterion (a) (got: $(cat "$D/repo/docs/tdd/BLOCKERS.md" 2>/dev/null))"
+) || true
+
+echo "[S5] structural:true with the structural_reason field absent entirely → routes to rework (safe default)"
+( D="$ROOT/S5"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D" MAINREPO="$D/repo"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  scb_setup_repo "$D/repo" || { bad "setup failed"; exit 0; }
+  BS="$(git rev-parse HEAD)"; scb_build_output
+  # No `structural_reason:` line at all (older prompt / malformed finding) →
+  # RWK_STRUCTURAL_REASON is empty → no named reason → routes to rework (§Failure
+  # modes "missing field entirely", the safe non-escalating direction).
+  cat > "$D/repo/ctl/review.out" <<'EOF'
+FINDING_BEGIN
+severity: major
+structural: true
+region: src/a.txt:1-1
+region_lines: 8
+pattern_tags: [in-scope-relocation]
+summary: relocate the block within src/a.txt
+evidence: src/a.txt:1 block out of place
+FINDING_END
+REVIEW_RESULT: BLOCK in-scope relocation
+EOF
+  cat > "$D/repo/ctl/do_rework" <<EOF
+printf 'fixed\n' > src/a.txt
+git add -A >/dev/null 2>&1; git commit -q -m "rework: relocate block in src/a.txt" >/dev/null 2>&1
+printf 'FILE_REVIEWED_NO_FINDINGS: src/a.txt\nREVIEW_RESULT: PASS\n' > "$D/repo/ctl/review.out"
+EOF
+  : > "$D/s5.log"
+  st="$(gate_one docs/tdd/0099-fix.md "$BS" "$D/s5.log")"; rc=$?
+  F="$STATE_DIR/0099-fix.json"
+  [ "$rc" -eq 0 ] && ok "gate_one converges (absent-field structural reworked + flipped)" || bad "absent-field structural should rework + converge (rc=$rc, st=$st)"
+  grep -q '"outcome":"shipped"' "$F" 2>/dev/null && ok "rework_log records a shipped attempt" || bad "rework_log should record shipped (got: $(_read_fragment_raw_array "$F" rework_log))"
+  ! grep -q '"halt_cause":"structural-finding"' "$F" 2>/dev/null && ok "did NOT escalate structural-finding(c)" || bad "absent-field structural must not escalate (c)"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
