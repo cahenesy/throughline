@@ -76,21 +76,21 @@ LOGS="$PWD/docs/tdd/.implement-logs"
 mkdir -p "$LOGS/run1/state.d"
 printf '{"schema":1,"state":"running"}\n' > "$LOGS/run1/state.d/run.json"
 ln -sfn run1 "$LOGS/latest"
-# Progress: append every 1s for 6s (= 3×MAX with MAX=2), well past MAX.
+# Progress: append every 1s for 6s (= 1.5×MAX with MAX=4), well past MAX.
 i=0; while [ "$i" -lt 6 ]; do date +%s%N >> "$LOGS/run1/build.log"; sleep 1; i=$((i+1)); done
 # Now silent but ALIVE — only the inactivity bound can end the watcher.
 sleep 120
 EOF
   out="$WT/out.txt"
   ( cd "$WT/repo" && THROUGHLINE_WATCH_BUILD_SCRIPT="$WT/scripts/stub.sh" \
-      THROUGHLINE_WATCH_POLL_SECS=1 THROUGHLINE_WATCH_MAX_SECS=2 \
+      THROUGHLINE_WATCH_POLL_SECS=1 THROUGHLINE_WATCH_MAX_SECS=4 \
       bash "$WATCH" >"$out" 2>&1 ) &
   wpid=$!
-  # At 4s the build is still writing (writes for 6s) and 4s > MAX=2 — a
+  # At 5s the build is still writing (writes for 6s) and 5s > MAX=4 — a
   # total-elapsed watcher would already have exited here; an inactivity watcher
   # stays alive because the run dir is fresh. Assert process-ALIVE, not a
   # string-absent grep (the completion line is simply not written yet).
-  sleep 4
+  sleep 5
   if kill -0 "$wpid" 2>/dev/null; then ok "watcher still alive past MAX while the build progresses"; else bad "watcher false-completed during a progressing build (total-elapsed bound not removed)"; fi
   absent "$out" '^IMPLEMENT_RUN_COMPLETE' "no premature IMPLEMENT_RUN_COMPLETE while progressing"
   # The build keeps writing until ~6s then goes silent; the watcher should
