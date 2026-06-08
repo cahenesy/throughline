@@ -1235,15 +1235,15 @@ _set_build_attempt_token_spend() {  # <slug> <value>
 # (--recover) re-enters the review gate with a genuinely fresh budget. Both are
 # reset because they are INDEPENDENT budgets: leaving re_review_attempts exhausted
 # would re-halt the recovered run on the first review pass with an uncovered file,
-# defeating the recovery. Every other field is read once and round-tripped
-# unchanged (the fragment-mutator read-all/write-all discipline); the rework_log /
-# build_attempt telemetry are preserved (FR-68 reads them post-recovery). Reuses
-# the two §-cluster rewrite cores, each an atomic temp-file+mv compact-JSON write
-# (the readers are line-oriented). Error-checked: a write failure returns non-zero
-# so _resume_from refuses the recovery (resume-recover-state-write-failed) rather
-# than resuming with an un-reset budget. The rework reset runs FIRST so that on a
-# second-write failure the more load-bearing counter is already cleared; both are
-# idempotent on a re-run.
+# defeating the recovery. Every other field is read once (norm #6) and
+# round-tripped unchanged (the read-all/write-all discipline of
+# _accept_blocked_as_paused / _record_cleared_step); the rework_log / build_attempt
+# telemetry are preserved (FR-68 reads them post-recovery). Done in a SINGLE atomic
+# temp-file+mv compact-JSON write so there is NEVER a half-reset budget (§Failure
+# modes) — a two-write reset could leave rework_attempts={} while re_review_attempts
+# stays exhausted on a partial failure. Error-checked: a write failure returns
+# non-zero so _resume_from refuses the recovery (resume-recover-state-write-failed)
+# rather than resuming with an un-reset budget.
 _reset_rework_attempts() {  # <slug>
   local slug="$1"
   local f="${STATE_DIR:-}/$slug.json"
@@ -1251,19 +1251,46 @@ _reset_rework_attempts() {  # <slug>
     echo "error: _reset_rework_attempts: no state fragment for $slug ($f)" >&2
     return 1
   fi
-  # Read once (norm #6): the fields each rewrite core needs as explicit args (it
-  # reads everything else from disk itself).
-  local rl ba findings srv
-  rl="$(_read_fragment_raw_array "$f" rework_log)"
-  ba="$(_read_fragment_raw_object "$f" build_attempt)"
+  # Carry every field forward EXCEPT rework_attempts (param 21) and
+  # re_review_attempts (param 28), both forced to {} in the one write.
+  local n qp path status stage sta branch pr_url log note now
+  local paused_cause gates_csv retries_json branch_head
+  local halt_cause halt_finding halt_actions_csv halt_detail
+  local rework_log build_attempt last_cleared_sha cleared_step_log findings srv
+  n="$(sed -n 's/.*"n":\([0-9]*\).*/\1/p'            "$f" | head -1)"
+  qp="$(sed -n 's/.*"queue_pos":\([0-9]*\).*/\1/p'   "$f" | head -1)"
+  path="$(sed -n 's/.*"path":"\([^"]*\)".*/\1/p'     "$f" | head -1)"
+  status="$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+  if grep -q '"stage":null' "$f" 2>/dev/null; then stage=""
+  else stage="$(sed -n 's/.*"stage":"\([^"]*\)".*/\1/p' "$f" | head -1)"; fi
+  sta="$(sed -n 's/.*"started_at":\([0-9]*\).*/\1/p' "$f" | head -1)"
+  branch="$(sed -n 's/.*"branch":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+  pr_url="$(sed -n 's/.*"pr_url":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+  log="$(sed -n 's/.*"log":"\([^"]*\)".*/\1/p'       "$f" | head -1)"
+  note="$(sed -n 's/.*"note":"\([^"]*\)".*/\1/p'     "$f" | head -1)"
+  paused_cause="$(_read_fragment_field "$f" paused_cause)"
+  gates_csv="$(_read_fragment_array_csv "$f" gates_completed)"
+  retries_json="$(_read_fragment_raw_array "$f" retries)"
+  branch_head="$(_read_fragment_field "$f" branch_head_at_pause)"
+  halt_cause="$(_read_fragment_field "$f" halt_cause)"
+  halt_finding="$(_read_fragment_field "$f" halt_triggering_finding_ref)"
+  halt_actions_csv="$(_read_fragment_array_csv "$f" halt_next_actions)"
+  halt_detail="$(_read_fragment_field "$f" halt_cause_detail)"
+  rework_log="$(_read_fragment_raw_array "$f" rework_log)"
+  build_attempt="$(_read_fragment_raw_object "$f" build_attempt)"
   findings="$(_read_fragment_findings "$f")"; [ -z "$findings" ] && findings='[]'
   srv="$(sed -n 's/.*"self_review_count":\([0-9]*\).*/\1/p' "$f" | head -1)"; case "$srv" in ''|*[!0-9]*) srv=0 ;; esac
-  if ! _rewrite_fragment_rework "$slug" '{}' "$rl" "$ba"; then
-    echo "error: _reset_rework_attempts: could not reset rework_attempts for $slug" >&2
-    return 1
-  fi
-  if ! _rewrite_fragment_findings "$slug" "$findings" "$srv" '{}'; then
-    echo "error: _reset_rework_attempts: could not reset re_review_attempts for $slug" >&2
+  last_cleared_sha="$(_read_fragment_field "$f" last_cleared_review_sha)"
+  cleared_step_log="$(_read_fragment_cleared_log "$f")"
+  now=$(date +%s)
+  if ! _write_tdd_fragment "$slug" "${n:-0}" "$path" "${qp:-0}" "$status" "$stage" \
+    "${sta:-$now}" "$now" "$branch" "$pr_url" "$log" "$note" \
+    "$paused_cause" "$gates_csv" "$retries_json" "$branch_head" \
+    "$halt_cause" "$halt_finding" "$halt_actions_csv" "$halt_detail" \
+    '{}' "$rework_log" "$build_attempt" \
+    "$last_cleared_sha" "$cleared_step_log" \
+    "$findings" "$srv" '{}'; then
+    echo "error: _reset_rework_attempts: could not reset budgets for $slug" >&2
     return 1
   fi
 }
