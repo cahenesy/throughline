@@ -67,6 +67,43 @@ echo "[§2] status.sh surfaces verify-unobservable as resumable=blocked with no 
     && ok "the verify-unobservable cause label appears in the halt render" || bad "render should name verify-unobservable (got: $out)"
 ) || true
 
+# ===========================================================================
+# §1: a runtime-verify gate that emits VERIFY_RUNTIME: BLOCKED ("couldn't
+# observe") records a *resumable* verify-unobservable halt — NOT a plain
+# terminal blocked with a null halt_cause. The fragment carries halt_cause=
+# verify-unobservable, a halt_next_actions whose first element begins with
+# resume, and a halt_cause_detail containing tdd_rev=<40-hex> (the build-branch
+# TDD blob, so the §3 resume guard can compare it to the integration copy).
+echo "[§1] a runtime-verify BLOCKED verdict records a resumable verify-unobservable halt"
+( d="$ROOT/s1"; mkdir -p "$d/state.d" "$d/repo"; cd "$d/repo" || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$d/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$d"
+  export THROUGHLINE_REQUIRE_RUNTIME_VERIFY=1
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  git init -q -b master; git config user.email t@t.t; git config user.name t
+  mkdir -p docs/tdd
+  printf '# TDD 0035\nStatus: draft\n## Verification plan\nobserve X\n' > docs/tdd/0035-x.md
+  git add -A; git commit -qm "build start" >/dev/null
+  blob="$(git rev-parse HEAD:docs/tdd/0035-x.md)"
+  # Skip build/test-first/verify (already complete); run ONLY runtime-verify.
+  RESUME_GATES_DONE_0035_x="build,test-first,verify"; export RESUME_GATES_DONE_0035_x
+  _write_tdd_fragment 0035-x 35 docs/tdd/0035-x.md 1 verifying verify-runtime 1000 1000 "feat/0035-x" "" "$d/g.log" "" "" "build,test-first,verify" "" "" "" "" "" "" "" "" "" "" "" ""
+  # Stub the runtime-verify executor to emit a couldn't-observe verdict into the log.
+  verify_runtime_one() { printf 'VERIFY_RUNTIME: BLOCKED could not drive the interactive surface headlessly\n' >> "$3"; return 0; }
+  st="$(gate_one docs/tdd/0035-x.md "$(git rev-parse HEAD)" "$d/g.log")"; rc=$?
+  F="$STATE_DIR/0035-x.json"
+  [ "$rc" -ne 0 ] && ok "gate_one returns non-zero on a couldn't-observe BLOCKED verdict" || bad "gate_one should return non-zero (got rc=$rc, st=$st)"
+  hc="$(_read_fragment_field "$F" halt_cause)"
+  [ "$hc" = "verify-unobservable" ] && ok "halt_cause=verify-unobservable (resumable, not plain terminal blocked)" || bad "halt_cause should be verify-unobservable (got '$hc')"
+  status="$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$F" | head -1)"
+  [ "$status" = "blocked" ] && ok "fragment status stays blocked" || bad "status should be blocked (got '$status')"
+  acts="$(_read_fragment_array_csv "$F" halt_next_actions)"
+  printf '%s' "$acts" | grep -qE '^resume' && ok "halt_next_actions first element begins with resume" || bad "first next-action should begin with resume (got '$acts')"
+  detail="$(_read_fragment_field "$F" halt_cause_detail)"
+  printf '%s' "$detail" | grep -qE 'tdd_rev=[0-9a-f]{40}' && ok "halt_cause_detail carries tdd_rev=<40-hex>" || bad "detail should carry the tdd_rev fingerprint (got '$detail')"
+  printf '%s' "$detail" | grep -qF "tdd_rev=$blob" && ok "recorded tdd_rev equals the build-branch TDD blob" || bad "tdd_rev should equal the HEAD blob (got '$detail')"
+) || true
+
 # --- report ----------------------------------------------------------------
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
