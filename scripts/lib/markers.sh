@@ -16,13 +16,30 @@ _TL_MARKERS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./repo-id.sh
 . "$_TL_MARKERS_DIR/repo-id.sh"
 
-# _tl_json_escape <str> — escape backslash and double-quote for embedding in a
-# JSON string literal. Sufficient for our fields (versions, language, the closed
-# step enums), which never contain control characters.
+# _tl_json_escape <str> — escape <str> into a VALID JSON string body for
+# embedding between the quotes of a JSON string literal. Pure bash, no jq/no
+# external process (the marker WRITE path is contractually jq-free, markers.sh:8).
+# Handles backslash, double-quote, and every C0 control U+0001–U+001F (the five
+# named ones to their short escapes, the rest to \u00XX) so control-char values
+# round-trip instead of corrupting the JSON (FR-74 escaping norm; NFR-4). NUL
+# (U+0000) cannot occur — bash strings cannot hold it — so it needs no handling.
 _tl_json_escape() {
-  local s="$1"
+  local s="$1" cc lit
+  # Backslash FIRST (so pre-existing backslashes are doubled before any escape
+  # sequence below introduces its own), then double-quote.
   s="${s//\\/\\\\}"
   s="${s//\"/\\\"}"
+  # The five named C0 controls -> their short JSON escapes.
+  s="${s//$'\b'/\\b}"
+  s="${s//$'\t'/\\t}"
+  s="${s//$'\n'/\\n}"
+  s="${s//$'\f'/\\f}"
+  s="${s//$'\r'/\\r}"
+  # Every remaining C0 control (U+0001–U+001F minus the five above) -> \u00XX.
+  for cc in 01 02 03 04 05 06 07 0b 0e 0f 10 11 12 13 14 15 16 17 18 19 1a 1b 1c 1d 1e 1f; do
+    printf -v lit '%b' "\\x$cc"
+    s="${s//$lit/\\u00$cc}"
+  done
   printf '%s' "$s"
 }
 
