@@ -93,6 +93,7 @@ echo "launched build pid $BUILD_PID"
 # wait immediately (a foreground `sleep` would defer the trap until it elapsed —
 # defeating the shortcut).
 LATEST="$LOGS_DIR/latest"
+WEDGED=0   # set only on an inactivity break; consumed by the emit block below
 while :; do
   kill -0 "$BUILD_PID" 2>/dev/null || break
   [ "$WOKEN" -eq 1 ] && break
@@ -109,7 +110,7 @@ while :; do
   if [ -n "$newest" ]; then
     now="$(date +%s)"
     stale=$((now - newest))
-    if [ "$stale" -ge "$MAX" ]; then break; fi
+    if [ "$stale" -ge "$MAX" ]; then WEDGED=1; break; fi
   fi
   sleep "$POLL" & SLEEP_PID=$!
   wait "$SLEEP_PID" 2>/dev/null
@@ -132,14 +133,23 @@ logdir_abs="$(cd "$LATEST" 2>/dev/null && pwd -P)" || logdir_abs=""
 # contract — collapse any to a space so the record stays exactly one line.
 logdir_abs="${logdir_abs//$'\n'/ }"; logdir_abs="${logdir_abs//$'\r'/ }"
 # Validate state against the known run-state vocabulary (state.sh's run.json
-# writer). Anything unexpected/malformed (whitespace, empty, corrupt run.json)
-# collapses to `unknown`, so the state= token is always a single clean word
-# (TDD §3 contract; §Failure-modes' "whatever the run left" passes through here).
+# writer), now including watcher-timeout — the watcher's own give-up signal.
+# Anything unexpected/malformed (whitespace, empty, corrupt run.json) collapses to
+# `unknown`, so the state= token is always a single clean word (TDD §3 contract;
+# §Failure-modes' "whatever the run left" passes through here).
+#
+# On a WEDGED exit (inactivity break, TDD 0036 §2), FORCE state=watcher-timeout
+# REGARDLESS of run.json — which still says "running", since the build is wedged
+# mid-run. Honest per NFR-4: a running build is never reported as a normal
+# completion. The PID-gone and USR1 exits (WEDGED stays 0) keep reading run.json
+# as today — a genuine terminal state passes through unchanged.
 state="unknown"
-if [ -r "$LATEST/state.d/run.json" ]; then
+if [ "$WEDGED" -eq 1 ]; then
+  state="watcher-timeout"
+elif [ -r "$LATEST/state.d/run.json" ]; then
   _s="$(sed -n 's/.*"state":"\([^"]*\)".*/\1/p' "$LATEST/state.d/run.json" | head -1)"
   case "$_s" in
-    running|done|paused|blocked|interrupted|failed) state="$_s" ;;
+    running|done|paused|blocked|interrupted|failed|watcher-timeout) state="$_s" ;;
     *) state="unknown" ;;
   esac
 fi
