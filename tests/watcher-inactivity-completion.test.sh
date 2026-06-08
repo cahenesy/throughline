@@ -222,6 +222,64 @@ echo "[§5] SKILL.md completion callback: terminal-vs-non-terminal classificatio
   fi
 ) || true
 
+# ===========================================================================
+# §6: startup-window guard — a stale prior-run latest/ must NOT trigger a
+# false-wedge at startup. Pre-seeds run0/ with files timestamped > MAX ago,
+# links latest -> run0, then launches the watcher. The stub simulates a
+# state_init delay (relinks latest -> run1 after 2s). During the stale window
+# the watcher must NOT exit as wedged; after the relink, normal inactivity
+# resumes and the later silence does wedge (MAX=3).
+echo "[§6] startup-window guard: stale prior-run latest/ must not trigger false-wedge"
+( WT="$ROOT/s6"; mkdir -p "$WT/scripts" "$WT/repo/docs/tdd/.implement-logs"
+  # Pre-create a stale prior-run dir and link latest -> it.
+  mkdir -p "$WT/repo/docs/tdd/.implement-logs/run0/state.d"
+  printf '{"schema":1,"state":"done"}\n' > "$WT/repo/docs/tdd/.implement-logs/run0/state.d/run.json"
+  touch "$WT/repo/docs/tdd/.implement-logs/run0/build.log"
+  ln -sfn run0 "$WT/repo/docs/tdd/.implement-logs/latest"
+  # Set mtime WELL before WATCH_START (30s > MAX=3) — newest < WATCH_START guaranteed.
+  find "$WT/repo/docs/tdd/.implement-logs/run0" -type f -exec touch -d '30 seconds ago' {} \;
+  cat > "$WT/scripts/stub.sh" <<'EOF'
+#!/usr/bin/env bash
+# Simulate state_init: after a 2s delay relink latest -> run1 + write fresh files.
+LOGS="$PWD/docs/tdd/.implement-logs"
+mkdir -p "$LOGS/run1/state.d"
+printf '{"schema":1,"state":"running"}\n' > "$LOGS/run1/state.d/run.json"
+sleep 2
+ln -sfn run1 "$LOGS/latest"
+touch "$LOGS/run1/build.log"
+# Silent but alive from here — inactivity probe should wedge after MAX.
+sleep 120
+EOF
+  out="$WT/out.txt"
+  ( cd "$WT/repo" && THROUGHLINE_WATCH_BUILD_SCRIPT="$WT/scripts/stub.sh" \
+      THROUGHLINE_WATCH_POLL_SECS=1 THROUGHLINE_WATCH_MAX_SECS=3 \
+      bash "$WATCH" >"$out" 2>&1 ) &
+  wpid=$!
+  # At ~2s the stub has not yet relinked. The watcher sees stale run0 files
+  # (newest < WATCH_START) and must skip the wedge check. Assert process-alive,
+  # NOT a string-absent grep (IMPLEMENT_RUN_COMPLETE not written yet).
+  sleep 2
+  if kill -0 "$wpid" 2>/dev/null
+  then ok "watcher alive during stale-latest window (WATCH_START guard prevents false-wedge)"
+  else bad "watcher false-wedged on stale prior-run latest/ — WATCH_START guard missing or broken (got: $(cat "$out" 2>/dev/null))"
+  fi
+  # After the relink + silence, inactivity eventually wedges (MAX=3, silence starts ~2s).
+  i=0; while kill -0 "$wpid" 2>/dev/null && [ "$i" -lt 30 ]; do sleep 0.5; i=$((i+1)); done
+  if kill -0 "$wpid" 2>/dev/null
+  then bad "watcher never exited after the relinked run1 went inactive"; kill "$wpid" 2>/dev/null
+  else ok "watcher exited on inactivity after latest/ relinked to run1"
+  fi
+  wait "$wpid" 2>/dev/null
+  ln1="$(grep '^IMPLEMENT_RUN_COMPLETE' "$out" 2>/dev/null)"
+  [ -n "$ln1" ] && ok "IMPLEMENT_RUN_COMPLETE emitted on wedge after relink" \
+    || bad "no IMPLEMENT_RUN_COMPLETE after inactivity wedge (got: $(cat "$out" 2>/dev/null))"
+  case "$ln1" in
+    *"state=watcher-timeout"*) ok "inactivity wedge after relink reports state=watcher-timeout" ;;
+    *) bad "expected state=watcher-timeout on inactivity wedge after relink ($ln1)" ;;
+  esac
+  kill_stub "$out"
+) || true
+
 # --- report ----------------------------------------------------------------
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
