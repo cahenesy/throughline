@@ -166,6 +166,27 @@ echo "[§2] budget-exhausted, --recover → accepted + budgets reset"
   case ",$done_list," in *,verify-runtime,*) ok "done-list includes verify-runtime (skipped)";; *) bad "verify-runtime should be in done-list (got '$done_list')";; esac
 ) || true
 
+# §2b: a reset write-FAILURE must leave the fragment terminal (§Failure modes:
+# "fragment stays terminal — never a half-reset budget"). Because the budget
+# reset runs BEFORE the blocked->paused flip, a failing reset refuses the recovery
+# with the fragment still `blocked`. Driven by stubbing _reset_rework_attempts to
+# fail after sourcing (mirrors runtime-verify-resume.test.sh stubbing a gate exec).
+echo "[§2b] reset write-failure refuses the recovery, fragment stays terminal (blocked)"
+( d="$ROOT/g2b"; mkdir -p "$d/state.d"; cd "$d" || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$d/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$d" RESUME=1 RECOVER=1
+  TDDS=(); THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  _write_tdd_fragment 0039-x 39 docs/tdd/0039-x.md 1 blocked review 1000 1000 "build/x" "" log "" \
+    "" "build,test-first,verify,verify-runtime" "" "abc" "" "" "" "" '{"review:6":3}' "" "" "" "" "[]" "0" "{}"
+  set_halt_cause 0039-x rework-budget-exhausted review ""
+  F="$STATE_DIR/0039-x.json"
+  _reset_rework_attempts() { return 1; }   # simulate a budget-reset write failure
+  RESUME_REFUSE_CAUSE=""
+  _resume_from 0039-x; rc=$?
+  [ "$rc" -eq 3 ] && ok "reset failure refuses the recovery (rc=3)" || bad "should refuse rc=3 (got $rc)"
+  [ "${RESUME_REFUSE_CAUSE:-}" = "resume-recover-state-write-failed" ] && ok "refuse cause = resume-recover-state-write-failed" || bad "cause should be state-write-failed (got '${RESUME_REFUSE_CAUSE:-}')"
+  [ "$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$F" | head -1)" = "blocked" ] && ok "fragment stays blocked (terminal) — flip never ran" || bad "fragment must stay blocked on reset failure (got '$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$F" | head -1)')"
+) || true
+
 # ===========================================================================
 # §3: ci-checks failed, --recover → re-enters at verify; no --recover → terminal.
 # Seed status:failed, note "ci-checks.sh FAIL", gates_completed [build,test-first]

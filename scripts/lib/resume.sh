@@ -283,22 +283,23 @@ _resume_from() {
       # TERMINAL blocked class today (its halt_next_actions has no `resume` prefix,
       # so the blocked-resume arm above declined it). Under an EXPLICIT --recover
       # the operator has judged the halt an artifact (a flake or a since-fixed
-      # estimate); accept it via the SAME atomic blocked->paused/transient flip the
-      # structural arm uses, THEN reset the per-(gate,step) rework + re-review
-      # budgets so the re-entered review gets a fresh THROUGHLINE_REWORK_MAX budget
-      # (Component 4). Falls through to the shared divergence guard + integration
-      # merge below. WITHOUT --recover this arm never fires and the fragment falls
-      # to `else return 0` exactly as today (terminal).
-      if ! _accept_blocked_as_paused "$slug" "$_stage_now"; then
-        echo "error: _resume_from $slug: could not flip blocked->paused for budget-exhausted recovery; refusing" >&2
+      # estimate); reset the per-(gate,step) rework + re-review budgets (Component 4)
+      # so the re-entered review gets a fresh THROUGHLINE_REWORK_MAX budget, THEN
+      # flip blocked->paused/transient via the SAME atomic write the structural arm
+      # uses. Reset-BEFORE-flip is deliberate (§Failure modes "fragment stays
+      # terminal — never a half-reset budget"): a reset write-failure leaves the
+      # fragment still `blocked` (terminal); only after the budget is durably reset
+      # is the status flipped. A flip write-failure (atomic) likewise leaves it
+      # blocked. Falls through to the shared divergence guard + integration merge
+      # below. WITHOUT --recover this arm never fires and the fragment falls to
+      # `else return 0` exactly as today (terminal).
+      if ! _reset_rework_attempts "$slug"; then
+        echo "error: _resume_from $slug: could not reset rework budget for recovery; refusing (fragment stays terminal)" >&2
         RESUME_REFUSE_CAUSE="resume-recover-state-write-failed"
         return 3
       fi
-      if ! _reset_rework_attempts "$slug"; then
-        # The flip already landed; a failed reset would resume with an un-reset
-        # budget, re-halting immediately. Refuse so the operator re-launches rather
-        # than silently resume half-reset (NFR-4).
-        echo "error: _resume_from $slug: could not reset rework budget for recovery; refusing" >&2
+      if ! _accept_blocked_as_paused "$slug" "$_stage_now"; then
+        echo "error: _resume_from $slug: could not flip blocked->paused for budget-exhausted recovery; refusing" >&2
         RESUME_REFUSE_CAUSE="resume-recover-state-write-failed"
         return 3
       fi
