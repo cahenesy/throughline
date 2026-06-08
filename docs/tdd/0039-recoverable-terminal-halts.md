@@ -1,6 +1,6 @@
 # TDD 0039: Opt-in recovery from non-structural terminal halts — resume without state surgery
 
-Status: draft
+Status: implemented
 PRD refs: FR-39 (gap-closure); FR-40; NFR-4
 PRD-rev: d289607
 ADR constraints: 0004, 0005, 0007
