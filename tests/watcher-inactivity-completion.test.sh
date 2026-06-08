@@ -9,6 +9,24 @@
 # THROUGHLINE_WATCH_POLL_SECS (no model or tokens needed). Mirrors the watcher
 # fixture pattern of tests/build-phase-learning-capture.test.sh (§3 [S13]-[S18]).
 #
+# Covers the TDD's Verification plan observation points:
+#   §1 — a progressing build past MAX is NOT false-completed; the watcher exits
+#        only after the run dir goes inactive for >= MAX, with state=watcher-timeout
+#        (process-alive check during the writing phase, not a string-absent grep).
+#   §2 — a silent-but-alive build for MAX wedges → exit with the DISTINCT
+#        state=watcher-timeout, never state=running or a false state=done (NFR-4).
+#   §3 — a PID-gone exit (terminal run.json) passes the real state through (done).
+#   §4 — a clean SIGUSR1 completion passes the run.json state through, never
+#        watcher-timeout.
+#   §5 — skills/implement/SKILL.md classifies the non-terminal state and re-arms a
+#        build-PID poll (mechanical grep, file-readable-guarded).
+#
+# Mechanical-check robustness (L-001/L-002): absence assertions fail CLOSED via
+# absent() (grep rc 1 = absent → PASS; rc >= 2 = unreadable → FAIL); the §5 target
+# file is asserted readable before its content checks; every anchor is specific to
+# text THIS change introduces (watcher-timeout / while kill -0 / the learnings-
+# review suppression sentence).
+#
 # Run: bash tests/watcher-inactivity-completion.test.sh
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
