@@ -496,6 +496,15 @@ echo "[F2] build_one records build_attempt.token_spend from its session JSON"
   cat > "$proj/sess.jsonl" <<'EOF'
 {"type":"assistant","message":{"role":"assistant","usage":{"input_tokens":1000,"output_tokens":234,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
 EOF
+  # Flake fix: this fixture creates the session BEFORE build_one runs, so
+  # build_one's `_last_session_path "$start"` (find -newermt "@$start", SECOND
+  # granularity) race-excludes it whenever build_one's start crosses a wall-clock
+  # second boundary relative to the file's creation -> token_spend comes back
+  # null (~5% in the aggregator, ~100% under the runner's scheduling). Pin the
+  # session mtime safely past any plausible build_one start so the lookup is
+  # deterministic. (In production claude -p writes the session DURING the build,
+  # after start, so mtime > start reliably; only this fixture inverts that.)
+  touch -d '@9999999999' "$proj/sess.jsonl"
   # no-op stub claude (build_one's own work is irrelevant here; we assert the
   # post-build token-spend recording).
   printf '#!/usr/bin/env bash\nexit 0\n' > "$D/bin/claude"; chmod +x "$D/bin/claude"

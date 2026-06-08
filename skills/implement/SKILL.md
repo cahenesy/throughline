@@ -55,6 +55,22 @@ that asks.
      A plain (non-`--resume`) re-run would silently rebuild the finished,
      reviewed work, so the orphaned line MUST be surfaced for the user's
      resume/fresh decision.
+   - A line may instead carry a trailing `resumable=recoverable` marker
+     (TDD 0039 / FR-39): the prior run *halted on a non-structural TERMINAL
+     class that is commonly an artifact* — `cause=rework-budget-exhausted`
+     (the bounded review rework budget ran out) or `cause=ci-checks` (the
+     ci-checks gate went red). These are terminal BY DEFAULT (they are not
+     auto-resumable, unlike `resumable=blocked`/`orphaned`); recovery is
+     OPT-IN and requires an explicit `--recover` flag, because an automatic
+     retry would silently mask a genuinely failing build (NFR-4). Surface it
+     as a THIRD option (the **Recover** offer in step 3 below) — but ONLY
+     when you have reason to believe the halt was an artifact (a flake, or an
+     estimate/bound that has since been fixed in the TDD). Recovery re-enters
+     the last good gate: it BUMPS the rework budget (and resets the
+     coverage-retry budget) for `rework-budget-exhausted`, or re-runs
+     ci-checks for `ci-checks`. It never *suppresses* a verdict — the
+     re-entered gate re-observes, so a genuinely failing build re-halts
+     honestly. The human owns the "this was an artifact" judgement.
    - A `resumable=blocked` line with `cause=structural-finding` (TDD 0031 /
      FR-39, FR-67, gap B) carries a precondition: the halt is resumable ONLY
      once the resolving TDD revision has been merged to integration. Surface
@@ -116,6 +132,19 @@ that asks.
      **"Resume `<slug>` (couldn't-observe halt; requires the TDD's
      ## Verification plan to be revised + merged first)"** for the same
      reason (TDD 0035 / FR-64).
+   - **Recover `<slug>` (re-run from `<gate>`; treats the halt as an
+     artifact — bumps the rework budget / re-runs ci-checks)** — offer this
+     ONLY for a `resumable=recoverable` line (TDD 0039 / FR-39). Its launch
+     line adds `--recover` (which implies `--resume`). State plainly in the
+     option that recovery ASSUMES the halt was an artifact (a flake or a
+     since-fixed estimate), so the human owns that judgement: for
+     `cause=rework-budget-exhausted` it re-enters the review gate with a fresh
+     rework budget (the operator may also raise `THROUGHLINE_REWORK_MAX` at
+     launch); for `cause=ci-checks` it re-runs the verify/ci-checks gate.
+     Recovery never masks a real failure — the re-entered gate re-observes and
+     re-halts honestly if the build is genuinely broken. If the operator does
+     NOT believe the halt was an artifact, prefer **Start fresh** (after
+     revising the TDD via `/tdd-author`) over Recover.
    - **Start fresh (discard paused state)** — delete `state.d/*.json`
      under the prior run's logdir (preserving the rest of the run dir
      for forensic value) AND remove the `latest` symlink so a stray
@@ -258,6 +287,14 @@ Resume variant (only when the user chose Resume above) — append `--resume`:
 
 ```
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/implement-watch.sh" --resume
+```
+
+Recover variant (only when the user chose **Recover** for a
+`resumable=recoverable` line above) — append `--recover` (it implies
+`--resume`, so you do not also need `--resume`; TDD 0039 / FR-39):
+
+```
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/implement-watch.sh" --recover
 ```
 
 Variants: append a TDD path to build one; add `--parallel` or `--combined` for
