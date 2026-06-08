@@ -178,6 +178,32 @@ EOF
   kill_stub "$out"
 ) || true
 
+# ===========================================================================
+# §5: the skill's completion callback classifies terminal vs non-terminal state
+# and re-arms a build-PID poll (and suppresses the learnings review) on a
+# non-terminal exit. Mechanical grep on skills/implement/SKILL.md. The file is
+# asserted READABLE before any content check (TDD 0036 "Mechanical-check
+# robustness" / L-002 misleading-diagnostic — no unconditional check after a
+# missing file); every anchor is specific to text THIS change introduces
+# (watcher-timeout / while kill -0 / the learnings-review suppression sentence),
+# never a phrase already present in SKILL.md.
+echo "[§5] SKILL.md completion callback: terminal-vs-non-terminal classification + re-arm poll"
+( SK="$REPO/skills/implement/SKILL.md"
+  if [ ! -r "$SK" ]; then
+    bad "SKILL.md unreadable/missing — cannot run the §5 content checks: $SK"
+  else
+    grep -q 'watcher-timeout' "$SK" \
+      && ok "SKILL.md classifies watcher-timeout as a non-terminal state" \
+      || bad "SKILL.md should list watcher-timeout among the non-terminal states"
+    grep -q 'while kill -0' "$SK" \
+      && ok "SKILL.md re-arms a background build-PID poll (while kill -0 ...)" \
+      || bad "SKILL.md should re-arm a background 'while kill -0 <PID>' poll on a non-terminal exit"
+    grep -q 'do NOT run the candidate-learnings review' "$SK" \
+      && ok "SKILL.md forbids the candidate-learnings review on a non-terminal state" \
+      || bad "SKILL.md should forbid running the candidate-learnings review on a non-terminal state"
+  fi
+) || true
+
 # --- report ----------------------------------------------------------------
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
