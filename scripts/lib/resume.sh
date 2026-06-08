@@ -208,6 +208,40 @@ _resume_from() {
           # a warning. A pointless resume re-halts within one bounded review cycle.
           echo "warning: _resume_from $slug: structural-finding resume without a resolvable tdd_rev fingerprint (recorded='$_recorded_blob' integration='$_integ_blob'); accepting (degraded — bounded rework limits a pointless resume)" >&2
         fi
+      elif [ "$_hc" = "verify-unobservable" ]; then
+        # TDD 0035 §3 (FR-40, FR-41): a couldn't-observe runtime-verify halt is
+        # resumable ONLY once the TDD's ## Verification plan has been revised and
+        # merged to integration — the verification plan lives in the TDD, so the
+        # SAME tdd_rev guard the structural-finding sub-arm uses applies here.
+        # The recorded tdd_rev was the build-branch TDD blob at halt time
+        # (gate_one §2); compare it to integration's current blob for the path.
+        local _hdetail _recorded_blob _spath _integ_blob
+        _hdetail="$(_read_fragment_field "$f" halt_cause_detail)"
+        _recorded_blob="$(printf '%s' "$_hdetail" | sed -n 's/.*tdd_rev=\([0-9a-f]\{7,\}\).*/\1/p')"
+        _spath="$(sed -n 's/.*"path":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+        _integ_blob=""
+        [ -n "$_spath" ] && _integ_blob="$(git rev-parse --verify --quiet "$INTEGRATION:$_spath" 2>/dev/null)"
+        if [ -n "$_recorded_blob" ] && [ -n "$_integ_blob" ]; then
+          if [ "$_recorded_blob" = "$_integ_blob" ]; then
+            # Integration's plan is byte-identical to the halt-time copy → the
+            # verification plan was NOT revised. Resuming would re-run
+            # runtime-verify against the same plan and BLOCK identically; refuse
+            # and persist NOTHING (the fragment stays blocked/verify-unobservable
+            # so a later, post-revision resume still works). This refusal cause is
+            # transient driver-report-only (like resume-blocked-tdd-unrevised) —
+            # it is never written to the closed-enum paused_cause.
+            RESUME_REFUSE_CAUSE="resume-blocked-verify-plan-unrevised"
+            return 3
+          fi
+          # blobs differ → the verification plan was revised → accept; fall
+          # through to the shared integration merge (TDD 0033) that brings the
+          # revised plan into the build branch.
+        else
+          # Fingerprint absent or a blob unresolvable: accept with a warning, the
+          # same degraded path as structural — a bounded re-verify limits a
+          # pointless resume (Failure modes).
+          echo "warning: _resume_from $slug: verify-unobservable resume without a resolvable tdd_rev fingerprint (recorded='$_recorded_blob' integration='$_integ_blob'); accepting (degraded — a bounded re-verify limits a pointless resume)" >&2
+        fi
       fi
       # ATOMIC flip blocked → paused/transient (single write). On failure REFUSE
       # the resume (rc=3) rather than fall through: a half-written fragment would
