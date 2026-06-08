@@ -33,8 +33,12 @@ if ! mkdir -p "$LOGS_DIR" 2>/dev/null; then
 fi
 PIDFILE="$LOGS_DIR/.watch.pid"
 
-# Poll cadence + hard ceiling (≥ the build watchdog so a wedged build can't pin
-# the watcher forever). Non-numeric → default + warn, matching state.sh discipline.
+# Poll cadence + INACTIVITY window. MAX is the max silence under the run dir
+# before the watcher declares the build wedged — NOT a total wall-clock cap: a
+# streaming/transitioning build resets the clock continuously, so a long-but-
+# progressing run is never false-completed; only a build whose run dir has not
+# advanced for MAX seconds exits (TDD 0036 §1). Non-numeric → default + warn,
+# matching state.sh discipline.
 POLL="${THROUGHLINE_WATCH_POLL_SECS:-30}"
 MAX="${THROUGHLINE_WATCH_MAX_SECS:-14400}"
 case "$POLL" in ''|*[!0-9]*) echo "warning: THROUGHLINE_WATCH_POLL_SECS='$POLL' not numeric; using 30" >&2; POLL=30 ;; esac
@@ -81,30 +85,45 @@ BUILD_PID=$!
 echo "launched build pid $BUILD_PID"
 
 # Poll: exit when the build process is gone (covers crash-without-signal) OR the
-# build signalled completion (SIGUSR1 → WOKEN), bounded by the MAX ceiling. The
-# sleep runs as a backgrounded child waited on with `wait`, so a trapped SIGUSR1
-# interrupts the wait immediately (a foreground `sleep` would defer the trap
-# until it elapsed — defeating the shortcut).
-elapsed=0
+# build signalled completion (SIGUSR1 → WOKEN) OR the run dir has gone INACTIVE
+# for MAX seconds (wedged). The PID-gone and WOKEN breaks keep their precedence
+# (checked before the inactivity probe each iteration), so a clean completion or
+# crash still exits immediately and never as `watcher-timeout`. The sleep runs as
+# a backgrounded child waited on with `wait`, so a trapped SIGUSR1 interrupts the
+# wait immediately (a foreground `sleep` would defer the trap until it elapsed —
+# defeating the shortcut).
+LATEST="$LOGS_DIR/latest"
 while :; do
   kill -0 "$BUILD_PID" 2>/dev/null || break
   [ "$WOKEN" -eq 1 ] && break
-  [ "$elapsed" -ge "$MAX" ] && break
+  # Inactivity probe (TDD 0036 §1). newest = the latest mtime of any regular file
+  # under the active run dir (recursively — covers BOTH the per-TDD build logs,
+  # which grow token-by-token as the coprocess streams, AND state.d/*.json, which
+  # are rewritten at every status/stage transition). %T@ is fractional epoch
+  # seconds; truncate to integer (sub-second precision is irrelevant at a ≥1s
+  # poll). An unreadable/empty run dir (symlink missing, race at run start) yields
+  # NO mtime → we cannot measure inactivity this poll, so we SKIP the wedge check
+  # (never exit) and keep polling; the PID-gone break stays the guaranteed
+  # terminator. This reintroduces no silent total-time cap (TDD 0036 §Failure-modes).
+  newest="$(find "$LATEST/" -type f -printf '%T@\n' 2>/dev/null | cut -d. -f1 | sort -rn | head -1)"
+  if [ -n "$newest" ]; then
+    now="$(date +%s)"
+    stale=$((now - newest))
+    if [ "$stale" -ge "$MAX" ]; then break; fi
+  fi
   sleep "$POLL" & SLEEP_PID=$!
   wait "$SLEEP_PID" 2>/dev/null
   # Best-effort cleanup of the sleep child: on a normal `wait` it has already
   # exited (kill fails harmlessly); on a SIGUSR1-interrupted wait this reaps the
   # still-running sleep. Either outcome is fine, hence || true (FR-74 #1).
   kill "$SLEEP_PID" 2>/dev/null || true
-  WOKEN_NOW="$WOKEN"
-  elapsed=$((elapsed + POLL))
-  [ "$WOKEN_NOW" -eq 1 ] && break
+  [ "$WOKEN" -eq 1 ] && break
 done
 
 # Report completion in one parseable line. logdir is the absolute path the
-# `latest` symlink resolves to; state comes from run.json; candidate_learnings is
-# yes when the detector wrote a review queue this run.
-LATEST="$LOGS_DIR/latest"
+# `latest` symlink resolves to (LATEST was resolved before the poll loop); state
+# comes from run.json; candidate_learnings is yes when the detector wrote a review
+# queue this run.
 logdir_abs="$(cd "$LATEST" 2>/dev/null && pwd -P)" || logdir_abs=""
 [ -z "$logdir_abs" ] && logdir_abs="$LATEST"
 # The line is a single whitespace-tokenized key=value record. A path may legally
