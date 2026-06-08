@@ -925,6 +925,16 @@ _next_actions_for_cause() {
       # merged (the §3c guard enforces the precondition). FR-67 reaffirmed: the
       # halt still BLOCKs and still cites BLOCKERS.md.
       echo "revise TDD via /tdd-author,resume after revision (re-runs the halted gate against the revised declarations),see docs/tdd/BLOCKERS.md" ;;
+    verify-unobservable)
+      # TDD 0035 §1 (FR-40, FR-41, FR-63, FR-64): a runtime-verify gate that
+      # ended VERIFY_RUNTIME: BLOCKED ("couldn't observe" — distinct from FAIL
+      # "observed and wrong", NFR-4) records a *resumable* blocked halt. The
+      # FIRST element begins with `resume`, the machine-readable marker
+      # status.sh --check-paused and _resume_from's blocked arm key on — so the
+      # couldn't-observe halt becomes resumable ONCE the TDD's verification plan
+      # is revised + merged (the §3 verify-plan-unrevised guard enforces the
+      # precondition). Mirrors structural-finding's resume-after-revision shape.
+      echo "resume (re-run runtime-verify against the revised verification plan),revise the TDD's ## Verification plan via /tdd-author" ;;
     design-escalation)
       echo "revise TDD via /tdd-author,/adr-new if a constraint is being challenged" ;;
     external-blocker)

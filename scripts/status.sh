@@ -199,6 +199,7 @@ _halt_cause_known() {  # <cause>
     rework-budget-exhausted|rework-scope-exceeded|structural-finding) return 0 ;;
     design-escalation|external-blocker) return 0 ;;
     resume-blocked-integration-conflict) return 0 ;;   # TDD 0031 §3c (mirrors state.sh enum)
+    verify-unobservable) return 0 ;;   # TDD 0035 §1 (mirrors state.sh enum); FR-64 renders it without the unknown-cause warning
     *) return 1 ;;
   esac
 }
