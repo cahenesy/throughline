@@ -53,7 +53,7 @@ echo "[§2] status.sh surfaces verify-unobservable as resumable=blocked with no 
   export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
   TDDS=()
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
-  printf '{"schema":1,"started_at":1000,"updated_at":1001,"pid":1,"state":"interrupted","total":1,"completed":0,"failed":0,"blocked":1,"skipped":0,"paused":0}\n' > "$D/state.d/run.json"
+  printf '{"schema":1,"started_at":1000,"updated_at":1001,"pid":1,"state":"blocked","total":1,"completed":0,"failed":0,"blocked":1,"skipped":0,"paused":0}\n' > "$D/state.d/run.json"
   _write_tdd_fragment 0035-x 35 docs/tdd/0035-x.md 1 blocked verify-runtime 1000 1000 "feat/0035-x" "" log "" "" "build,test-first,verify" "" "" "" "" "" "" "" "" "" "" "" ""
   set_halt_cause 0035-x verify-unobservable verify-runtime "tdd_rev=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" 2>/dev/null
   cp="$(bash "$REPO/scripts/status.sh" --logdir "$D" --check-paused 2>&1)"
