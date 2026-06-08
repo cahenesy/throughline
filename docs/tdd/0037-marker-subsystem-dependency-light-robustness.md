@@ -1,6 +1,6 @@
 # TDD 0037: Marker subsystem dependency-light robustness — valid-JSON escaping + jq-free read needs no external coreutils
 
-Status: draft
+Status: implemented
 PRD refs: FR-31, FR-33 (gap-closure); FR-74; NFR-4
 PRD-rev: d289607
 ADR constraints: 0004, 0005
