@@ -512,7 +512,39 @@ gate_one() {  # <tdd> <review-base-ref> <log>
     case "$rvs" in
       *PASS*|*SKIP*) set_tdd_state "$slug" verifying verify-runtime "" verify-runtime \
                        || echo "warning: gate_one: could not record verify-runtime completion for $slug" >&2 ;;
-      *BLOCKED*) _terminal_state "$slug" blocked "" "runtime-verify BLOCKED (couldn't observe)"
+      *BLOCKED*)
+                 # TDD 0035 §2 (FR-40, FR-41, FR-63, NFR-4): a couldn't-observe
+                 # verdict is NOT a fatal defect (that is FAIL — "observed and
+                 # wrong"). It usually means the TDD's verification plan told the
+                 # headless gate to drive a surface it cannot reach (e.g. an
+                 # interactive prompt); the fix is a plan-only revision. Record a
+                 # *resumable* blocked halt with the verify-unobservable cause +
+                 # a tdd_rev fingerprint of the TDD on THIS build branch, so the
+                 # _resume_from guard (§3) can tell whether the plan was revised.
+                 # The leading `resume` next-action makes status.sh --check-paused
+                 # surface it and _resume_from's blocked arm accept it (once the
+                 # plan is revised). set_tdd_state first moves the fragment to
+                 # status=blocked (set_halt_cause carries the status forward), and
+                 # the build/test-first/verify entries already in gates_completed
+                 # stay intact for the resumed gate_one to skip — only
+                 # verify-runtime re-runs. Mirrors the structural-finding halt
+                 # recording (TDD 0031 §3b).
+                 local _tdd_blob _detail
+                 # --verify --quiet: resolve to exactly one object or yield empty
+                 # (a bare `git rev-parse HEAD:<missing>` echoes the arg back and
+                 # exits non-zero, which would be captured as a bogus blob).
+                 if _tdd_blob="$(git rev-parse --verify --quiet "HEAD:$tdd" 2>/dev/null)" && [ -n "$_tdd_blob" ]; then
+                   _detail="tdd_rev=$_tdd_blob"
+                 else
+                   # Fingerprint unresolvable (TDD path missing on the branch):
+                   # record the halt without the token. The §3 guard degrades to
+                   # accept-with-warning, so a pointless resume is bounded to one
+                   # re-verify (Failure modes).
+                   _detail=""
+                 fi
+                 _terminal_state "$slug" blocked "" "runtime-verify BLOCKED (couldn't observe)"
+                 set_halt_cause "$slug" verify-unobservable "verify-runtime" "$_detail" \
+                   || echo "warning: gate_one: could not record verify-unobservable halt for $slug" >&2
                  echo "BLOCKED runtime-verify (couldn't observe)${rvs#*BLOCKED}"; return 1 ;;
       *FAIL*)    _terminal_state "$slug" failed "" "runtime-verify FAIL"
                  echo "FAIL runtime-verify${rvs#*FAIL}"; return 1 ;;
