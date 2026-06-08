@@ -491,6 +491,19 @@ if [ "$CHECK_PAUSED" -eq 1 ]; then
       # consumers parse unchanged.
       printf 'slug=%s gate=%s cause=%s\n' "$slug" "${stage:--}" "${cause:--}"
     elif [ "$st" = "blocked" ]; then
+      # Read the halt_cause once (norm #6) — both the recoverable check and the
+      # resumable=blocked marker key on it.
+      if grep -q '"halt_cause":null' "$f" 2>/dev/null; then cause="-"
+      else cause="$(sed -n 's/.*"halt_cause":"\([^"]*\)".*/\1/p' "$f" | head -1)"; fi
+      # TDD 0039 / FR-39: a rework-budget-exhausted blocked halt is a RECOVERABLE
+      # TERMINAL class — its halt_next_actions has no `resume` prefix, so the
+      # resumable=blocked arm below would drop it. Surface it with the DISTINCT
+      # resumable=recoverable marker so the skill offers explicit --recover (the
+      # operator owns the "this halt was an artifact" judgement), never auto-resume.
+      if [ "$cause" = "rework-budget-exhausted" ]; then
+        printf 'slug=%s gate=%s cause=%s resumable=recoverable\n' "$slug" "${stage:--}" "$cause"
+        continue
+      fi
       # TDD 0027 §3a / FR-39: a blocked halt whose halt_next_actions array
       # contains an entry beginning `resume` is recoverable — surface it with a
       # trailing resumable=blocked marker (cause = the halt_cause, since
@@ -498,9 +511,22 @@ if [ "$CHECK_PAUSED" -eq 1 ]; then
       # (design escalations) carry no resume prefix and stay unsurfaced.
       acts="$(sed -n 's/.*\("halt_next_actions":\[[^]]*\]\).*/\1/p' "$f" | head -1)"
       printf '%s' "$acts" | grep -qE '(\[|,)"resume' || continue
-      if grep -q '"halt_cause":null' "$f" 2>/dev/null; then cause="-"
-      else cause="$(sed -n 's/.*"halt_cause":"\([^"]*\)".*/\1/p' "$f" | head -1)"; fi
       printf 'slug=%s gate=%s cause=%s resumable=blocked\n' "$slug" "${stage:--}" "${cause:--}"
+    elif [ "$st" = "failed" ]; then
+      # TDD 0039 / FR-39: a ci-checks failure (status=failed, halt_cause null, note
+      # names ci-checks, gates_completed has build + test-first but NOT verify) is
+      # the other RECOVERABLE TERMINAL class — re-entry re-runs the verify/ci-checks
+      # gate. Surface it with the same distinct resumable=recoverable marker
+      # (cause=ci-checks). A `failed` that is NOT a ci-checks failure (e.g. a
+      # review-gate fatal exit — [[0040]]'s domain) is left human-routed (not
+      # surfaced): the note + gates discriminator gates the marker.
+      note="$(sed -n 's/.*"note":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+      gates=",$(sed -n 's/.*"gates_completed":\(\[[^]]*\]\).*/\1/p' "$f" | head -1 | tr -d '[]"' | sed 's/, */,/g'),"
+      if printf '%s' "$note" | grep -q 'ci-checks' \
+         && [ "${gates#*,build,}" != "$gates" ] && [ "${gates#*,test-first,}" != "$gates" ] \
+         && [ "${gates#*,verify,}" = "$gates" ]; then
+        printf 'slug=%s gate=%s cause=ci-checks resumable=recoverable\n' "$slug" "${stage:--}"
+      fi
     elif [ "$st" = "building" ] || [ "$st" = "verifying" ] || [ "$st" = "reviewing" ]; then
       # TDD 0030 §2 / FR-39 (gap 2): a fragment stuck non-terminal whose run has
       # no live runner is an interrupted-unclean (orphaned) run — the runner died
