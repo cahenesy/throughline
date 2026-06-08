@@ -144,6 +144,22 @@ echo "[G] string fields are JSON-escaped (write stays parseable)"
   fi
 ) || true
 
+# --- [G2] direct _tl_json_escape control-char unit (valid JSON + round-trip) --
+# Focused unit on the escaper itself (TDD 0037 §Verification point 2): a value
+# carrying a tab, a newline, and a bare C0 control (\x01) must escape to a body
+# that is a VALID JSON string and round-trips byte-for-byte through jq.
+echo "[G2] _tl_json_escape escapes control chars to a valid, round-tripping JSON string body"
+( val="$(printf 'a\tb\nc\x01d')"
+  esc="$(bash -c "$SRC; _tl_json_escape \"\$1\"" _ "$val")"
+  obj="{\"x\":\"$esc\"}"
+  if printf '%s' "$obj" | jq -e . >/dev/null 2>&1 \
+       && [ "$(printf '%s' "$obj" | jq -r '.x')" = "$val" ]; then
+    ok "tab/newline/\\x01 escape to valid JSON and round-trip"
+  else
+    bad "_tl_json_escape control-char output was not valid round-tripping JSON (esc='$esc')"
+  fi
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
