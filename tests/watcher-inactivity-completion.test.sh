@@ -129,7 +129,13 @@ EOF
   out="$WT/out.txt"
   ( cd "$WT/repo" && THROUGHLINE_WATCH_BUILD_SCRIPT="$WT/scripts/stub.sh" \
       THROUGHLINE_WATCH_POLL_SECS=1 THROUGHLINE_WATCH_MAX_SECS=2 \
-      bash "$WATCH" >"$out" 2>&1 )
+      bash "$WATCH" >"$out" 2>&1 ) &
+  wpid=$!
+  # Bounded wait: MAX=2 + POLL=1 → should exit within ~4s; 10s ceiling prevents
+  # an inactivity-probe regression from hanging the aggregator (no-hang discipline).
+  i=0; while kill -0 "$wpid" 2>/dev/null && [ "$i" -lt 10 ]; do sleep 1; i=$((i+1)); done
+  if kill -0 "$wpid" 2>/dev/null; then bad "watcher still alive after 10s ceiling (inactivity probe regressed)"; kill "$wpid" 2>/dev/null; fi
+  wait "$wpid" 2>/dev/null
   ln1="$(grep '^IMPLEMENT_RUN_COMPLETE' "$out" 2>/dev/null)"
   [ -n "$ln1" ] && ok "watcher exited and emitted IMPLEMENT_RUN_COMPLETE on silence" || bad "watcher should exit + emit on a silent build (got: $(cat "$out" 2>/dev/null))"
   case "$ln1" in *"state=watcher-timeout"*) ok "silent-build exit reports state=watcher-timeout" ;; *) bad "expected state=watcher-timeout ($ln1)" ;; esac
