@@ -104,6 +104,93 @@ echo "[§1] a runtime-verify BLOCKED verdict records a resumable verify-unobserv
   printf '%s' "$detail" | grep -qF "tdd_rev=$blob" && ok "recorded tdd_rev equals the build-branch TDD blob" || bad "tdd_rev should equal the HEAD blob (got '$detail')"
 ) || true
 
+# ===========================================================================
+# Shared fixture for §3–§4: a master (integration) + feat build branch carrying a
+# verify-unobservable halt whose tdd_rev fingerprint was recorded from the
+# branch's TDD copy. Leaves PWD on feat/0035-fix; sets fragment + FEAT_HEAD.
+# Mirrors honest-review-scope-structural-resume.test.sh:_setup_structural_halt.
+#   <dir> <revise-integration?0|1> <conflict?0|1>
+_setup_unobservable_halt() {  # <dir> <revise> <conflict>
+  local d="$1" revise="$2" conflict="$3" blob
+  # state.d lives OUTSIDE the repo worktree so the fixture's `git add -A` / branch
+  # switches never sweep the fragment (it is run-state, not repo content).
+  mkdir -p "$d/state.d" "$d/repo"; cd "$d/repo" || return 1
+  export STATE_DIR="$d/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" \
+         INTEGRATION="master" CHANGE="ci" LOGDIR="$d" RESUME=1
+  git init -q -b master; git config user.email t@t.t; git config user.name t
+  mkdir -p docs/tdd src
+  printf '# TDD 0035\nStatus: draft\n## Verification plan\nv1 observe X\n' > docs/tdd/0035-fix.md
+  printf 'orig\n' > src/a.txt
+  git add -A; git commit -qm "build start (plan v1)" >/dev/null
+  git checkout -q -b feat/0035-fix
+  if [ "$conflict" = 1 ]; then
+    printf 'feat-version\n' > src/a.txt   # conflicts with master's edit below
+  else
+    printf 'build\n' >> src/a.txt          # a build-output commit, non-conflicting
+  fi
+  git add -A; git commit -qm "build output" >/dev/null
+  FEAT_HEAD="$(git rev-parse HEAD)"
+  blob="$(git rev-parse HEAD:docs/tdd/0035-fix.md)"
+  # Record the couldn't-observe halt: status=blocked, gates_completed has
+  # build,test-first,verify (NOT verify-runtime — it BLOCKED), tdd_rev = the
+  # branch's (v1) plan blob, exactly as gate_one's §2 recording would.
+  _write_tdd_fragment 0035-fix 35 docs/tdd/0035-fix.md 1 blocked verify-runtime 1000 1000 \
+    "feat/0035-fix" "" log "" "" "build,test-first,verify" "" "$FEAT_HEAD" "" "" "" "" "" "" "" "" ""
+  set_halt_cause 0035-fix verify-unobservable verify-runtime "tdd_rev=$blob"
+  if [ "$revise" = 1 ]; then
+    git checkout -q master
+    printf '# TDD 0035\nStatus: draft\n## Verification plan\nv2 REVISED: SKIP X (unobservable)\n' > docs/tdd/0035-fix.md
+    [ "$conflict" = 1 ] && printf 'master-version\n' > src/a.txt
+    git add -A; git commit -qm "revise verification plan (resolves the couldn't-observe halt)" >/dev/null
+    git checkout -q feat/0035-fix
+  fi
+}
+
+# §3: resume refused while the verification plan is UNREVISED. The recorded
+# tdd_rev equals integration's current blob for the TDD path → resuming would
+# re-BLOCK identically; refuse with resume-blocked-verify-plan-unrevised, persist
+# NOTHING (the fragment keeps its accurate blocked/verify-unobservable state), and
+# add no merge commit to the build branch.
+echo "[§3] resume refused while the verification plan is unrevised (tdd_rev == integration blob)"
+( TDDS=(); THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  _setup_unobservable_halt "$ROOT/s3refuse" 0 0 || { bad "setup failed"; exit 0; }
+  F="$STATE_DIR/0035-fix.json"; before="$(cat "$F")"
+  RESUME_REFUSE_CAUSE=""
+  _resume_from 0035-fix; rc=$?
+  [ "$rc" -eq 3 ] && ok "resume refused (rc=3) while the plan is unrevised" || bad "should refuse rc=3 (got $rc)"
+  [ "${RESUME_REFUSE_CAUSE:-}" = "resume-blocked-verify-plan-unrevised" ] \
+    && ok "RESUME_REFUSE_CAUSE=resume-blocked-verify-plan-unrevised" || bad "cause should be verify-plan-unrevised (got '${RESUME_REFUSE_CAUSE:-}')"
+  [ "$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$F" | head -1)" = "blocked" ] \
+    && ok "fragment stays blocked (not flipped to paused)" || bad "fragment should stay blocked"
+  [ "$(cat "$F")" = "$before" ] && ok "fragment byte-identical (refusal persists nothing)" || bad "fragment must be unchanged on refusal"
+  [ "$(git rev-parse HEAD)" = "$FEAT_HEAD" ] && ok "build branch gained no merge commit" || bad "build branch HEAD should be unchanged on refusal"
+) || true
+
+# §4: resume accepted after the verification plan is revised + merged to
+# integration. The blobs differ → accept; the TDD 0033 integration merge brings
+# the revised plan into the build branch; the fragment flips to paused/transient;
+# branch_head_at_pause advances to the post-merge head; the resume done-list
+# excludes verify-runtime (it re-runs) while build/test-first/verify are skipped.
+echo "[§4] resume accepted after revision: integration merged, only verify-runtime re-runs"
+( TDDS=(); THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  _setup_unobservable_halt "$ROOT/s4accept" 1 0 || { bad "setup failed"; exit 0; }
+  F="$STATE_DIR/0035-fix.json"
+  V2="$(git rev-parse master:docs/tdd/0035-fix.md)"
+  RESUME_REFUSE_CAUSE=""
+  _resume_from 0035-fix; rc=$?
+  [ "$rc" -eq 0 ] && ok "resume accepted (rc=0) after revision" || bad "should accept rc=0 (got $rc, cause=${RESUME_REFUSE_CAUSE:-})"
+  [ "$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$F" | head -1)" = "paused" ] \
+    && ok "fragment flipped to paused/transient" || bad "fragment should be paused"
+  [ "$(git rev-parse HEAD:docs/tdd/0035-fix.md)" = "$V2" ] \
+    && ok "build branch carries the revised plan (integration merge happened)" || bad "worktree TDD should equal the revised version"
+  post="$(git rev-parse refs/heads/feat/0035-fix)"
+  [ "$(_read_fragment_field "$F" branch_head_at_pause)" = "$post" ] \
+    && ok "branch_head_at_pause advanced to the post-merge head" || bad "branch_head_at_pause should equal the post-merge head"
+  var="$(_resume_gates_var 0035-fix)"; done_list="${!var:-}"
+  case ",$done_list," in *,verify-runtime,*) bad "verify-runtime must NOT be in the resume done-list (it must re-run)";; *) ok "resume done-list excludes verify-runtime (it re-runs)";; esac
+  case ",$done_list," in *,build,* | build,* ) ok "resume done-list includes build (already complete, skipped)";; *) bad "build should be in the resume done-list (got '$done_list')";; esac
+) || true
+
 # --- report ----------------------------------------------------------------
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
