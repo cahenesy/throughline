@@ -12,7 +12,11 @@
 # repo-id.sh for tl_local_marker_path).
 
 # Source repo-id.sh relative to this file so markers.sh is usable standalone.
-_TL_MARKERS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Pure-bash directory extraction (no external `dirname`) so the no-jq path works
+# on minimal hosts lacking coreutils. The scratch `d` lives only in the subshell
+# (FR-74 sourced-library hygiene: do not leak ambient variables to callers).
+# `%/*` no-slash case -> "." (bare-name source); empty case -> "/" (root-level).
+_TL_MARKERS_DIR="$(d="${BASH_SOURCE[0]%/*}"; [ "$d" = "${BASH_SOURCE[0]}" ] && d="."; [ -z "$d" ] && d="/"; cd "$d" && pwd)"
 # shellcheck source=./repo-id.sh
 . "$_TL_MARKERS_DIR/repo-id.sh"
 
@@ -79,7 +83,10 @@ _tl_marker_read_file() {
   fi
   local content stripped
   content="$(cat "$f")"
-  stripped="$(printf '%s' "$content" | tr -d '[:space:]')"
+  # Strip whitespace in pure bash (no external `tr`) for the structural {…} check
+  # — output-identical to `tr -d '[:space:]'`, but works on a coreutils-minimal,
+  # jq-absent host (FR-31's dependency-light read path).
+  stripped="${content//[[:space:]]/}"
   case "$stripped" in
     \{*\}) if printf '%s' "$content" | grep -q '"schema"'; then printf '%s' "$content"; else printf '{}'; fi ;;
     *) printf '{}' ;;
