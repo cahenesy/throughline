@@ -1,0 +1,83 @@
+name: version-bump-check
+
+# Fail a PR when it changes FUNCTIONAL plugin files (the things that ship as
+# plugin behavior) without bumping the version in .claude-plugin/plugin.json.
+# Docs (PRD/TDD/ADR under docs/**), tests, and CI config are exempt — they don't
+# change what the installed plugin does. This is the mechanical enforcement of
+# the "bump on every functional change" rule (memory: bump-version-every-pr),
+# which a human/the unattended /implement runner kept forgetting.
+
+on:
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  version-bump:
+    name: functional change requires a version bump
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need full history to merge-base diff against the target
+
+      - name: Require a plugin version bump for functional changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          MANIFEST='.claude-plugin/plugin.json'
+
+          # Compare against the point this PR branched from (merge-base), so the
+          # check asks exactly: "did THIS PR's commits change functional files,
+          # and did THEY bump the version?"
+          MB="$(git merge-base "$BASE_SHA" "$HEAD_SHA")"
+
+          mapfile -t changed < <(git diff --name-only "$MB" "$HEAD_SHA")
+          echo "Changed files (vs merge-base $MB):"
+          printf '  %s\n' "${changed[@]:-<none>}"
+
+          # FUNCTIONAL = ships as plugin behavior. Everything else is exempt:
+          #   docs/** (PRD/TDD/ADR), tests/**, .github/**, README, etc.
+          functional=()
+          for f in "${changed[@]:-}"; do
+            case "$f" in
+              scripts/*|skills/*|hooks/*|agents/*|commands/*|.claude-plugin/plugin.json)
+                functional+=("$f") ;;
+            esac
+          done
+
+          if [ "${#functional[@]}" -eq 0 ]; then
+            echo "No functional changes (scripts/skills/hooks/agents/commands/plugin.json)."
+            echo "Version bump not required. PASS."
+            exit 0
+          fi
+
+          echo "Functional changes detected:"
+          printf '  %s\n' "${functional[@]}"
+
+          base_ver="$(git show "$MB:$MANIFEST" 2>/dev/null | jq -r '.version')"
+          head_ver="$(git show "$HEAD_SHA:$MANIFEST" 2>/dev/null | jq -r '.version')"
+          echo "plugin.json version: base=$base_ver  head=$head_ver"
+
+          if [ -z "$head_ver" ] || [ "$head_ver" = "null" ]; then
+            echo "::error file=$MANIFEST::Could not read .version from $MANIFEST on the PR head."
+            exit 1
+          fi
+
+          if [ "$base_ver" = "$head_ver" ]; then
+            echo "::error file=$MANIFEST::Functional files changed but $MANIFEST version was not bumped (still $head_ver). Bump it — minor for a feature, patch for a fix. Docs/tests-only PRs are exempt."
+            exit 1
+          fi
+
+          # Guard against an accidental decrease/typo: head must sort ABOVE base.
+          higher="$(printf '%s\n%s\n' "$base_ver" "$head_ver" | sort -V | tail -1)"
+          if [ "$higher" != "$head_ver" ]; then
+            echo "::error file=$MANIFEST::Version went $base_ver -> $head_ver, which is not an increase."
+            exit 1
+          fi
+
+          echo "OK: version bumped $base_ver -> $head_ver for functional changes. PASS."
