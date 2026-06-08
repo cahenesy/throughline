@@ -163,6 +163,11 @@ _resume_from() {
     return 0
   fi
   var="$(_resume_gates_var "$slug")"
+  # TDD 0039 / FR-39: clear the driver-report recovery global at entry so a prior
+  # TDD's recovery in the same sequential-driver loop never leaks onto this one
+  # (RESUME_RECOVER_CAUSE is never persisted, mirroring RESUME_REFUSE_CAUSE). The
+  # recovery arms below re-set it; a normal resume leaves it empty.
+  RESUME_RECOVER_CAUSE=""
   local fragment_status
   fragment_status="$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$f" | head -1)"
   if [ "$fragment_status" != "paused" ]; then
@@ -172,10 +177,14 @@ _resume_from() {
     # paused/transient — the exact edit that previously required hand-surgery —
     # then fall through to the same validation a paused fragment runs. A blocked
     # fragment whose actions are design escalations only is not resumable.
-    local _halt_actions _stage_now
+    local _halt_actions _stage_now _hc_now
     _halt_actions="$(sed -n 's/.*\("halt_next_actions":\[[^]]*\]\).*/\1/p' "$f" | head -1)"
     if grep -q '"stage":null' "$f" 2>/dev/null; then _stage_now=""
     else _stage_now="$(sed -n 's/.*"stage":"\([^"]*\)".*/\1/p' "$f" | head -1)"; fi
+    # TDD 0039 / FR-39: halt_cause read once here so the RECOVER-guarded recovery
+    # arms below (after the existing blocked-resume/orphaned arms, before the
+    # final `else return 0`) can discriminate without re-reading (norm #6).
+    _hc_now="$(_read_fragment_field "$f" halt_cause)"
     if [ "$fragment_status" = "blocked" ] && printf '%s' "$_halt_actions" | grep -qE '(\[|,)"resume'; then
       # TDD 0031 §3c: a structural-finding halt is resumable ONLY once the resolving
       # TDD revision has been merged to integration. Guard BEFORE the accept-flip —
@@ -269,6 +278,59 @@ _resume_from() {
         RESUME_REFUSE_CAUSE="resume-blocked-state-write-failed"
         return 3
       fi
+    elif [ "${RECOVER:-0}" -eq 1 ] && [ "$fragment_status" = "blocked" ] && [ "$_hc_now" = "rework-budget-exhausted" ]; then
+      # TDD 0039 §2 / FR-39 (recovery arm 1): a rework-budget-exhausted halt is a
+      # TERMINAL blocked class today (its halt_next_actions has no `resume` prefix,
+      # so the blocked-resume arm above declined it). Under an EXPLICIT --recover
+      # the operator has judged the halt an artifact (a flake or a since-fixed
+      # estimate); accept it via the SAME atomic blocked->paused/transient flip the
+      # structural arm uses, THEN reset the per-(gate,step) rework + re-review
+      # budgets so the re-entered review gets a fresh THROUGHLINE_REWORK_MAX budget
+      # (Component 4). Falls through to the shared divergence guard + integration
+      # merge below. WITHOUT --recover this arm never fires and the fragment falls
+      # to `else return 0` exactly as today (terminal).
+      if ! _accept_blocked_as_paused "$slug" "$_stage_now"; then
+        echo "error: _resume_from $slug: could not flip blocked->paused for budget-exhausted recovery; refusing" >&2
+        RESUME_REFUSE_CAUSE="resume-recover-state-write-failed"
+        return 3
+      fi
+      if ! _reset_rework_attempts "$slug"; then
+        # The flip already landed; a failed reset would resume with an un-reset
+        # budget, re-halting immediately. Refuse so the operator re-launches rather
+        # than silently resume half-reset (NFR-4).
+        echo "error: _resume_from $slug: could not reset rework budget for recovery; refusing" >&2
+        RESUME_REFUSE_CAUSE="resume-recover-state-write-failed"
+        return 3
+      fi
+      RESUME_RECOVER_CAUSE="rework-budget-exhausted"
+    elif [ "${RECOVER:-0}" -eq 1 ] && [ "$fragment_status" = "failed" ]; then
+      # TDD 0039 §2 / FR-39 (recovery arm 2): a ci-checks `failed` is the other
+      # recoverable terminal class. Discriminate it from a review-gate fatal exit
+      # ([[0040]]'s domain) by note + gates_completed: note names `ci-checks` and
+      # build + test-first completed but verify did NOT (so re-entry re-runs the
+      # verify/ci-checks gate — governed by gates_completed, no extra wiring). A
+      # `failed` whose note is ABSENT cannot be classified → refuse
+      # resume-recover-cause-ambiguous (NFR-4: never guess a recovery), persisting
+      # nothing so the fragment stays terminal. A `failed` whose note names
+      # something else (review-fatal) is left terminal for [[0040]] (`else
+      # return 0`, exactly today's no-recover behavior).
+      local _rnote _rgates
+      _rnote="$(sed -n 's/.*"note":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+      _rgates=",$(_read_fragment_array_csv "$f" gates_completed),"
+      if printf '%s' "$_rnote" | grep -q 'ci-checks' \
+         && [[ "$_rgates" == *,build,* ]] && [[ "$_rgates" == *,test-first,* ]] && [[ "$_rgates" != *,verify,* ]]; then
+        if ! _accept_blocked_as_paused "$slug" "$_stage_now"; then
+          echo "error: _resume_from $slug: could not flip failed->paused for ci-checks recovery; refusing" >&2
+          RESUME_REFUSE_CAUSE="resume-recover-state-write-failed"
+          return 3
+        fi
+        RESUME_RECOVER_CAUSE="ci-checks"
+      elif [ -z "$_rnote" ]; then
+        RESUME_REFUSE_CAUSE="resume-recover-cause-ambiguous"
+        return 3
+      else
+        return 0
+      fi
     else
       return 0
     fi
@@ -342,6 +404,22 @@ _resume_from() {
       if git merge-base --is-ancestor "$branch_head_at_pause" "$current_head" 2>/dev/null; then
         _update_branch_head_at_pause "$slug" "$current_head" \
           || echo "warning: _resume_from $slug: could not advance branch_head_at_pause after fast-forward" >&2
+      elif [ "${RECOVER:-0}" -eq 1 ]; then
+        # TDD 0039 §3 / FR-40 (divergence-guard recovery): under EXPLICIT --recover
+        # the build branch may have legitimately advanced AND been rewritten by the
+        # very mechanisms a recovery resumes past — the rework commits that shipped
+        # before the halt (a hard-reset of an overrunning commit) or an integration
+        # merge — so a non-ancestor recorded head is EXPECTED, not a tamper signal.
+        # Re-baseline to the live tip (the branch's committed history is ground
+        # truth, the SAME FR-40 principle the orphaned arm applies when the field is
+        # null) instead of refusing. ONLY the refusal is relaxed, and ONLY under
+        # RECOVER; the fast-forward arm above is unchanged. The integration merge
+        # below still runs and still refuses on a real merge conflict, so this
+        # re-baselines the branch's OWN history but never silences an
+        # integration-vs-branch conflict.
+        _update_branch_head_at_pause "$slug" "$current_head" \
+          || echo "warning: _resume_from $slug: could not re-baseline branch_head_at_pause under --recover (branch history is still ground truth)" >&2
+        branch_head_at_pause="$current_head"
       else
         # iter-10 M-3: expose cause via global for drivers.
         RESUME_REFUSE_CAUSE="resume-blocked-branch-divergence"
@@ -400,6 +478,13 @@ _resume_from() {
   # logic — gate 1 appears here only when gates_completed records "build" (i.e.
   # the prior attempt reached BATCH_RESULT: OK). Every gate, including build, is
   # grounded in the explicit run-state record, not an inferred commit pattern.
+  # TDD 0039 / FR-39: one stderr line when this accepted resume was a --recover
+  # recovery (the runner's report stream captures it), mirroring the `resume:
+  # merged ...` diagnostic above. Set by the recovery arms; empty on a normal
+  # resume. This is the driver-visible report of the recovery.
+  [ -n "${RESUME_RECOVER_CAUSE:-}" ] \
+    && echo "resume: recovering $slug from a $RESUME_RECOVER_CAUSE terminal halt via --recover (re-entering the last good gate)" >&2
+
   local done_list="$gates_csv"
   printf -v "$var" '%s' "$done_list"
   export "${var?}"
