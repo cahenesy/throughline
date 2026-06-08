@@ -94,6 +94,7 @@ echo "launched build pid $BUILD_PID"
 # defeating the shortcut).
 LATEST="$LOGS_DIR/latest"
 WEDGED=0   # set only on an inactivity break; consumed by the emit block below
+WATCH_START="$(date +%s)"  # startup-window guard: files older than this are stale prior-run artifacts
 while :; do
   kill -0 "$BUILD_PID" 2>/dev/null || break
   [ "$WOKEN" -eq 1 ] && break
@@ -110,7 +111,7 @@ while :; do
   if [ -n "$newest" ]; then
     now="$(date +%s)"
     stale=$((now - newest))
-    if [ "$stale" -ge "$MAX" ]; then WEDGED=1; break; fi
+    if [ "$newest" -ge "$WATCH_START" ] && [ "$stale" -ge "$MAX" ]; then WEDGED=1; break; fi
   fi
   sleep "$POLL" & SLEEP_PID=$!
   wait "$SLEEP_PID" 2>/dev/null
