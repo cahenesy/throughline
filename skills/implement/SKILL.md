@@ -140,8 +140,29 @@ runs HERE, in this interactive session. It is surfaced two ways:
   completes, the harness re-invokes this session with the watcher's stdout. Read
   its `IMPLEMENT_RUN_COMPLETE logdir=<abs> state=<…> candidate_learnings=<yes|no>`
   line. ALWAYS report run completion + `state` to the user (this is the status
-  side-benefit — no more manual polling). If `candidate_learnings=yes`, proceed
-  to **The review** below against that `logdir`.
+  side-benefit — no more manual polling). Then CLASSIFY `state` before doing
+  anything else, because the watcher can exit while the build is still alive
+  (TDD 0036): it bounds *inactivity*, not total run time, so a long backoff or a
+  wedge makes it give up with `state=watcher-timeout` even though the detached
+  build is still running.
+  - **Terminal states** (`done`, `paused`, `blocked`, `failed`): the run is
+    genuinely over. Proceed as today — if `candidate_learnings=yes`, proceed to
+    **The review** below against that `logdir`.
+  - **Non-terminal states** (`watcher-timeout`, `running`, `interrupted`,
+    `unknown`): the build may still be alive. Read the build PID from the
+    watcher's `launched build pid <PID>` line in that SAME stdout payload (it
+    carries both lines). Do NOT read `docs/tdd/.implement-logs/.watch.pid` — the
+    watcher removes it on exit (its EXIT trap), so it is already gone. If
+    `kill -0 <PID>` succeeds, the build is still running: re-arm the callback by
+    launching a harness-tracked background Bash poll
+    (`while kill -0 <PID> 2>/dev/null; do sleep 60; done`, then re-read the run
+    state) so this session is re-invoked when the build actually finishes; report
+    "build still running (watcher timed out); re-armed poll". On a non-terminal
+    state, **do NOT run the candidate-learnings review** — it must not run against
+    a live build (`apply_accepted_learnings` writes `LEARNINGS.md` and marks the
+    queue reviewed, which is premature before the run finishes). If `kill -0 <PID>`
+    fails (PID gone but state non-terminal), report the anomaly and rely on the
+    **Fallback** review below on the next `/implement` invocation.
 - **Fallback.** At the top of a fresh `/implement` invocation (immediately after
   "Detect interrupted run", before "Prepare"), check the most recent completed
   run's logdir (`docs/tdd/.implement-logs/latest`). If it holds an UNREVIEWED

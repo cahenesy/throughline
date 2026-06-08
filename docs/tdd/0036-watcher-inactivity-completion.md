@@ -1,6 +1,6 @@
 # TDD 0036: Watcher completion ceiling is inactivity-based, not total wall-clock — no false-complete on long runs
 
-Status: draft
+Status: implemented
 PRD refs: FR-72, FR-39 (gap-closure); NFR-4
 PRD-rev: d289607
 ADR constraints: 0004, 0005, 0007

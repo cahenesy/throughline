@@ -606,4 +606,21 @@ if [ -f "$RVR" ]; then
   bash "$RVR" || RVR_FAIL=1
 fi
 
-[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ] && [ "$SMS_FAIL" -eq 0 ] && [ "$PRM_FAIL" -eq 0 ] && [ "$GRM_FAIL" -eq 0 ] && [ "$BRL_FAIL" -eq 0 ] && [ "$SCB_FAIL" -eq 0 ] && [ "$RR_FAIL" -eq 0 ] && [ "$BCL_FAIL" -eq 0 ] && [ "$BO_FAIL" -eq 0 ] && [ "$IDP_FAIL" -eq 0 ] && [ "$RES_FAIL" -eq 0 ] && [ "$CVR_FAIL" -eq 0 ] && [ "$HRS_FAIL" -eq 0 ] && [ "$SHR_FAIL" -eq 0 ] && [ "$BPL_FAIL" -eq 0 ] && [ "$BDN_FAIL" -eq 0 ] && [ "$IDISC_FAIL" -eq 0 ] && [ "$ERC_FAIL" -eq 0 ] && [ "$SCP_FAIL" -eq 0 ] && [ "$IMR_FAIL" -eq 0 ] && [ "$RVR_FAIL" -eq 0 ]
+# Run the watcher-inactivity-completion eval (TDD 0036 / FR-72, FR-39, NFR-4) as
+# part of the same suite so the inactivity-based watcher poll loop, the distinct
+# watcher-timeout wedge state, and the SKILL.md non-terminal-state callback are
+# regression-gated by ci-checks, not orphaned from the aggregator. Same rationale
+# — and same one-line registration shape — as the sibling evals above: this is
+# test-harness registration of an already-green eval, not product behavior. The
+# feature's behavior was driven failing-test-first in its own steps (the §1
+# inactivity-exit, the §2-§4 distinct-state/passthrough, and the §5 SKILL.md grep
+# cases each landed as a `test(failing):` red before their implementation in
+# steps 1-3).
+WIC="$(dirname "$0")/watcher-inactivity-completion.test.sh"
+WIC_FAIL=0
+if [ -f "$WIC" ]; then
+  echo
+  bash "$WIC" || WIC_FAIL=1
+fi
+
+[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ] && [ "$SMS_FAIL" -eq 0 ] && [ "$PRM_FAIL" -eq 0 ] && [ "$GRM_FAIL" -eq 0 ] && [ "$BRL_FAIL" -eq 0 ] && [ "$SCB_FAIL" -eq 0 ] && [ "$RR_FAIL" -eq 0 ] && [ "$BCL_FAIL" -eq 0 ] && [ "$BO_FAIL" -eq 0 ] && [ "$IDP_FAIL" -eq 0 ] && [ "$RES_FAIL" -eq 0 ] && [ "$CVR_FAIL" -eq 0 ] && [ "$HRS_FAIL" -eq 0 ] && [ "$SHR_FAIL" -eq 0 ] && [ "$BPL_FAIL" -eq 0 ] && [ "$BDN_FAIL" -eq 0 ] && [ "$IDISC_FAIL" -eq 0 ] && [ "$ERC_FAIL" -eq 0 ] && [ "$SCP_FAIL" -eq 0 ] && [ "$IMR_FAIL" -eq 0 ] && [ "$RVR_FAIL" -eq 0 ] && [ "$WIC_FAIL" -eq 0 ]
