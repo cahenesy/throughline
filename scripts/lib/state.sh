@@ -1229,6 +1229,45 @@ _set_build_attempt_token_spend() {  # <slug> <value>
   _rewrite_fragment_rework "$slug" "$ra" "$rl" "{\"token_spend\":$val_lit}"
 }
 
+# _reset_rework_attempts <slug> (TDD 0039 §4 / FR-39; Component 4)
+# Reset BOTH the per-(gate,step) rework_attempts counter AND the re_review_attempts
+# coverage-retry counter (TDD 0021) to {}, so a budget-exhausted recovery
+# (--recover) re-enters the review gate with a genuinely fresh budget. Both are
+# reset because they are INDEPENDENT budgets: leaving re_review_attempts exhausted
+# would re-halt the recovered run on the first review pass with an uncovered file,
+# defeating the recovery. Every other field is read once and round-tripped
+# unchanged (the fragment-mutator read-all/write-all discipline); the rework_log /
+# build_attempt telemetry are preserved (FR-68 reads them post-recovery). Reuses
+# the two §-cluster rewrite cores, each an atomic temp-file+mv compact-JSON write
+# (the readers are line-oriented). Error-checked: a write failure returns non-zero
+# so _resume_from refuses the recovery (resume-recover-state-write-failed) rather
+# than resuming with an un-reset budget. The rework reset runs FIRST so that on a
+# second-write failure the more load-bearing counter is already cleared; both are
+# idempotent on a re-run.
+_reset_rework_attempts() {  # <slug>
+  local slug="$1"
+  local f="${STATE_DIR:-}/$slug.json"
+  if [ -z "${STATE_DIR:-}" ] || [ ! -f "$f" ]; then
+    echo "error: _reset_rework_attempts: no state fragment for $slug ($f)" >&2
+    return 1
+  fi
+  # Read once (norm #6): the fields each rewrite core needs as explicit args (it
+  # reads everything else from disk itself).
+  local rl ba findings srv
+  rl="$(_read_fragment_raw_array "$f" rework_log)"
+  ba="$(_read_fragment_raw_object "$f" build_attempt)"
+  findings="$(_read_fragment_findings "$f")"; [ -z "$findings" ] && findings='[]'
+  srv="$(sed -n 's/.*"self_review_count":\([0-9]*\).*/\1/p' "$f" | head -1)"; case "$srv" in ''|*[!0-9]*) srv=0 ;; esac
+  if ! _rewrite_fragment_rework "$slug" '{}' "$rl" "$ba"; then
+    echo "error: _reset_rework_attempts: could not reset rework_attempts for $slug" >&2
+    return 1
+  fi
+  if ! _rewrite_fragment_findings "$slug" "$findings" "$srv" '{}'; then
+    echo "error: _reset_rework_attempts: could not reset re_review_attempts for $slug" >&2
+    return 1
+  fi
+}
+
 # --- Cleared-step log + last-cleared SHA (TDD 0020 / FR-57, FR-59; ADR 0006) --
 # _record_cleared_step <slug> <step-id> <base-sha> <head-sha> <pattern-tags-csv>
 # Append one {step_id, base_sha, head_sha, pattern_tags[], cleared_at} entry to
