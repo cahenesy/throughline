@@ -312,13 +312,13 @@ echo "[§5] status.sh --check-paused surfaces resumable=recoverable for the two 
 echo "[§7] SKILL.md documents --recover + the Recover offer keyed on resumable=recoverable"
 ( SK="$REPO/skills/implement/SKILL.md"
   [ -r "$SK" ] || { bad "SKILL.md not readable"; exit 0; }
-  has() {  # <regex> <ok-msg> <bad-msg>
-    grep -qE "$1" "$SK"; local rc=$?
+  has() {  # <regex> <ok-msg> <bad-msg>  (-e so a pattern starting with - is not an option)
+    grep -qE -e "$1" "$SK"; local rc=$?
     if [ "$rc" -eq 0 ]; then ok "$2"
     elif [ "$rc" -eq 1 ]; then bad "$3"
     else bad "grep failed reading SKILL.md (rc=$rc) for: $1"; fi
   }
-  has -- '--recover' "SKILL.md documents the --recover flag" "SKILL.md should document --recover"
+  has '--recover' "SKILL.md documents the --recover flag" "SKILL.md should document --recover"
   has 'resumable=recoverable' "SKILL.md keys the Recover offer on resumable=recoverable" "SKILL.md should mention resumable=recoverable"
   has 'Recover' "SKILL.md names the Recover option" "SKILL.md should name a Recover option"
   has 'treats the halt as an artifact|as an artifact' "SKILL.md states recovery treats the halt as an artifact" "SKILL.md should state the halt-is-an-artifact framing"
