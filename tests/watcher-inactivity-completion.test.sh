@@ -162,7 +162,13 @@ EOF
   out="$WT/out.txt"
   ( cd "$WT/repo" && THROUGHLINE_WATCH_BUILD_SCRIPT="$WT/scripts/stub.sh" \
       THROUGHLINE_WATCH_POLL_SECS=1 THROUGHLINE_WATCH_MAX_SECS=60 \
-      bash "$WATCH" >"$out" 2>&1 )
+      bash "$WATCH" >"$out" 2>&1 ) &
+  wpid=$!
+  # Bounded wait: stub exits immediately (PID-gone); 10s ceiling prevents a
+  # PID-gone regression from blocking the aggregator (no-hang discipline).
+  i=0; while kill -0 "$wpid" 2>/dev/null && [ "$i" -lt 10 ]; do sleep 1; i=$((i+1)); done
+  if kill -0 "$wpid" 2>/dev/null; then bad "watcher still alive after 10s ceiling (PID-gone check regressed)"; kill "$wpid" 2>/dev/null; fi
+  wait "$wpid" 2>/dev/null
   ln1="$(grep '^IMPLEMENT_RUN_COMPLETE' "$out" 2>/dev/null)"
   case "$ln1" in *"state=done"*) ok "PID-gone exit passes run.json state=done through" ;; *) bad "expected state=done passthrough on PID-gone ($ln1)" ;; esac
   case "$ln1" in *"state=watcher-timeout"*) bad "a clean PID-gone exit must NOT report watcher-timeout ($ln1)" ;; *) ok "PID-gone exit is not mislabeled watcher-timeout" ;; esac
