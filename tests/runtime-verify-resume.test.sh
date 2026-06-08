@@ -191,6 +191,23 @@ echo "[§4] resume accepted after revision: integration merged, only verify-runt
   case ",$done_list," in *,build,* | build,* ) ok "resume done-list includes build (already complete, skipped)";; *) bad "build should be in the resume done-list (got '$done_list')";; esac
 ) || true
 
+# ===========================================================================
+# §6: skills/implement/SKILL.md documents verify-unobservable as a resumable
+# cause with its plan-revised resume precondition (FR-64; mirrors the
+# structural-finding entry's "requires the resolving TDD revision merged" note).
+echo "[§6] SKILL.md documents verify-unobservable + its plan-revised resume precondition"
+( SK="$REPO/skills/implement/SKILL.md"
+  [ -f "$SK" ] || { bad "SKILL.md not found"; exit 0; }
+  grep -q 'verify-unobservable' "$SK" \
+    && ok "SKILL.md names the verify-unobservable cause" || bad "SKILL.md should mention verify-unobservable"
+  grep -q 'resume-blocked-verify-plan-unrevised' "$SK" \
+    && ok "SKILL.md names the verify-plan-unrevised refusal cause" || bad "SKILL.md should mention resume-blocked-verify-plan-unrevised"
+  # The plan-revised precondition: a line tying verify-unobservable's resume to a
+  # revised+merged ## Verification plan.
+  grep -iqE 'verification plan.*(revis|merge)' "$SK" \
+    && ok "SKILL.md states the revised+merged Verification plan precondition" || bad "SKILL.md should state the plan-revised precondition"
+) || true
+
 # --- report ----------------------------------------------------------------
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
