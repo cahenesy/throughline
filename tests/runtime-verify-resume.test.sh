@@ -6,7 +6,15 @@
 # cause + a tdd_rev fingerprint, mirroring the structural-finding resume of
 # TDD 0031. Covers the TDD's Verification plan §1–§6 with shared git/worktree
 # fixtures + a stub runtime-verify command, following the fixture pattern of
-# tests/honest-review-scope-structural-resume.test.sh.
+# tests/honest-review-scope-structural-resume.test.sh. Stub `verify_runtime_one`
+# means no model or tokens are needed.
+#
+#   §5 verify-unobservable is admitted by the closed FR-63 halt-cause enum
+#   §2 status.sh surfaces it (--check-paused resumable=blocked; no unknown-cause warning)
+#   §1 a runtime-verify BLOCKED verdict records a resumable verify-unobservable halt
+#   §3 resume refused while the verification plan is unrevised (verify-plan-unrevised)
+#   §4 resume accepted after revision: integration merged, only verify-runtime re-runs
+#   §6 SKILL.md documents the cause + its plan-revised resume precondition
 #
 # Run: bash tests/runtime-verify-resume.test.sh
 set -uo pipefail
@@ -188,7 +196,7 @@ echo "[§4] resume accepted after revision: integration merged, only verify-runt
     && ok "branch_head_at_pause advanced to the post-merge head" || bad "branch_head_at_pause should equal the post-merge head"
   var="$(_resume_gates_var 0035-fix)"; done_list="${!var:-}"
   case ",$done_list," in *,verify-runtime,*) bad "verify-runtime must NOT be in the resume done-list (it must re-run)";; *) ok "resume done-list excludes verify-runtime (it re-runs)";; esac
-  case ",$done_list," in *,build,* | build,* ) ok "resume done-list includes build (already complete, skipped)";; *) bad "build should be in the resume done-list (got '$done_list')";; esac
+  case ",$done_list," in *,build,*) ok "resume done-list includes build (already complete, skipped)";; *) bad "build should be in the resume done-list (got '$done_list')";; esac
 ) || true
 
 # ===========================================================================
