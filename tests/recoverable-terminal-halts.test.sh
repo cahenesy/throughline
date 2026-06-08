@@ -103,6 +103,149 @@ echo "[S2] _reset_rework_attempts resets rework_attempts + re_review_attempts to
   [ "$rc2" -ne 0 ] && ok "_reset_rework_attempts returns non-zero on a missing fragment" || bad "missing fragment should return non-zero"
 ) || true
 
+# Shared fixture for the accept paths: a master (integration) + build/x branch
+# with one build-output commit. Leaves PWD on build/x, exports STATE_DIR/
+# INTEGRATION/etc, sets FEAT_HEAD. Mirrors runtime-verify-resume.test.sh's
+# _setup_unobservable_halt (minus the tdd_rev revision machinery — budget /
+# ci-checks recovery has no plan-revision precondition). Call AFTER sourcing.
+_setup_recover_fixture() {  # <dir>
+  local d="$1"
+  mkdir -p "$d/state.d" "$d/repo"; cd "$d/repo" || return 1
+  export STATE_DIR="$d/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" \
+         INTEGRATION="master" CHANGE="ci" LOGDIR="$d" RESUME=1
+  git init -q -b master; git config user.email t@t.t; git config user.name t
+  mkdir -p docs/tdd src
+  printf '# TDD 0039\nStatus: draft\n' > docs/tdd/0039-x.md
+  printf 'orig\n' > src/a.txt
+  git add -A; git commit -qm "build start" >/dev/null
+  git checkout -q -b build/x
+  printf 'build\n' >> src/a.txt
+  git add -A; git commit -qm "build output" >/dev/null
+  FEAT_HEAD="$(git rev-parse HEAD)"
+}
+
+# ===========================================================================
+# §1: budget-exhausted, NO --recover → terminal. _resume_from returns 0 (not
+# accepted as resumable) and the fragment is NOT flipped to paused — i.e.
+# terminal-by-default is preserved (NFR-4).
+echo "[§1] budget-exhausted, no --recover → terminal (not flipped)"
+( d="$ROOT/g1"; mkdir -p "$d/state.d"; cd "$d" || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$d/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$d" RESUME=1 RECOVER=0
+  TDDS=(); THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  _write_tdd_fragment 0039-x 39 docs/tdd/0039-x.md 1 blocked review 1000 1000 "build/x" "" log "" \
+    "" "build,test-first,verify,verify-runtime" "" "abc" "" "" "" "" '{"review:6":3}' "" "" "" "" "[]" "0" "{}"
+  set_halt_cause 0039-x rework-budget-exhausted review ""
+  F="$STATE_DIR/0039-x.json"; before="$(cat "$F")"
+  _resume_from 0039-x; rc=$?
+  [ "$rc" -eq 0 ] && ok "no --recover: _resume_from returns 0 (not accepted)" || bad "should return 0 (got $rc)"
+  [ "$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$F" | head -1)" = "blocked" ] && ok "fragment stays blocked (terminal-by-default)" || bad "should stay blocked"
+  [ "$(cat "$F")" = "$before" ] && ok "fragment unchanged (no flip, no reset)" || bad "fragment must be unchanged without --recover"
+) || true
+
+# ===========================================================================
+# §2: budget-exhausted, --recover → accepted + budget reset. The fragment flips
+# to paused/transient AND rework_attempts + re_review_attempts are now {} (fresh
+# budget); review re-runs (NOT in the resume done-list); RESUME_RECOVER_CAUSE is
+# set for the driver report.
+echo "[§2] budget-exhausted, --recover → accepted + budgets reset"
+( TDDS=(); THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  _setup_recover_fixture "$ROOT/g2" || { bad "setup failed"; exit 0; }
+  export RECOVER=1
+  _write_tdd_fragment 0039-x 39 docs/tdd/0039-x.md 1 blocked review 1000 1000 "build/x" "" log "" \
+    "" "build,test-first,verify,verify-runtime" "" "$FEAT_HEAD" "" "" "" "" '{"review:6":3}' "" "" "" "" "[]" "0" '{"review:6":2}'
+  set_halt_cause 0039-x rework-budget-exhausted review ""
+  F="$STATE_DIR/0039-x.json"; RESUME_RECOVER_CAUSE=""
+  _resume_from 0039-x; rc=$?
+  [ "$rc" -eq 0 ] && ok "resume accepted (rc=0) under --recover" || bad "should accept rc=0 (got $rc, refuse=${RESUME_REFUSE_CAUSE:-})"
+  [ "$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$F" | head -1)" = "paused" ] && ok "fragment flipped to paused/transient" || bad "should be paused"
+  [ "$(_read_fragment_raw_object "$F" rework_attempts)" = '{}' ] && ok "rework_attempts reset to {}" || bad "rework_attempts should be reset (got '$(_read_fragment_raw_object "$F" rework_attempts)')"
+  [ "$(_read_fragment_raw_object "$F" re_review_attempts)" = '{}' ] && ok "re_review_attempts reset to {}" || bad "re_review_attempts should be reset (got '$(_read_fragment_raw_object "$F" re_review_attempts)')"
+  [ "${RESUME_RECOVER_CAUSE:-}" = "rework-budget-exhausted" ] && ok "RESUME_RECOVER_CAUSE=rework-budget-exhausted" || bad "cause should be rework-budget-exhausted (got '${RESUME_RECOVER_CAUSE:-}')"
+  var="$(_resume_gates_var 0039-x)"; done_list="${!var:-}"
+  case ",$done_list," in *,review,*) bad "review must NOT be in the resume done-list (it re-runs with the fresh budget)";; *) ok "done-list excludes review (re-runs with reset budget)";; esac
+  case ",$done_list," in *,verify-runtime,*) ok "done-list includes verify-runtime (skipped)";; *) bad "verify-runtime should be in done-list (got '$done_list')";; esac
+) || true
+
+# ===========================================================================
+# §3: ci-checks failed, --recover → re-enters at verify; no --recover → terminal.
+# Seed status:failed, note "ci-checks.sh FAIL", gates_completed [build,test-first]
+# (NOT verify). RECOVER=0 leaves it terminal; RECOVER=1 flips to paused with the
+# verify gate ABSENT from the done-list (so the verify/ci-checks gate re-runs).
+echo "[§3] ci-checks failed, --recover → re-enters at verify; no --recover → terminal"
+( TDDS=(); THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  _setup_recover_fixture "$ROOT/g3" || { bad "setup failed"; exit 0; }
+  _write_tdd_fragment 0039-x 39 docs/tdd/0039-x.md 1 failed verify 1000 1000 "build/x" "" log "ci-checks.sh FAIL (tests/typecheck/lint)" \
+    "" "build,test-first" "" "$FEAT_HEAD" "" "" "" "" "" "" "" "" "" "[]" "0" "{}"
+  F="$STATE_DIR/0039-x.json"; before="$(cat "$F")"
+  export RECOVER=0
+  _resume_from 0039-x; rc0=$?
+  [ "$rc0" -eq 0 ] && ok "no --recover: ci-checks failed returns 0 (terminal)" || bad "should return 0 (got $rc0)"
+  [ "$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$F" | head -1)" = "failed" ] && ok "no --recover: stays failed" || bad "should stay failed"
+  [ "$(cat "$F")" = "$before" ] && ok "no --recover: fragment unchanged" || bad "fragment must be unchanged without --recover"
+  export RECOVER=1; RESUME_RECOVER_CAUSE=""
+  _resume_from 0039-x; rc1=$?
+  [ "$rc1" -eq 0 ] && ok "--recover: ci-checks failed accepted (rc=0)" || bad "should accept rc=0 (got $rc1, refuse=${RESUME_REFUSE_CAUSE:-})"
+  [ "$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$F" | head -1)" = "paused" ] && ok "--recover: flipped to paused" || bad "should be paused"
+  [ "${RESUME_RECOVER_CAUSE:-}" = "ci-checks" ] && ok "RESUME_RECOVER_CAUSE=ci-checks" || bad "cause should be ci-checks (got '${RESUME_RECOVER_CAUSE:-}')"
+  var="$(_resume_gates_var 0039-x)"; done_list="${!var:-}"
+  case ",$done_list," in *,verify,*) bad "verify must NOT be in the done-list (the verify/ci-checks gate re-runs)";; *) ok "done-list excludes verify (verify gate re-runs)";; esac
+  case ",$done_list," in *,build,*) ok "done-list includes build (skipped)";; *) bad "build should be in done-list (got '$done_list')";; esac
+) || true
+
+# ===========================================================================
+# §4: divergence-guard re-baseline. A (paused) fragment recording an OLD,
+# now-non-ancestor sha while the branch ref points at a NEWER sha. RECOVER=1
+# re-baselines to the live tip and accepts (no resume-blocked-branch-divergence);
+# RECOVER=0 on the SAME divergence still refuses (the re-baseline is gated on RECOVER).
+echo "[§4] divergence-guard re-baseline under --recover (refuses without it)"
+_setup_divergence() {  # <dir>; leaves PWD on build/x; OLD=non-ancestor sha, build/x at NEW
+  local d="$1"
+  mkdir -p "$d/state.d" "$d/repo"; cd "$d/repo" || return 1
+  export STATE_DIR="$d/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$d" RESUME=1
+  git init -q -b master; git config user.email t@t.t; git config user.name t
+  mkdir -p src; printf 'm0\n' > src/a.txt; git add -A; git commit -qm "M0" >/dev/null
+  git checkout -q -b build/x
+  printf 'A\n' >> src/a.txt; git add -A; git commit -qm "A (orphaned by the reset below)" >/dev/null
+  OLD="$(git rev-parse HEAD)"
+  git reset --hard HEAD~1 >/dev/null 2>&1   # back to M0; A is no longer on the branch
+  printf 'B\n' >> src/a.txt; git add -A; git commit -qm "B (A is now a non-ancestor)" >/dev/null
+  NEW="$(git rev-parse HEAD)"
+}
+( TDDS=(); THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  _setup_divergence "$ROOT/g4" || { bad "setup failed"; exit 0; }
+  F="$STATE_DIR/0039-x.json"
+  seed() { _write_tdd_fragment 0039-x 39 docs/tdd/0039-x.md 1 paused review 1000 1000 "build/x" "" log "" \
+      transient "build,test-first,verify,verify-runtime" "" "$OLD" "" "" "" "" "" "" "" "" "" "[]" "0" "{}"; }
+  seed; export RECOVER=0; RESUME_REFUSE_CAUSE=""
+  _resume_from 0039-x; rc0=$?
+  [ "$rc0" -eq 3 ] && ok "no --recover: non-ancestor divergence refused (rc=3)" || bad "should refuse rc=3 (got $rc0)"
+  [ "${RESUME_REFUSE_CAUSE:-}" = "resume-blocked-branch-divergence" ] && ok "refuse cause = resume-blocked-branch-divergence" || bad "cause should be branch-divergence (got '${RESUME_REFUSE_CAUSE:-}')"
+  seed; export RECOVER=1; RESUME_REFUSE_CAUSE=""
+  _resume_from 0039-x; rc1=$?
+  [ "$rc1" -eq 0 ] && ok "--recover: re-baselines and accepts (rc=0, no divergence refusal)" || bad "should accept rc=0 (got $rc1, refuse=${RESUME_REFUSE_CAUSE:-})"
+  [ "$(_read_fragment_field "$F" branch_head_at_pause)" = "$NEW" ] && ok "branch_head_at_pause re-baselined to the live tip" || bad "branch_head should be re-baselined to NEW (got '$(_read_fragment_field "$F" branch_head_at_pause)')"
+) || true
+
+# ===========================================================================
+# §6: ambiguous failed → not accepted. status:failed with NO ci-checks note
+# cannot be classified as a recoverable ci-checks failure; under --recover
+# _resume_from refuses (resume-recover-cause-ambiguous) and the fragment stays
+# terminal (NFR-4: never guess a recovery).
+echo "[§6] ambiguous failed (no ci-checks note) → refused resume-recover-cause-ambiguous"
+( d="$ROOT/g6"; mkdir -p "$d/state.d"; cd "$d" || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$d/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$d" RESUME=1 RECOVER=1
+  TDDS=(); THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  _write_tdd_fragment 0039-x 39 docs/tdd/0039-x.md 1 failed review 1000 1000 "build/x" "" log "" \
+    "" "build,test-first,verify" "" "abc" "" "" "" "" "" "" "" "" "" "[]" "0" "{}"
+  F="$STATE_DIR/0039-x.json"; before="$(cat "$F")"
+  RESUME_REFUSE_CAUSE=""
+  _resume_from 0039-x; rc=$?
+  [ "$rc" -eq 3 ] && ok "ambiguous failed under --recover refused (rc=3)" || bad "should refuse rc=3 (got $rc)"
+  [ "${RESUME_REFUSE_CAUSE:-}" = "resume-recover-cause-ambiguous" ] && ok "refuse cause = resume-recover-cause-ambiguous" || bad "cause should be ambiguous (got '${RESUME_REFUSE_CAUSE:-}')"
+  [ "$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$F" | head -1)" = "failed" ] && ok "fragment stays failed (terminal)" || bad "should stay failed"
+  [ "$(cat "$F")" = "$before" ] && ok "fragment unchanged (refusal persists nothing)" || bad "fragment must be unchanged on ambiguous refusal"
+) || true
+
 # --- report ----------------------------------------------------------------
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
