@@ -47,6 +47,18 @@ are untouched).
 The poll loop (currently `while :; kill -0 BUILD_PID || break; WOKEN check;
 elapsed >= MAX check; sleep; elapsed += POLL`) is changed:
 - **Drop** the `elapsed` accumulator and the `elapsed >= MAX` branch.
+- **Capture `WATCH_START="$(date +%s)"` once BEFORE the poll loop** — the epoch
+  second the watcher began. This is the startup-window guard (see below); it is a
+  loop-invariant, read every iteration, never reassigned.
+  - **Ordering invariant (load-bearing).** `WATCH_START` is captured immediately
+    before the loop — i.e. AFTER the `nohup bash "$BUILD_SCRIPT"` launch but
+    before the first probe. The new build cannot have written anything under
+    `latest/` at capture time: it must first start, acquire the single-run lock,
+    and run `state_init` (which relinks `latest` and writes the new `run.json`),
+    all of which happen strictly after `nohup` returns. Therefore every
+    current-run write necessarily carries an mtime `≥ WATCH_START`, and every
+    file with mtime `< WATCH_START` is provably a stale prior-run artifact — which
+    is exactly what makes `newest < WATCH_START` a sound "skip the wedge" signal.
 - **Add** an inactivity probe each iteration. `MAX` is reinterpreted as the
   inactivity window (same env var `THROUGHLINE_WATCH_MAX_SECS`, same default;
   the meaning shifts from "total run cap" to "max silence before declaring
@@ -58,8 +70,22 @@ elapsed >= MAX check; sleep; elapsed += POLL`) is changed:
     rewritten at every status/stage transition). Implementation: a single
     `find "$LOGS_DIR/latest/" -type f -printf '%T@\n'` piped to a numeric
     max (or `stat`-based equivalent), taking the integer seconds.
+  - **Startup-window guard (REQUIRED — fixes the stale-`latest` false-wedge).**
+    The watcher launches and enters this loop BEFORE `implement.sh` relinks
+    `latest` to the new run dir (the relink happens at the END of `state_init`,
+    `implement.sh:302`, after lib-sourcing + single-run-lock acquisition + the
+    per-TDD queue-discovery loop at `implement.sh:281-285`). During that window
+    `"$LOGS_DIR/latest/"` still points at the PREVIOUS run's dir with its old
+    mtimes. If the prior run finished `≥ MAX` ago, an unguarded `stale ≥ MAX`
+    would fire on iteration 1 and false-wedge before the new build has written a
+    byte. Guard: **treat any `newest < WATCH_START` as "the current run has not
+    written yet" and SKIP the wedge check this iteration** (do not exit) — a file
+    older than the watcher's own launch cannot be evidence of inactivity in the
+    current run. Once `state_init` relinks `latest` and writes `run.json`
+    (mtime `≥ WATCH_START`), the probe measures the current run normally. The
+    PID-gone break remains the guaranteed terminator throughout.
   - `stale = now - newest` (both epoch seconds, same host clock).
-  - If `stale >= MAX` → set `WEDGED=1` and break.
+  - If `newest >= WATCH_START` AND `stale >= MAX` → set `WEDGED=1` and break.
 - The PID-gone (`kill -0 BUILD_PID` fails) and `WOKEN` (SIGUSR1) breaks are
   unchanged and keep their current precedence (checked before the inactivity
   probe each iteration), so a clean completion or crash still exits immediately.
@@ -116,14 +142,19 @@ its own give-up signal on stdout). The inactivity probe is transient per-poll
 ## Sequencing / implementation plan
 
 1. **implement-watch.sh — poll loop**: replace the total-elapsed bound with the
-   inactivity probe (Component 1).
+   inactivity probe, including the `WATCH_START` capture before the loop and the
+   `newest < WATCH_START` startup-window guard inside the probe (Component 1).
 2. **implement-watch.sh — emit**: add `watcher-timeout` to the vocabulary and
    force it on `WEDGED=1` (Component 2).
 3. **skills/implement/SKILL.md**: add the terminal-vs-non-terminal classification
    and the re-arm-poll instruction to the completion callback (Component 3).
 4. **Eval**: add `tests/watcher-inactivity-completion.test.sh` driving the
    watcher against a stub build via `THROUGHLINE_WATCH_BUILD_SCRIPT` with a short
-   `THROUGHLINE_WATCH_MAX_SECS`/`POLL`.
+   `THROUGHLINE_WATCH_MAX_SECS`/`POLL`. Includes the §6 stale-prior-run-`latest`
+   case (pre-seed `run0/` with old mtimes, `latest -> run0`, assert no
+   iteration-1 false wedge), and every watcher-launching case uses the bounded
+   background pattern (no synchronous invocation that can hang the aggregator —
+   the §2 no-hang discipline).
 5. **Wire the eval into the aggregator (do NOT defer):** add the
    `tests/watcher-inactivity-completion.test.sh` invocation to
    `tests/implement-gate.test.sh` in the SAME step (`*_FAIL` accumulator +
@@ -139,6 +170,17 @@ its own give-up signal on stdout). The inactivity probe is transient per-poll
   AND whose run dir is unreadable for the whole run would not wedge-exit; this
   is acceptable (a live PID means the build is running; a dead PID always
   exits). No silent total-time cap is reintroduced.
+- **`latest/` exists but points at a STALE prior-run directory** (the startup
+  window: the watcher entered the poll loop before `implement.sh`'s `state_init`
+  relinked `latest` to the new run). `find` yields the prior run's newest mtime,
+  which can be `≥ MAX` old → an unguarded probe false-wedges on iteration 1,
+  emitting `watcher-timeout` before the current build writes anything. This is
+  the regression the **startup-window guard** (Component 1) closes: `newest <
+  WATCH_START` means no current-run file exists yet, so the wedge check is
+  SKIPPED until `state_init` relinks `latest` and writes a fresh `run.json`. The
+  PID-gone break still terminates a build that genuinely dies during this window.
+  Without the guard, this fires reliably on any re-run started `> MAX` after the
+  previous run completed (e.g. a "next day" build at the 4h default).
 - **A legitimately silent gap** (e.g. a rate-limit backoff longer than MAX). At
   the 4h default this is effectively indistinguishable from wedged; emitting
   `watcher-timeout` (not a false `done`) keeps it honest — and this is where
@@ -190,9 +232,23 @@ pointing the watcher at a stub build via `THROUGHLINE_WATCH_BUILD_SCRIPT` with
    `watcher-timeout`), the re-arm-poll instruction (anchor: `kill -0` + a
    background poll), and the "do NOT run the candidate-learnings review on a
    non-terminal state" instruction.
+6. **Stale prior-run `latest/` at startup → NO false wedge (the regression
+   guard).** Pre-seed a `run0/` dir under `latest/`'s parent containing a
+   `state.d/run.json` (and a build log) whose mtimes are set WELL in the past
+   (`> MAX` ago — e.g. `touch -d` to `WATCH_START - 10*MAX`), and point
+   `latest -> run0` BEFORE launching the watcher. The stub build stays alive and,
+   after a short delay simulating `state_init`, relinks `latest -> run1` and
+   writes a fresh `run.json` there. Observe: the watcher does NOT emit
+   `state=watcher-timeout` during the stale-`latest` window (iteration 1 sees
+   `newest < WATCH_START` and skips the wedge check) — asserted via a
+   process-alive check (`kill -0 <WATCHER_PID>` still succeeds through the first
+   polls), NOT a string-absent grep. After the relink + fresh write, normal
+   inactivity behaviour resumes (a later silence still wedges with
+   `watcher-timeout`). This case is what makes the finding-1 regression visible to
+   the suite; without the guard the watcher would wedge-exit on iteration 1 here.
 
 **Mechanical-check robustness (binding on this eval — L-001/L-002 mitigations).**
-The §1–§5 checks MUST fail closed and assert specifically (see
+The §1–§6 checks MUST fail closed and assert specifically (see
 `docs/tdd/LEARNINGS.md` L-001 `fragile-inversion` and L-002
 `misleading-diagnostic`): any absence/removal assertion distinguishes grep
 exit 1 (string absent) from exit ≥2 (file unreadable) and fails the eval on the
@@ -200,6 +256,18 @@ latter; every target file is asserted readable before its content checks run (no
 unconditional check after an early `return`/`exit` on a missing file); and every
 anchor is specific to text THIS change introduces (e.g. `watcher-timeout`), never
 a phrase already present in `implement-watch.sh`/`SKILL.md`.
+
+**No-hang discipline (binding — every timing-driven case).** EVERY case that
+launches the watcher (§1, §2, §3, §6 — any that exercises the poll loop) MUST run
+it as a BACKGROUND process (`… &`, capture `WATCHER_PID`) and gate progress on a
+BOUNDED wait loop with a hard ceiling (e.g. ≤ `N` iterations of `sleep`, then
+`kill "$WATCHER_PID"` and fail the case), NEVER a synchronous foreground
+invocation. A synchronous invocation whose stub ends in a long `sleep` (the §2
+wedge stub) would hang the whole `tests/implement-gate.test.sh` aggregator for the
+stub's full duration on any inactivity-probe regression; the bounded background
+pattern caps that blast radius to the test's own ceiling. §1 already uses this
+pattern — §2/§3/§6 MUST match it (no `bash "$WATCH"` without `&` + a timeout
+guard).
 
 **Expected observations (PASS):** every numbered point yields the cited result.
 
@@ -209,7 +277,7 @@ a phrase already present in `implement-watch.sh`/`SKILL.md`.
 |---|---|
 | FR-72 (gap-closure: the run-completion watcher must signal *actual* completion, not a wall-clock timeout, so the post-run callback/learnings review runs against a finished run) | Component 1 (inactivity bound — a progressing build never trips it) + Component 3 (the callback runs the review only on a terminal state). Verification §1, §2, §5. |
 | FR-39 (gap-closure: detached-run liveness/recovery — a watcher exit must not strand a live build without a recovery path) | Component 2 (`watcher-timeout` distinct signal) + Component 3 (re-arm a PID poll when the build is still alive; else point at the FR-39 fallback review). Verification §2, §5. |
-| NFR-4 (state honesty: a running build is never reported as a normal completion) | Component 2: a wedge exit emits `watcher-timeout`, never `running`-as-done or a false `done`; PID-gone/USR1 still passthrough the true terminal state. Verification §2, §3, §4. |
+| NFR-4 (state honesty: a running build is never reported as a normal completion) | Component 2: a wedge exit emits `watcher-timeout`, never `running`-as-done or a false `done`; PID-gone/USR1 still passthrough the true terminal state. The Component 1 `WATCH_START` startup-window guard prevents the inverse dishonesty — a brand-new run false-wedged on a stale prior-run `latest/` before it has written anything. Verification §2, §3, §4, §6. |
 
 No gaps.
 
@@ -246,7 +314,7 @@ cross-cutting decision.
 
 ## Touched files
 
-- `scripts/implement-watch.sh` — inactivity-based poll loop (drop total-elapsed) + `watcher-timeout` distinct wedge state on emit.
+- `scripts/implement-watch.sh` — inactivity-based poll loop (drop total-elapsed) + `WATCH_START` startup-window guard (no stale-`latest` false-wedge) + `watcher-timeout` distinct wedge state on emit.
 - `skills/implement/SKILL.md` — completion callback classifies terminal vs non-terminal state; re-arms a build-PID poll (and suppresses the learnings review) on a non-terminal exit.
 - `tests/watcher-inactivity-completion.test.sh` — new eval (stub build via `THROUGHLINE_WATCH_BUILD_SCRIPT`; the four watcher-exit paths + the skill greps).
 - `tests/implement-gate.test.sh` — wire the new eval into the aggregator.
@@ -255,9 +323,9 @@ Total: 4 files touched.
 
 ## Expected diff size
 
-- `scripts/implement-watch.sh` — ~38 lines added/changed (replace the elapsed accumulator + `>= MAX` branch with the inactivity probe; add `watcher-timeout` to the vocabulary and force it on wedge).
-- `skills/implement/SKILL.md` — ~18 lines added (terminal/non-terminal classification + re-arm-poll instruction).
-- `tests/watcher-inactivity-completion.test.sh` — ~190 lines added (new eval: 4 timing-driven watcher-exit cases via a stub build + 3 SKILL.md grep checks, with fail-closed assertions and file-readable guards per L-001/L-002).
-- `tests/implement-gate.test.sh` — ~14 lines added (aggregator wire-in).
+- `scripts/implement-watch.sh` — ~75 lines added/changed (replace the elapsed accumulator + `>= MAX` branch with the inactivity probe; the `WATCH_START` capture + the `newest < WATCH_START` startup-window guard; add `watcher-timeout` to the vocabulary and force it on wedge).
+- `skills/implement/SKILL.md` — ~48 lines added (terminal/non-terminal classification + re-arm-poll instruction + the PID-source note).
+- `tests/watcher-inactivity-completion.test.sh` — ~290 lines added (new eval: the timing-driven watcher-exit cases via a stub build incl. the §6 stale-`latest` startup-window case + 3 SKILL.md grep checks; every watcher-launching case uses the bounded background pattern; fail-closed assertions and file-readable guards per L-001/L-002).
+- `tests/implement-gate.test.sh` — ~38 lines added (aggregator wire-in).
 
-Total expected diff: ~260 lines across 4 files. No exceptions needed (each file is under the 300-line per-file bound).
+Total expected diff: ~451 lines across 4 files. No exceptions needed (each file is under the 300-line per-file bound).
