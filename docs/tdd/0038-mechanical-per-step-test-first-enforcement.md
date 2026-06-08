@@ -1,9 +1,17 @@
 # TDD 0038: Mechanical per-step test-first enforcement
 
 Status: draft
-PRD refs: FR-15 (gap-closure: FR-15(a) enforcement), FR-72, FR-73
+PRD refs: FR-15 (gap-closure: FR-15(a) enforcement)
 PRD-rev: d289607
 ADR constraints: 0005, 0006, 0007
+
+> **Split note (blocker resolution).** The original 0038 also carried the
+> per-step learning-capture (FR-72/73) as "Component 4". A build of that TDD
+> BLOCKED: persisting the per-step findings requires modifying
+> `scripts/lib/state.sh` (fragment carry-forward) — a file the TDD never
+> declared — and the combined change exceeded the 8-file scope bound. The
+> learning-capture half is now **[[0042]]** (per-step BLOCK learning capture),
+> which stacks on this TDD. This TDD is FR-15(a) per-step *enforcement* only.
 
 ## Approach
 
@@ -24,7 +32,7 @@ instance — but enforcement is **reactive and model-dependent**: the slip is
 committed, then a later review BLOCK forces a revert→redo, repeatedly.
 
 This TDD tightens *enforcement* of FR-15(a). The requirement (the "what") is
-unchanged; this is the "how". Four coupled surfaces:
+unchanged; this is the "how". Three coupled surfaces:
 
 1. **Mechanical per-step pre-check** (`gates.sh`) — before the model per-step
    review runs, a deterministic git-history check on the step's commit range. A
@@ -36,11 +44,22 @@ unchanged; this is the "how". Four coupled surfaces:
 3. **Aggregator wire-in rule** (`build-prompt.md`) — standardize the gray zone
    that caused reviewer disagreement: wiring a new eval into the CI aggregator is
    new gating behavior and requires a failing wire-in test (not `SKIPPED`).
-4. **Miner blind-spot fix** (`learnings.sh`) — per-step BLOCK findings are never
-   recorded to a mined location, so recurring per-step classes
-   (`failing-test-first-violation`, `after-the-fact-test`) are invisible to
-   FR-72. Record them and mine them, so the pattern flows to `/tdd-author`
-   (FR-73).
+
+**Default-on, and what it breaks (the honest part).** The per-step pre-check
+honors the SAME `THROUGHLINE_REQUIRE_TEST_FIRST` knob as the whole-build gate,
+and like that gate it is **on by default**. Turning it on is NOT additive to the
+existing test suite: four existing fixtures
+(`tests/continuous-in-build-review.test.sh`,
+`tests/build-defensive-norms.test.sh`, `tests/step-commit-protocol.test.sh`,
+`tests/coproc-verdict-resilience.test.sh`) drive `_per_step_review_loop` with
+`step(N): work` commits that have **no** `test(failing):` precursor — they
+exercise the coproc/handshake/protocol/review mechanics, for which test-first
+ordering is irrelevant. Under default-on per-step enforcement each would now hit
+the deterministic BLOCK before reaching the path it asserts. The resolution
+(Component 4 below) is to make those four fixtures **export
+`THROUGHLINE_REQUIRE_TEST_FIRST=0`**, since the test-first dimension is
+orthogonal to what they test; the new eval (`tests/test-first-per-step.test.sh`)
+is then the sole knob-ON exerciser of the pre-check.
 
 ADR alignment: **0006** — the per-step verdict is grounded in verifiable
 artifacts (git commit order + the STEP_COMMIT sentinel), never author
@@ -95,13 +114,12 @@ consolidated review, TDD 0019/0020).
       set `verdict` to a fixed deterministic line —
       `STEP_REVIEW: BLOCK test-first: step <id> commits implementation in <base>..<sha> with no preceding test(failing): commit (FR-15a). Add the failing test as a separate test(failing): <behavior> commit, then re-emit STEP_COMMIT: <id> <new-sha> for the same step. If this step is genuinely no-new-behavior, re-emit as STEP_COMMIT: <id> <sha> TEST_FIRST_SKIPPED:<reason>.` —
       write it to the build's stdin via the existing `_coproc_write` path (same
-      SIGPIPE-safe, clock-pause handling as the review-verdict write), record the
-      block (§4), and `continue` the loop. **No review `claude -p` is spawned**
-      (deterministic + token-saving).
+      SIGPIPE-safe, clock-pause handling as the review-verdict write), and
+      `continue` the loop. **No review `claude -p` is spawned** (deterministic +
+      token-saving). **Recording-site marker (for [[0042]]):** this is one of the
+      two per-step BLOCK sites where 0042 adds `step_block_log` recording; this
+      TDD writes the verdict only and records nothing.
     - **Pass:** fall through to `_run_per_step_review` exactly as today.
-  - A `TEST_FIRST_SKIPPED:` step is recorded to the fragment as telemetry (§4,
-    `skipped:true`) so a build that skips every step is observable to the human /
-    consolidated gate.
 
 ### 2. Preventive self-gate — `scripts/build-prompt.md`
 
@@ -128,59 +146,48 @@ wire-in that makes it pass. Only pure no-op glue that does not change the
 AND-chain may `SKIP`. This standardizes the reviewer-disagreement source on
 enforce.
 
-### 4. Miner blind-spot fix — `scripts/lib/gates.sh` + `scripts/lib/learnings.sh`
+### 4. Fixture reconciliation (default-on non-regression) — 4 existing tests
 
-- **Recording (`gates.sh`).** Per-step BLOCK findings are currently persisted
-  nowhere the miner reads (`findings` = consolidated + rework only;
-  `cleared_step_log` = *passing* review tags). Add a per-fragment array
-  `step_block_log`, appended on every per-step BLOCK:
-  - the §1 mechanical BLOCK appends
-    `{"pass_id":"step-<id>","severity":"major","pattern_tags":["failing-test-first-violation"],"summary":"no test(failing): precursor for step <id>","skipped":false}`;
-  - `_run_per_step_review`'s model BLOCK appends an entry whose `pattern_tags` are
-    harvested from the review log via the existing `_extract_pattern_tags`, with a
-    fixed `severity:"major"` (a per-step BLOCK is by definition a halting finding;
-    the review-log line carries only the top-level `REVIEW_RESULT:` verdict, not a
-    per-finding severity, so no per-finding severity extraction is invented), and
-    `summary` a one-line excerpt of the BLOCK reason;
-  - a `TEST_FIRST_SKIPPED:` step appends `{"pass_id":"step-<id>","skipped":true,...}`
-    (telemetry only; not mined).
-  Recording is additive — readers that do not know `step_block_log` (status.sh,
-  TDD 0023) ignore it (NFR-4: no existing consumer breaks).
-- **Mining (`learnings.sh`).** `detect_build_learnings` gains a second corpus
-  pass: after the `findings` loop, for each fragment it reads `step_block_log`
-  (new helper `_read_fragment_step_blocks`, mirroring `_read_fragment_findings`;
-  an absent or empty `step_block_log` returns the empty string and the loop skips
-  that fragment, exactly as `_read_fragment_findings` does for one with no
-  findings) and folds each non-skipped, non-nit entry's `pattern_tags` into the SAME
-  per-class accumulators (`C_slugs`/`C_steps`/`C_sevmin`/…). The existing
-  per-class distinct-TDD dedup (`C_slugs`) means a class appearing in both
-  `findings` and `step_block_log` for one TDD counts that TDD once; the threshold
-  (`_learnings_min`, ≥2 distinct TDDs) is unchanged. Result: a per-step class such
-  as `failing-test-first-violation` that recurs across ≥2 TDDs surfaces as a
-  candidate learning (FR-72) and thereby reaches `/tdd-author` (FR-73).
+Each of the four fixtures that drive `_per_step_review_loop` with impl-only
+`step(N): work` commits exports `THROUGHLINE_REQUIRE_TEST_FIRST=0` once, near the
+top (after the `THROUGHLINE_SOURCE_ONLY` source of `gates.sh`), with a one-line
+comment stating WHY (this fixture exercises coproc/protocol/review mechanics, not
+test-first ordering; the orthogonal per-step gate is disabled so the default-on
+pre-check from TDD 0038 §1 does not pre-empt the path under test):
+
+- `tests/continuous-in-build-review.test.sh` — §2 handshake cases (c1–c9, E1)
+  drive the loop with `step(N): work`.
+- `tests/build-defensive-norms.test.sh` — e4 / e4p / e5 cases.
+- `tests/step-commit-protocol.test.sh` — the `x5` real-sentinel case
+  (`STEP_COMMIT: 1`); the malformed `5b`/`<…>` cases never parse a step-id so the
+  pre-check is unreached, but the export is set once for the whole file for
+  uniformity.
+- `tests/coproc-verdict-resilience.test.sh` — s1 / s7a / s7b cases.
+
+The export is at file scope (not per-invocation) because none of these fixtures
+asserts test-first behavior; a single top-level export is the smallest honest
+change and cannot mask a real regression (the dedicated eval covers the gate ON).
 
 ## Data & state
 
-One additive per-fragment field, `step_block_log` (a JSON array, default `[]`),
-in each `state.d/<slug>.json` fragment. It is write-only telemetry consumed only
-by `detect_build_learnings`; no run-state status/stage transition depends on it,
-and no existing reader is changed. No run.json schema change. The whole-build
-`test_first_ok` gate, the flip verdict, and the halt taxonomy are untouched.
+No run-state schema change in this TDD. The per-step pre-check reads git history
+and the STEP_COMMIT sentinel only; it writes a verdict to the build's stdin (the
+existing `_coproc_write` path) and persists nothing. The `step_block_log`
+fragment field and its persistence/mining are **[[0042]]**, not here. The
+whole-build `test_first_ok` gate, the flip verdict, and the halt taxonomy are
+untouched.
 
 ## Sequencing / implementation plan
 
 1. Factor `_test_first_ok_range` from `test_first_ok` and wire the per-step
    pre-check into `_per_step_review_loop` (Component 1), including the optional
    `TEST_FIRST_SKIPPED:` sentinel parse and the deterministic no-model BLOCK.
-2. Add the `step_block_log` recording at both per-step BLOCK sites — the §1
-   mechanical BLOCK and `_run_per_step_review`'s model BLOCK (Component 4,
-   recording half).
-3. Extend `detect_build_learnings` with the `step_block_log` corpus pass and add
-   `_read_fragment_step_blocks` (Component 4, mining half).
-4. Add the preventive self-gate bullet and the aggregator wire-in rule to
+2. Add the preventive self-gate bullet and the aggregator wire-in rule to
    `build-prompt.md` (Components 2 + 3).
-5. Add the eval `tests/test-first-per-step.test.sh` and the miner-extension cases
-   in `tests/build-phase-learning-capture.test.sh`; wire the new eval into
+3. Add `export THROUGHLINE_REQUIRE_TEST_FIRST=0` (with the why-comment) to the
+   four existing per-step-loop fixtures (Component 4).
+4. Add the eval `tests/test-first-per-step.test.sh` (per-step routing, skip
+   token, sentinel compat, fixture-non-regression); wire the new eval into
    `tests/implement-gate.test.sh` — the wire-in itself carries a `test(failing):`
    asserting the aggregator exits non-zero when the new eval is stubbed to fail
    (dogfooding Component 3).
@@ -196,54 +203,50 @@ and no existing reader is changed. No run.json schema change. The whole-build
   is the last-cleared SHA, so a stale prior `test(failing):` does NOT satisfy the
   current step — matching the per-step review's own scope (TDD 0020).
 - **Malformed skip token** (`TEST_FIRST_SKIPPED:` with no reason). The step-id +
-  sha still parse (token ignored by the 0032 extractor); `skip_present=1` but the
-  empty `<reason>` is recorded as `unspecified`. The build proceeds; the human /
-  consolidated gate sees an unjustified skip in `step_block_log`.
-- **`THROUGHLINE_REQUIRE_TEST_FIRST=0`** (a batch of pure refactors). The
-  per-step pre-check no-ops exactly as the whole-build gate does — one knob, both
-  scopes.
+  sha still parse (token ignored by the 0032 extractor); `skip_present=1` and the
+  build proceeds. The empty `<reason>` is the build's responsibility to make
+  meaningful; the human / consolidated gate still sees an impl-only range.
+- **`THROUGHLINE_REQUIRE_TEST_FIRST=0`** (a batch of pure refactors, OR the four
+  reconciled fixtures). The per-step pre-check no-ops exactly as the whole-build
+  gate does — one knob, both scopes.
 - **Coproc died during the (no-)review window.** The deterministic BLOCK is
   written through `_coproc_write`; a dead coproc breaks to the post-loop
   classifier identically to the existing verdict-write path (TDD 0030 §1).
-- **Per-step BLOCK that never clears** (build fails before re-emitting). The
-  `step_block_log` entry is already persisted at BLOCK time, so the violation is
-  mineable even though the step never reached `cleared_step_log`.
 
 ## Verification plan
 
 **Observable surface:** (a) the runner's per-step decision — observable as a
 `STEP_REVIEW: BLOCK test-first:` line written to the build (and the absence of a
 spawned review process) vs. a normal per-step review; (b) `build-prompt.md` text;
-(c) the `step_block_log` array in a fragment; (d) `detect_build_learnings` output
-(a candidate-learnings entry for a recurring per-step class).
+(c) the four reconciled fixtures still pass under default-on enforcement.
 
 **Observation points** (mechanical, `tests/test-first-per-step.test.sh` with stub
-fixtures following `tests/bounded-rework-loop.test.sh`'s harness, and miner cases
-in `tests/build-phase-learning-capture.test.sh`):
+fixtures following `tests/bounded-rework-loop.test.sh`'s harness):
 
 1. **Impl-first step → deterministic BLOCK, no model spawn.** Drive
    `_per_step_review_loop` with a `STEP_COMMIT` whose `<base>..<sha>` range has an
-   implementation commit but no `test(failing):` precursor and no skip token.
-   Expected: a `STEP_REVIEW: BLOCK test-first:` line is written; the review
-   `claude -p` stub records ZERO invocations; a `step_block_log` entry with
-   `pattern_tags:["failing-test-first-violation"]` is appended.
+   implementation commit but no `test(failing):` precursor and no skip token
+   (knob ON). Expected: a `STEP_REVIEW: BLOCK test-first:` line is written; the
+   review `claude -p` stub records ZERO invocations.
 2. **test(failing): precursor → pass-through to model review.** Same step but with
    a `test(failing):` commit before the impl in range. Expected: no test-first
    BLOCK; `_run_per_step_review` (model stub) IS invoked once.
-3. **`TEST_FIRST_SKIPPED:` token → pass-through, recorded skipped.** Impl-only
-   range but the sentinel carries `TEST_FIRST_SKIPPED:no-new-behavior`. Expected:
-   no test-first BLOCK; the model review runs; `step_block_log` records
-   `skipped:true` with the reason.
+3. **`TEST_FIRST_SKIPPED:` token → pass-through.** Impl-only range but the
+   sentinel carries `TEST_FIRST_SKIPPED:no-new-behavior`. Expected: no test-first
+   BLOCK; the model review runs.
 4. **Sentinel backward-compat.** A `STEP_COMMIT: 2 <sha> TEST_FIRST_SKIPPED:x`
    line parses to `step_id=2`, `sha=<sha>` (assert both) and does NOT increment
    the protocol-error counter.
-5. **Miner surfaces the recurring per-step class.** Two stub fragments each with a
-   `step_block_log` entry tagged `failing-test-first-violation`. Expected:
-   `detect_build_learnings` emits a candidate-learnings class naming that tag,
-   `distinct_tdds` = 2; a single fragment with one such entry emits nothing
-   (threshold unchanged).
+5. **Knob OFF → no-op.** With `THROUGHLINE_REQUIRE_TEST_FIRST=0`, an impl-only
+   range passes through to the model review (no test-first BLOCK) — proving the
+   fixture-reconciliation escape works.
 6. **Aggregator wire-in rule present.** Grep `build-prompt.md` for the wire-in
    rule text (aggregator wire-in is new gating behavior; not SKIPPED-eligible).
+7. **Fixture non-regression.** The four reconciled fixtures
+   (`continuous-in-build-review`, `build-defensive-norms`, `step-commit-protocol`,
+   `coproc-verdict-resilience`) run green under the default (knob unset → ON),
+   each carrying the `THROUGHLINE_REQUIRE_TEST_FIRST=0` export — driven by
+   `ci-checks.sh` / `tests/implement-gate.test.sh` on the build branch.
 
 **Mechanical-check robustness (folds in L-001 / L-002).** Every grep-based
 assertion in the new eval (i) anchors on a SPECIFIC new string (no vacuous match
@@ -259,40 +262,44 @@ L-001; `misleading-diagnostic` L-002.)
 
 | Criterion | High-quality | Acceptable | Failing |
 |---|---|---|---|
-| Requirement traceability | every FR (15a, 72, 73) + ADR (0005/6/7) maps to a named element; gaps noted | all in-scope reqs mapped | any untraced requirement |
+| Requirement traceability | every FR (15a/72/73) + ADR (0005/6/7) maps to a named element; gaps noted | all in-scope reqs mapped | any untraced requirement |
 | Mechanical determinism (ADR 0006) | per-step gate reads git/sentinel artifacts only; BLOCKs without spawning the model | artifact-only, no model judgment | relies on model judgment for the verdict |
-| Protocol backward-compat | STEP_COMMIT extension shown compatible against 0032's exact parse path | compat asserted | unaddressed or breaks the parser |
+| Protocol backward-compat | STEP_COMMIT extension shown compatible against 0032 exact parse path | compat asserted | unaddressed or breaks the parser |
+| Fragment-persistence correctness | step_block_log carry-forward preserves across all 8 writers; reader anchor invariant restated | preserve-on-absent + reader specified | drops field on carry-forward / breaks cleared_step_log anchor |
+| Cross-TDD coupling | 0042 edits to 0038 BLOCK sites named; stack order satisfies dependency | dependency stated | hidden/contradictory coupling |
 | Verification-plan actionability | per-component observation points with exact commands/fixtures | surface + points + expected obs named | vague / no concrete observation point |
 | Scope-bound adherence | comfortably within bounds, all files declared | within bounds, exceptions declared inline | over-bound without exception |
-| Naming consistency | one canonical name for the sentinel token, helpers, pattern_tag across gates.sh/build-prompt.md/learnings.sh + tests | consistent | same concept named two ways |
+| Naming consistency | one canonical name for sentinel token, helpers, pattern_tag across files + tests | consistent | same concept named two ways |
+
+(Rows for FR-72/73, `step_block_log` persistence, and cross-TDD coupling are
+graded against **[[0042]]**; the rubric is shared across the set so each TDD is
+self-contained for its per-TDD review.)
 
 ## Requirement traceability
 
 | Requirement | Design element satisfying it |
 |---|---|
-| FR-15 (gap-closure: FR-15(a) per-step enforcement of failing-test-first) | Component 1 (mechanical per-step pre-check) + Component 2 (preventive self-gate) + Component 3 (aggregator wire-in rule). Verification §1–§4, §6. |
-| FR-72 (recurring patterns surfaced as candidate learnings) | Component 4: per-step BLOCK findings recorded to `step_block_log` and mined by `detect_build_learnings`, closing the per-step blind spot. Verification §5. |
-| FR-73 (accepted learnings inform `/tdd-author`) | Component 4 (mining half): once a per-step class is mineable and accepted, it persists to `LEARNINGS.md` and surfaces in future `/tdd-author` sessions — the unchanged FR-73 path. Verification §5 (mineability is the precondition). |
+| FR-15 (gap-closure: FR-15(a) per-step enforcement of failing-test-first) | Component 1 (mechanical per-step pre-check) + Component 2 (preventive self-gate) + Component 3 (aggregator wire-in rule) + Component 4 (default-on fixture reconciliation). Verification §1–§7. |
 
-No gaps. (FR-73's surfacing mechanism itself is unchanged by this TDD; this TDD
-only makes the per-step class *reach* the store, which is the missing link.)
+No gaps. FR-72 / FR-73 (per-step BLOCK findings reaching the miner and thereby
+`/tdd-author`) are deferred to **[[0042]]**, which stacks on this TDD's per-step
+BLOCK sites.
 
 ## Dependencies considered
 
 No new external or internal dependency. The change reuses the existing
-`_per_step_review_loop`, `_run_per_step_review`, `_coproc_write`,
-`_extract_pattern_tags`, `test_first_ok`, and `detect_build_learnings` surfaces.
+`_per_step_review_loop`, `_run_per_step_review`, `_coproc_write`, and
+`test_first_ok` surfaces.
 
 Alternatives considered:
-- **Mine `cleared_step_log` tags instead of adding `step_block_log`** — rejected:
-  `cleared_step_log` records only *passing* review tags, so a test-first slip that
-  is fixed then cleared carries the *passing* tags, not the violation; and a step
-  that never clears (build failed) has no entry at all. The violation must be
-  recorded at BLOCK time, which `cleared_step_log` does not do.
-- **Inject per-step BLOCK findings into the existing `findings` array** —
-  rejected: `findings` has consolidated/rework semantics that other readers
-  (TDD 0023, the report) consume; overloading it with per-step entries risks
-  semantic bleed. A dedicated additive array is lower-risk.
+- **Per-step gate OFF by default** — rejected: it would defeat FR-15(a)
+  enforcement (the ~60% slip rate is *with* the prompt already present); the
+  point is a default-on mechanical backstop. The four orthogonal fixtures opt out
+  explicitly instead (Component 4).
+- **Gate the pre-check on `STATE_DIR` presence to spare the fixtures** — rejected:
+  it creates a silent enforcement blind-spot — a real build that transiently lost
+  `STATE_DIR` would skip test-first entirely. Per-fixture opt-out keeps the gate
+  honest and the escape explicit.
 - **Keep enforcement model-only, just strengthen the prompt** — rejected: the
   measured ~60% slip rate is *with* the prompt instruction already present; a
   mechanical, artifact-grounded gate (ADR 0006) is what makes the verdict
@@ -300,10 +307,14 @@ Alternatives considered:
 
 ## PRD conflicts surfaced (and resolution)
 
-None. FR-15(a) already mandates failing-test-first "following
-`superpowers:test-driven-development`"; this TDD implements *how* that mandate is
-enforced per step and is therefore additive to the requirement, not a change to
-it. No PRD edit is required (the "what" is unchanged; this is the "how").
+Resolves the open `docs/tdd/BLOCKERS.md` entry for 0038 (2026-06-08): the build
+found (1) `step_block_log` persistence needs `scripts/lib/state.sh`, undeclared,
+and (2) the default-on per-step pre-check regresses four existing fixtures,
+contradicting the "additive/no-break" premise. Resolution: split the persistence
++ mining half into **[[0042]]** (which declares `state.sh`), and replace the
+false premise with an explicit default-on reconciliation (Component 4) that opts
+the four orthogonal fixtures out of the gate. FR-15(a) itself is unchanged (the
+"what"); this remains the "how".
 
 ## Decisions to promote (ADR candidates)
 
@@ -313,22 +324,26 @@ decision.
 
 ## Touched files
 
-- `scripts/lib/gates.sh` — `_test_first_ok_range` helper; per-step pre-check + `TEST_FIRST_SKIPPED:` parse in `_per_step_review_loop`; `step_block_log` recording at both per-step BLOCK sites.
-- `scripts/lib/learnings.sh` — `_read_fragment_step_blocks`; `step_block_log` corpus pass in `detect_build_learnings`.
+- `scripts/lib/gates.sh` — `_test_first_ok_range` helper; per-step pre-check + `TEST_FIRST_SKIPPED:` parse in `_per_step_review_loop`; deterministic no-model BLOCK (no recording — that is 0042).
 - `scripts/build-prompt.md` — preventive self-gate bullet (Component 2) + aggregator wire-in rule (Component 3).
-- `tests/test-first-per-step.test.sh` — new eval (per-step routing, skip token, sentinel compat, recording).
-- `tests/build-phase-learning-capture.test.sh` — miner `step_block_log` mining cases.
+- `tests/test-first-per-step.test.sh` — new eval (per-step routing, skip token, sentinel compat, knob-off no-op, fixture-non-regression).
 - `tests/implement-gate.test.sh` — wire the new eval into the aggregator (with its failing wire-in test per Component 3).
+- `tests/continuous-in-build-review.test.sh` — `THROUGHLINE_REQUIRE_TEST_FIRST=0` export (orthogonal-gate opt-out).
+- `tests/build-defensive-norms.test.sh` — `THROUGHLINE_REQUIRE_TEST_FIRST=0` export.
+- `tests/step-commit-protocol.test.sh` — `THROUGHLINE_REQUIRE_TEST_FIRST=0` export.
+- `tests/coproc-verdict-resilience.test.sh` — `THROUGHLINE_REQUIRE_TEST_FIRST=0` export.
 
-Total: 6 files touched.
+Total: 8 files touched.
 
 ## Expected diff size
 
-- `scripts/lib/gates.sh` — ~70 lines added/changed (helper + loop wiring + recording at two sites).
-- `scripts/lib/learnings.sh` — ~30 lines added (reader + corpus pass).
+- `scripts/lib/gates.sh` — ~55 lines added/changed (helper + loop wiring; no recording).
 - `scripts/build-prompt.md` — ~28 lines added (self-gate + wire-in rule).
-- `tests/test-first-per-step.test.sh` — ~165 lines added (new eval: 6 observation points with fail-closed grep guards).
-- `tests/build-phase-learning-capture.test.sh` — ~30 lines added (miner mining cases).
+- `tests/test-first-per-step.test.sh` — ~175 lines added (new eval: 7 observation points with fail-closed grep guards).
 - `tests/implement-gate.test.sh` — ~12 lines added (aggregator wire-in + its failing test).
+- `tests/continuous-in-build-review.test.sh` — ~2 lines added (export + comment).
+- `tests/build-defensive-norms.test.sh` — ~2 lines added (export + comment).
+- `tests/step-commit-protocol.test.sh` — ~2 lines added (export + comment).
+- `tests/coproc-verdict-resilience.test.sh` — ~2 lines added (export + comment).
 
-Total expected diff: ~335 lines across 6 files. No exceptions needed (each file is under the 300-line per-file bound).
+Total expected diff: ~278 lines across 8 files. No exceptions needed (each file is under the 300-line per-file bound).
