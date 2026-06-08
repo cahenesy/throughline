@@ -81,6 +81,100 @@ EOF
   if kill -0 "$wpid" 2>/dev/null; then bad "watcher never exited after the run dir went inactive"; kill "$wpid" 2>/dev/null; else ok "watcher exited after inactivity (stale >= MAX)"; fi
   wait "$wpid" 2>/dev/null
   grep -q '^IMPLEMENT_RUN_COMPLETE' "$out" 2>/dev/null && ok "IMPLEMENT_RUN_COMPLETE emitted on the inactivity exit" || bad "watcher should emit IMPLEMENT_RUN_COMPLETE on the inactivity exit (got: $(cat "$out" 2>/dev/null))"
+  ln1="$(grep '^IMPLEMENT_RUN_COMPLETE' "$out" 2>/dev/null)"
+  # The wedge exit must report the DISTINCT state, not the run.json passthrough
+  # (run.json still says "running" — the build is wedged mid-run). NFR-4 honesty.
+  case "$ln1" in
+    *"state=watcher-timeout"*) ok "inactivity exit reports the distinct state=watcher-timeout" ;;
+    *) bad "inactivity exit must report state=watcher-timeout, not the run.json passthrough ($ln1)" ;;
+  esac
+  kill_stub "$out"
+) || true
+
+# ===========================================================================
+# §2: a build that is ALIVE but writes NOTHING under latest/ for MAX seconds is
+# wedged → the watcher exits within ~MAX (+1 poll) and emits the DISTINCT
+# state=watcher-timeout — NOT state=running (the run.json passthrough), NOT
+# state=done. This is the honest give-up signal (NFR-4): a running build is never
+# reported as a normal completion.
+echo "[§2] silent build for MAX -> wedged exit, state=watcher-timeout (not running/done)"
+( WT="$ROOT/s2"; mkdir -p "$WT/scripts" "$WT/repo/docs/tdd/.implement-logs"
+  cat > "$WT/scripts/stub.sh" <<'EOF'
+#!/usr/bin/env bash
+LOGS="$PWD/docs/tdd/.implement-logs"
+mkdir -p "$LOGS/run1/state.d"
+printf '{"schema":1,"state":"running"}\n' > "$LOGS/run1/state.d/run.json"
+ln -sfn run1 "$LOGS/latest"
+# Silent from the start, but stays ALIVE — only the inactivity bound can end it.
+sleep 120
+EOF
+  out="$WT/out.txt"
+  ( cd "$WT/repo" && THROUGHLINE_WATCH_BUILD_SCRIPT="$WT/scripts/stub.sh" \
+      THROUGHLINE_WATCH_POLL_SECS=1 THROUGHLINE_WATCH_MAX_SECS=2 \
+      bash "$WATCH" >"$out" 2>&1 )
+  ln1="$(grep '^IMPLEMENT_RUN_COMPLETE' "$out" 2>/dev/null)"
+  [ -n "$ln1" ] && ok "watcher exited and emitted IMPLEMENT_RUN_COMPLETE on silence" || bad "watcher should exit + emit on a silent build (got: $(cat "$out" 2>/dev/null))"
+  case "$ln1" in *"state=watcher-timeout"*) ok "silent-build exit reports state=watcher-timeout" ;; *) bad "expected state=watcher-timeout ($ln1)" ;; esac
+  case "$ln1" in *"state=running"*) bad "must NOT report state=running for a wedged build ($ln1)" ;; *) ok "not reported as state=running (NFR-4)" ;; esac
+  case "$ln1" in *"state=done"*) bad "must NOT report state=done for a wedged build ($ln1)" ;; *) ok "not reported as a false state=done (NFR-4)" ;; esac
+  kill_stub "$out"
+) || true
+
+# ===========================================================================
+# §3: PID-gone exit unchanged. A build that writes a terminal run.json (state=done)
+# then EXITS → the watcher exits promptly via the PID-gone break and passes the
+# real run.json state through (state=done), never watcher-timeout. MAX is large so
+# inactivity cannot be what ends it — the PID-gone break must.
+echo "[§3] PID-gone exit -> run.json passthrough preserved (state=done)"
+( WT="$ROOT/s3"; mkdir -p "$WT/scripts" "$WT/repo/docs/tdd/.implement-logs"
+  cat > "$WT/scripts/stub.sh" <<'EOF'
+#!/usr/bin/env bash
+LOGS="$PWD/docs/tdd/.implement-logs"
+mkdir -p "$LOGS/run1/state.d"
+printf '{"schema":1,"state":"done"}\n' > "$LOGS/run1/state.d/run.json"
+ln -sfn run1 "$LOGS/latest"
+# Build finishes (process exits) immediately — PID-gone is the terminator.
+EOF
+  out="$WT/out.txt"
+  ( cd "$WT/repo" && THROUGHLINE_WATCH_BUILD_SCRIPT="$WT/scripts/stub.sh" \
+      THROUGHLINE_WATCH_POLL_SECS=1 THROUGHLINE_WATCH_MAX_SECS=60 \
+      bash "$WATCH" >"$out" 2>&1 )
+  ln1="$(grep '^IMPLEMENT_RUN_COMPLETE' "$out" 2>/dev/null)"
+  case "$ln1" in *"state=done"*) ok "PID-gone exit passes run.json state=done through" ;; *) bad "expected state=done passthrough on PID-gone ($ln1)" ;; esac
+  case "$ln1" in *"state=watcher-timeout"*) bad "a clean PID-gone exit must NOT report watcher-timeout ($ln1)" ;; *) ok "PID-gone exit is not mislabeled watcher-timeout" ;; esac
+  kill_stub "$out"
+) || true
+
+# ===========================================================================
+# §4: clean SIGUSR1 completion unchanged. With the build still ALIVE, deliver
+# SIGUSR1 (the run-end-hook path) → the watcher exits promptly and emits the
+# run.json state (done), never watcher-timeout. POLL is large so a non-signalled
+# watcher would still be asleep; the wake must be the USR1.
+echo "[§4] clean SIGUSR1 completion -> run.json passthrough (state=done), never watcher-timeout"
+( WT="$ROOT/s4"; mkdir -p "$WT/scripts" "$WT/repo/docs/tdd/.implement-logs"
+  cat > "$WT/scripts/stub.sh" <<'EOF'
+#!/usr/bin/env bash
+LOGS="$PWD/docs/tdd/.implement-logs"
+mkdir -p "$LOGS/run1/state.d"
+printf '{"schema":1,"state":"done"}\n' > "$LOGS/run1/state.d/run.json"
+ln -sfn run1 "$LOGS/latest"
+sleep 120
+EOF
+  out="$WT/out.txt"; pidf="$WT/repo/docs/tdd/.implement-logs/.watch.pid"
+  ( cd "$WT/repo" && THROUGHLINE_WATCH_BUILD_SCRIPT="$WT/scripts/stub.sh" \
+      THROUGHLINE_WATCH_POLL_SECS=30 THROUGHLINE_WATCH_MAX_SECS=60 \
+      bash "$WATCH" >"$out" 2>&1 ) &
+  wpid=$!
+  i=0; while [ ! -f "$pidf" ] && [ "$i" -lt 50 ]; do sleep 0.2; i=$((i+1)); done
+  wp="$(cat "$pidf" 2>/dev/null)"
+  sleep 1   # let the watcher enter its sleep
+  [ -n "$wp" ] && kill -USR1 "$wp" 2>/dev/null
+  i=0; while kill -0 "$wpid" 2>/dev/null && [ "$i" -lt 16 ]; do sleep 0.5; i=$((i+1)); done
+  if kill -0 "$wpid" 2>/dev/null; then bad "watcher did not wake on SIGUSR1 within ~8s (POLL=30)"; kill "$wpid" 2>/dev/null; else ok "watcher woke on SIGUSR1 before the poll elapsed"; fi
+  wait "$wpid" 2>/dev/null
+  ln1="$(grep '^IMPLEMENT_RUN_COMPLETE' "$out" 2>/dev/null)"
+  case "$ln1" in *"state=done"*) ok "USR1 exit passes run.json state=done through" ;; *) bad "expected state=done on USR1 wake ($ln1)" ;; esac
+  case "$ln1" in *"state=watcher-timeout"*) bad "a USR1-woken exit must NOT report watcher-timeout ($ln1)" ;; *) ok "USR1 exit is not mislabeled watcher-timeout" ;; esac
   kill_stub "$out"
 ) || true
 
