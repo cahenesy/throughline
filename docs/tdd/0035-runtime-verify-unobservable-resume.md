@@ -1,6 +1,6 @@
 # TDD 0035: Resumable runtime-verify "couldn't observe" halt — revise the verification plan, resume just the verify gate
 
-Status: draft
+Status: implemented
 PRD refs: FR-40, FR-41, FR-63, FR-64 (gap-closure); NFR-4
 PRD-rev: d289607
 ADR constraints: 0004, 0005, 0007
