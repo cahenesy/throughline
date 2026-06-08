@@ -124,13 +124,19 @@ _reclaim_stale_worktree() {  # <workroot> <report>
 
 if [ "${THROUGHLINE_SOURCE_ONLY:-0}" != "1" ]; then
 PARALLEL=0; COMBINED=0; REBUILD=0; MODEL=""; REVIEW_MODEL=""; CHANGE=""; ONE=""
-RESUME=0
+RESUME=0; RECOVER=0
 BASE="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
 while [ $# -gt 0 ]; do case "$1" in
   --parallel) PARALLEL=1; shift ;;
   --combined) COMBINED=1; shift ;;
   --rebuild)  REBUILD=1;  shift ;;
   --resume)   RESUME=1;   shift ;;
+  # TDD 0039 / FR-39: opt-in recovery from a non-structural terminal halt
+  # (rework-budget-exhausted / ci-checks failed). Only meaningful with a resume,
+  # so --recover IMPLIES --resume (note logged below). Recovery re-enters the last
+  # good gate; it is never automatic — the operator owns the "this halt was an
+  # artifact" judgement (NFR-4).
+  --recover)  RECOVER=1;  shift ;;
   --model)        MODEL="$2";        shift 2 ;;
   --review-model) REVIEW_MODEL="$2"; shift 2 ;;
   --change)   CHANGE="$2"; shift 2 ;;
@@ -138,6 +144,14 @@ while [ $# -gt 0 ]; do case "$1" in
   -*) echo "unknown arg: $1"; exit 2 ;;
   *)  ONE="$1"; shift ;;
 esac; done
+# --recover implies --resume; log a one-line note when --resume was not also
+# passed so the operator sees the inferred mode. RECOVER is exported so the
+# resume helpers (incl. the parallel-mode subshell) read it (FR-40).
+if [ "$RECOVER" -eq 1 ] && [ "$RESUME" -eq 0 ]; then
+  RESUME=1
+  echo "note: --recover implies --resume; resuming the prior run to recover the terminal halt." >&2
+fi
+export RECOVER
 [ -z "$CHANGE" ] && CHANGE="build/$(date +%Y%m%d-%H%M%S)"
 
 # Integration branch: where a merged design PR lands a TDD. "Approved to build" =
@@ -214,8 +228,15 @@ if [ "$RESUME" -eq 1 ] && [ -L "$MAINREPO/docs/tdd/.implement-logs/latest" ]; th
   # the prior run's directory, and silently overwrite it. Refuse explicitly
   # so the user understands the prior state was cleaned.
   if [ ! -f "$LOGDIR/state.d/run.json" ]; then
-    echo "FATAL: --resume target has no paused state ($LOGDIR/state.d/run.json missing)." >&2
-    echo "       Drop --resume to start fresh, or remove the 'latest' symlink." >&2
+    # TDD 0039 / FR-39: a recover-specific diagnostic when --recover reached the
+    # no-prior-run condition, so the operator gets an actionable message rather
+    # than the generic resume FATAL.
+    if [ "${RECOVER:-0}" -eq 1 ]; then
+      echo "FATAL: --recover requires a prior run to recover; none found ($LOGDIR/state.d/run.json missing)." >&2
+    else
+      echo "FATAL: --resume target has no paused state ($LOGDIR/state.d/run.json missing)." >&2
+      echo "       Drop --resume to start fresh, or remove the 'latest' symlink." >&2
+    fi
     exit 1
   fi
 elif [ "$RESUME" -eq 1 ]; then
@@ -223,8 +244,13 @@ elif [ "$RESUME" -eq 1 ]; then
   # silently fall back to a fresh LOGDIR while RESUME=1 stays set. In
   # parallel mode that lets the driver attach to unrelated `feat/<slug>`
   # branches from prior runs. Fail loudly instead.
-  echo "FATAL: --resume requested but no prior run found (docs/tdd/.implement-logs/latest missing)." >&2
-  echo "       If the prior run dir was deleted, re-run without --resume." >&2
+  # TDD 0039 / FR-39: recover-specific diagnostic on the no-latest-symlink path too.
+  if [ "${RECOVER:-0}" -eq 1 ]; then
+    echo "FATAL: --recover requires a prior run to recover; none found (docs/tdd/.implement-logs/latest missing)." >&2
+  else
+    echo "FATAL: --resume requested but no prior run found (docs/tdd/.implement-logs/latest missing)." >&2
+    echo "       If the prior run dir was deleted, re-run without --resume." >&2
+  fi
   exit 1
 else
   LOGDIR="$MAINREPO/docs/tdd/.implement-logs/$(date +%Y%m%d-%H%M%S)"
