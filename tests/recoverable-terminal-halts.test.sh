@@ -267,6 +267,41 @@ echo "[§6] ambiguous failed (no ci-checks note) → refused resume-recover-caus
   [ "$(cat "$F")" = "$before" ] && ok "fragment unchanged (refusal persists nothing)" || bad "fragment must be unchanged on ambiguous refusal"
 ) || true
 
+# ===========================================================================
+# §5: status.sh --check-paused surfacing. A rework-budget-exhausted blocked
+# fragment and a ci-checks failed fragment each emit a DISTINCT
+# `resumable=recoverable cause=<...>` line (so the skill can tell "needs explicit
+# --recover" apart from an auto-resumable halt); a plain design-escalation blocked
+# (halt_next_actions without a `resume` prefix) is NOT surfaced as recoverable.
+echo "[§5] status.sh --check-paused surfaces resumable=recoverable for the two recoverable terminal classes"
+( d="$ROOT/g5"; mkdir -p "$d/state.d"; cd "$d" || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$d/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$d"
+  TDDS=(); THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  printf '{"schema":1,"started_at":1000,"updated_at":1001,"pid":1,"state":"blocked","total":3,"completed":0,"failed":1,"blocked":2,"skipped":0,"paused":0}\n' > "$d/state.d/run.json"
+  # (1) rework-budget-exhausted blocked
+  _write_tdd_fragment 0039-budget 39 docs/tdd/0039-budget.md 1 blocked review 1000 1000 "build/x" "" log "" \
+    "" "build,test-first,verify,verify-runtime" "" "abc" "" "" "" "" "" "" "" "" "" "[]" "0" "{}"
+  set_halt_cause 0039-budget rework-budget-exhausted review ""
+  # (2) ci-checks failed (halt_cause null; note names ci-checks; gates build,test-first)
+  _write_tdd_fragment 0039-cic 39 docs/tdd/0039-cic.md 2 failed verify 1000 1000 "build/y" "" log "ci-checks.sh FAIL (tests/typecheck/lint)" \
+    "" "build,test-first" "" "abc" "" "" "" "" "" "" "" "" "" "[]" "0" "{}"
+  # (3) plain design-escalation blocked (NOT recoverable, no resume prefix)
+  _write_tdd_fragment 0039-desc 39 docs/tdd/0039-desc.md 3 blocked review 1000 1000 "build/z" "" log "" \
+    "" "build,test-first" "" "abc" "" "" "" "" "" "" "" "" "" "[]" "0" "{}"
+  set_halt_cause 0039-desc design-escalation review ""
+  cp="$(bash "$REPO/scripts/status.sh" --logdir "$d" --check-paused 2>&1)"
+  printf '%s' "$cp" | grep -qE 'slug=0039-budget .*cause=rework-budget-exhausted resumable=recoverable' \
+    && ok "budget-exhausted blocked → resumable=recoverable cause=rework-budget-exhausted" || bad "should surface budget recoverable (got: '$cp')"
+  printf '%s' "$cp" | grep -qE 'slug=0039-cic .*cause=ci-checks resumable=recoverable' \
+    && ok "ci-checks failed → resumable=recoverable cause=ci-checks" || bad "should surface ci-checks recoverable (got: '$cp')"
+  # The budget line must NOT be mis-tagged resumable=blocked (it is a distinct token).
+  printf '%s' "$cp" | grep -E 'slug=0039-budget ' | grep -q 'resumable=blocked' \
+    && bad "budget line must be resumable=recoverable, not resumable=blocked" || ok "budget line is not mis-tagged resumable=blocked"
+  # design-escalation is not surfaced at all (no resume prefix, not recoverable).
+  printf '%s' "$cp" | grep -q 'slug=0039-desc' \
+    && bad "design-escalation blocked must NOT be surfaced (got: '$cp')" || ok "design-escalation blocked is not surfaced (stays human-routed)"
+) || true
+
 # --- report ----------------------------------------------------------------
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
