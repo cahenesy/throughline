@@ -269,6 +269,17 @@ pattern caps that blast radius to the test's own ceiling. §1 already uses this
 pattern — §2/§3/§6 MUST match it (no `bash "$WATCH"` without `&` + a timeout
 guard).
 
+**Timing-margin robustness (binding — anti-flake).** The "still progressing"
+cases (§1, §6) MUST choose stub-write cadence and `MAX` so the inter-write gap is
+comfortably below the wedge threshold — **write interval ≤ `MAX`/3** (e.g.
+`MAX=3`, `POLL=1`, stub writes every 1s). A gap near `MAX` (the original `MAX=2`
+with a 1s write) lets ordinary scheduling jitter on a loaded box push two
+consecutive probes past `stale ≥ MAX` during the writing phase, tripping a
+false wedge and failing the alive-check — the same load-sensitivity class as the
+known flaky-token-spend behaviour on this host. The margin makes the progressing
+phase robust against jitter without weakening the silent-gap cases (§2 still
+asserts a wedge after `MAX` of genuine silence).
+
 **Expected observations (PASS):** every numbered point yields the cited result.
 
 ## Requirement traceability
@@ -325,7 +336,7 @@ Total: 4 files touched.
 
 - `scripts/implement-watch.sh` — ~75 lines added/changed (replace the elapsed accumulator + `>= MAX` branch with the inactivity probe; the `WATCH_START` capture + the `newest < WATCH_START` startup-window guard; add `watcher-timeout` to the vocabulary and force it on wedge).
 - `skills/implement/SKILL.md` — ~48 lines added (terminal/non-terminal classification + re-arm-poll instruction + the PID-source note).
-- `tests/watcher-inactivity-completion.test.sh` — ~290 lines added (new eval: the timing-driven watcher-exit cases via a stub build incl. the §6 stale-`latest` startup-window case + 3 SKILL.md grep checks; every watcher-launching case uses the bounded background pattern; fail-closed assertions and file-readable guards per L-001/L-002).
+- `tests/watcher-inactivity-completion.test.sh` — ~320 lines added (exception: a single cohesive timing-driven eval — six watcher-exit cases incl. the §6 stale-`latest` startup-window case + 3 SKILL.md grep checks, each with its own stub build, bounded-background launch, fail-closed assertions and file-readable guards per L-001/L-002; splitting it would fragment the shared stub/fixture setup across files for no review benefit). Exceeds the 300-line per-file default; justified inline.
 - `tests/implement-gate.test.sh` — ~38 lines added (aggregator wire-in).
 
-Total expected diff: ~451 lines across 4 files. No exceptions needed (each file is under the 300-line per-file bound).
+Total expected diff: ~481 lines across 4 files. One inline exception (the cohesive eval above); the other three files are under the 300-line per-file bound.
