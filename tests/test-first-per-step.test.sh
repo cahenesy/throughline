@@ -231,6 +231,13 @@ echo "[§6] build-prompt.md carries the preventive self-gate (Component 2) + the
   grep_has 'aggregator with the new eval stubbed to fail' "$BP" "wire-in rule mandates a failing wire-in test, not SKIPPED-eligible"
 ) || true
 
+echo "[§7] the four per-step-loop fixtures opt out of the orthogonal gate (THROUGHLINE_REQUIRE_TEST_FIRST=0)"
+( for fx in continuous-in-build-review build-defensive-norms step-commit-protocol coproc-verdict-resilience; do
+    grep_has 'export THROUGHLINE_REQUIRE_TEST_FIRST=0' "$REPO/tests/$fx.test.sh" \
+      "$fx carries the default-on opt-out export (Component 4)"
+  done
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
