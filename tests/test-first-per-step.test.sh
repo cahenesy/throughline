@@ -265,6 +265,34 @@ echo "[§8] dogfood (Component 3): wiring this eval into the aggregator makes it
     || bad "aggregator AND-chain must be non-zero with TFP_FAIL=1 (got rc=$drive_rc)"
 ) || true
 
+echo "[§9] prose mention of TEST_FIRST_SKIPPED: on a NON-sentinel line does NOT bypass the gate (review:1 blocker)"
+( D="$ROOT/s9"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  setup_step_repo "$D/repo" || { bad "setup failed"; exit 0; }
+  _write_tdd_fragment 0038-fix 38 docs/tdd/0038-fix.md 1 building build 1000 1000 "feat/0038-fix" "" log "" "" "" "" "" "" "" "" "" "" "" ""
+  # impl-only range (no test(failing):), knob ON. The build emits a SINGLE
+  # assistant event whose text mentions TEST_FIRST_SKIPPED: in PROSE on a line
+  # BEFORE the real sentinel (which carries NO token). The anchored parse reads
+  # the token off the STEP_COMMIT line only (grep -m1), so the prose on the other
+  # line must NOT suppress the deterministic BLOCK. The unanchored predecessor
+  # (case on the raw multi-line $text) would have matched the prose and bypassed.
+  cat > "$D/repo/ctl/build_plan" <<'EOF'
+IFS= read -r _init || true
+echo "impl" >> src/a.txt
+git add -A >/dev/null 2>&1; git commit -q -m "step(1): work" >/dev/null 2>&1
+SHA="$(git rev-parse HEAD)"
+printf '{"type":"assistant","message":{"content":[{"type":"text","text":"Note: I am NOT emitting a TEST_FIRST_SKIPPED:none token for this step.\\nSTEP_COMMIT: 1 %s"}]}}\n' "$SHA"
+IFS= read -r _reply || true
+echo "BATCH_RESULT: OK"
+EOF
+  _per_step_review_loop 0038-fix docs/tdd/0038-fix.md "$D/s9.log" >/dev/null 2>&1
+  grep_has 'STEP_REVIEW: BLOCK test-first:' "$D/s9.log" "prose TEST_FIRST_SKIPPED: on a non-sentinel line does NOT suppress the BLOCK"
+  rc="$(revcount "$D/repo")"
+  [ "$rc" = "0" ] && ok "no model review spawned (the prose mention did not bypass the gate)" || bad "prose mention must not spawn a review (revcount=$rc)"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
