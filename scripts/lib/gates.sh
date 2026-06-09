@@ -2098,6 +2098,25 @@ _rework_loop() {  # <slug> <tdd> <rbase> <log>
         printf 'warning: _rework_loop: git reset --hard %s failed for %s; HEAD may still carry the rejected rework commit (verdict: BLOCKED %s %s)\n' \
           "$cleared" "$slug" "$cause" "$crit" | tee -a "$log" >&2
       fi
+      # TDD 0041 §1 (FR-65): this iteration's attempt was hard-reset off the
+      # branch above — it never shipped a surviving commit, so it must NOT
+      # consume the convergence budget (which exists only to bound genuine,
+      # shipped-but-still-flawed attempts). Roll back the increment for the two
+      # pre-pass SCOPE rejections — rework-scope-exceeded (FR-66) and
+      # structural-finding(b) (FR-67(b) per-file overrun). The (a) out-of-set and
+      # the external git-diff-failed paths are deliberately NOT rolled back (the
+      # rollback is scoped to (b)/scope-exceeded per the TDD). Error-checked: a
+      # write failure logs a warning but keeps the BLOCK (the escalation is
+      # authoritative) — worst case degrades to the old over-count, never a crash.
+      if [ "$cause" = "rework-scope-exceeded" ] || { [ "$cause" = "structural-finding" ] && [ "$crit" = "(b)" ]; }; then
+        if _decrement_rework_attempt "$slug" "$gate:$step"; then
+          printf 'note: _rework_loop: attempt not counted (scope-rejected, never shipped) for %s at %s:%s\n' \
+            "$slug" "$gate" "$step" >>"$log"
+        else
+          printf 'warning: _rework_loop: _decrement_rework_attempt failed for %s at %s:%s; attempt remains counted (safe degradation)\n' \
+            "$slug" "$gate" "$step" | tee -a "$log" >&2
+        fi
+      fi
       _rework_escalate "$slug" "$tdd" "$gate" "$step" "$cause" "$RWK_REF" "$crit" "$(printf '%s\n' "$pp" | head -1)"
       _terminal_state "$slug" blocked "" "$cause $crit (rework rejected pre-ship)"
       return 1
