@@ -1806,6 +1806,47 @@ _rework_escalate() {  # <slug> <tdd> <gate> <step> <cause> <ref> <criterion> <ex
     || echo "warning: _rework_escalate: record_blocker failed for $slug ($cause); BLOCKERS.md not updated — operator must add the entry by hand" >&2
 }
 
+# _gate_output_tail <log> <pre-log-size>  — TDD 0040 §2. Echo the last non-blank
+# line of the gate log slice produced AFTER <pre-log-size> bytes (the subprocess
+# output for THIS pass), stripped of control chars and clipped, for use as the
+# couldn't-observe `halt_cause_detail` (e.g. a `timeout … No such file` exec
+# error). Read-once (FR-74 #6) over a fixed byte offset; fail-loud (#1) with a
+# clear marker when the log is unreadable rather than silently emitting empty.
+_gate_output_tail() {  # <log> <pre-log-size>
+  local log="$1" pre="${2:-0}"
+  [ -r "$log" ] || { printf '(gate log unreadable: %s)' "$log"; return 0; }
+  case "$pre" in ''|*[!0-9]*) pre=0 ;; esac
+  local tail_line
+  tail_line="$(tail -c +"$((pre + 1))" "$log" 2>/dev/null \
+    | grep -avE '^[[:space:]]*$' \
+    | tail -n 1 \
+    | tr -d '\000-\010\013\014\016-\037' \
+    | cut -c1-200)"
+  [ -n "$tail_line" ] && printf '%s' "$tail_line" || printf '(no output captured)'
+}
+
+# _classify_gate_no_verdict <slug> <gate> <tail>  — TDD 0040 §2 (FR-57, NFR-4,
+# ADR 0006). A review/runtime-verify gate SUBPROCESS that exited leaving NO
+# parseable verdict line is couldn't-observe, not observed-wrong: a missing
+# verdict is the absence of an artifact, so it cannot BE a verdict. Record a
+# *resumable* gate-unobservable blocked halt — NOT a terminal `failed` — so the
+# gate is simply re-run on the next resume (Component 3 maps gate-unobservable to
+# a resume-first action list, making the blocked fragment auto-resumable via
+# _resume_from's blocked arm). <gate> names which gate (review|verify-runtime);
+# the detail carries the gate + the captured stderr/output tail so the operator
+# can see WHY the gate could not run. set_halt_cause FIRST then _terminal_state
+# blocked (TDD 0040 §2 order): set_halt_cause preserves the current status while
+# writing the halt fields, and _terminal_state blocked then carries those fields
+# forward, so the fragment ends at status=blocked with the cause intact. This
+# helper is gate-agnostic: the review gate (_rework_loop, below) drives it; the
+# verify-runtime call site (gate_one in lib/resume.sh) reuses the SAME classifier.
+_classify_gate_no_verdict() {  # <slug> <gate> <tail>
+  local slug="$1" gate="$2" tail="$3"
+  set_halt_cause "$slug" gate-unobservable "$gate" "$gate gate emitted no parseable verdict: $tail" \
+    || echo "warning: _classify_gate_no_verdict: set_halt_cause failed for $slug ($gate)" >&2
+  _terminal_state "$slug" blocked "" "$gate gate produced no parseable verdict (couldn't observe; resumable, re-runs the gate)"
+}
+
 # _rework_loop <slug> <tdd> <rbase> <log>  — the bounded automatic rework loop
 # (FR-61, FR-62, FR-65, FR-66, FR-67). Runs the review gate; on a PASS verdict
 # returns 0 (converged). On a halting finding it either escalates (structural
@@ -1827,7 +1868,7 @@ _rework_loop() {  # <slug> <tdd> <rbase> <log>
   # the loop's state writes.
   case "$step" in ''|*[!0-9]*) step=1 ;; esac
   local max="${THROUGHLINE_REWORK_MAX:-3}"; case "$max" in ''|*[!0-9]*) max=3 ;; esac
-  local build_start="$rbase" cleared attempts rrc rs _retries_json
+  local build_start="$rbase" cleared attempts rrc rs
   # §3c re-review state. Declared local so review_one sees REVIEW_ATTENTION_DIRECTIVE
   # via dynamic scope only while this loop runs; RFIND_RE_REVIEW_DIRECTIVE is set by
   # _per_file_coverage_check when coverage is incomplete.
@@ -1865,21 +1906,26 @@ _rework_loop() {  # <slug> <tdd> <rbase> <log>
     # becomes a refinement of the fail path, not the only fail trigger.
     verdict_in_new="$(_fresh_review_verdict "$log" "$pre_log_size")"
     if [ "$rrc" -ne 0 ] && [ -z "$verdict_in_new" ]; then
-      _retries_json="$(_read_fragment_raw_array "${STATE_DIR:-}/$slug.json" retries 2>/dev/null)"
-      if [ -n "$_retries_json" ] && [ "$_retries_json" != "[]" ]; then
-        _terminal_state "$slug" failed "" "review gate fatal exit after retries (rc=$rrc; no fresh verdict)"
-      else
-        _terminal_state "$slug" failed "" "review gate fatal exit, no retries recorded and no fresh verdict (rc=$rrc)"
-      fi
+      # TDD 0040 §2 (FR-57, NFR-4, ADR 0006): the review subprocess exited
+      # leaving NO parseable REVIEW_RESULT line — couldn't-observe, NOT
+      # observed-wrong. Record a resumable gate-unobservable blocked halt with the
+      # captured output tail as detail, instead of the old terminal `failed`. The
+      # discriminator is verdict-presence (a mechanical check on the output),
+      # never the exit code; the retries-recorded distinction folds into the tail.
+      _classify_gate_no_verdict "$slug" review "$(_gate_output_tail "$log" "$pre_log_size") (rc=$rrc)"
       return 1
     fi
     # Prefer the fresh-pass verdict over the cumulative log tail; review_status
     # is the legacy fallback for callers that didn't snapshot pre_log_size.
     rs="${verdict_in_new:-$(review_status "$log")}"
-    # Crash guard: a pass that produced neither verdict is a fatal/garbled run.
+    # Crash guard: a pass that produced neither verdict is couldn't-observe — a
+    # garbled/empty run (rc may even be 0). TDD 0040 §2: a malformed/absent
+    # verdict resolves to gate-unobservable (couldn't-observe), never a guessed
+    # PASS/FAIL (NFR-4), so the gate is re-run rather than recorded as a false
+    # terminal verdict.
     case "$rs" in
       *PASS*|*BLOCK*) : ;;
-      *) _terminal_state "$slug" failed "" "review: no REVIEW_RESULT line"; return 1 ;;
+      *) _classify_gate_no_verdict "$slug" review "$(_gate_output_tail "$log" "$pre_log_size")"; return 1 ;;
     esac
     # TDD 0021 §2/§4 (FR-58): record this pass's findings onto findings[] and
     # drive the halt boundary off the {blocker,major} subset — NOT the
