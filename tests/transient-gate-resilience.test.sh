@@ -24,7 +24,7 @@
 #   closed FR-63 halt-cause enum with a resume-first next-action list (state.sh)
 #   and rendered without an unknown-cause warning (status.sh).
 #
-# Covers the TDD's Verification plan §1-§6, following the fixture pattern of
+# Covers the TDD's Verification plan §1-§7, following the fixture pattern of
 # tests/runtime-verify-resume.test.sh (§5/§6 enum + render) and
 # tests/structural-classification-bound.test.sh (a stub `claude` review gate
 # driving the real gate_one + _rework_loop). Stubs mean no model or tokens are
@@ -36,6 +36,7 @@
 #   §4 verify no-verdict → gate-unobservable (gate=verify-runtime) via the gate-agnostic helper
 #   §5 observed REVIEW_RESULT: BLOCK is UNTOUCHED (discriminator is verdict-presence)
 #   §6 enum membership + status.sh render (resumable=blocked; no unknown-cause warning)
+#   §7 set_halt_cause write-failure → _classify_gate_no_verdict fails loud (no stranded halt)
 #
 # Run: bash tests/transient-gate-resilience.test.sh
 set -uo pipefail
@@ -383,6 +384,41 @@ echo "[§6b] status.sh surfaces gate-unobservable as resumable=blocked with no u
     || ok "full render emits no unknown-cause fallback warning"
   printf '%s' "$out" | grep -q 'gate-unobservable' \
     && ok "the gate-unobservable cause label appears in the halt render" || bad "render should name gate-unobservable (got: $out)"
+) || true
+
+# ===========================================================================
+# §7: set_halt_cause write-failure fails loud (no silent non-resumable halt).
+# Simulate a set_halt_cause write failure by overriding it (after sourcing) to
+# return non-zero with a diagnostic. _classify_gate_no_verdict must propagate
+# the failure (return non-zero) — NOT silently leave a blocked fragment lacking
+# halt_cause=gate-unobservable, which would strand it as non-resumable and
+# defeat §2's auto-resumability guarantee (TDD 0040 failure-modes edge case).
+echo "[§7] set_halt_cause write-failure → _classify_gate_no_verdict fails loud (no stranded halt)"
+( D="$ROOT/s7"; mkdir -p "$D/state.d"; cd "$D" || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  _write_tdd_fragment 0040-w7 40 docs/tdd/0040-w7.md 1 reviewing review \
+    1000 1000 "feat/0040-w7" "" log "" "" "build,test-first,verify,verify-runtime" "" "" "" "" "" "" ""
+  F="$STATE_DIR/0040-w7.json"
+  [ -f "$F" ] || { bad "fixture fragment not created"; exit 0; }
+  # Override set_halt_cause after sourcing to simulate a write failure.
+  set_halt_cause() { echo "error: set_halt_cause: simulated write failure for §7" >&2; return 1; }
+  diag="$(_classify_gate_no_verdict 0040-w7 review "exec error tail" 2>&1)"; rc=$?
+  [ "$rc" -ne 0 ] && ok "_classify_gate_no_verdict returns non-zero when set_halt_cause fails" \
+    || bad "_classify_gate_no_verdict must propagate write failure (got rc=$rc)"
+  printf '%s' "$diag" | grep -qiE 'set_halt_cause|write fail|error' \
+    && ok "_classify_gate_no_verdict propagates a diagnostic on write failure" \
+    || bad "write failure should surface a diagnostic (got: '$diag')"
+  # Fragment must NOT end at status=blocked without halt_cause=gate-unobservable —
+  # a half-classified blocked fragment is non-resumable and stranded (defeats §2).
+  stt="$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$F" | head -1)"
+  hc="$(_read_fragment_field "$F" halt_cause)"
+  if [ "$stt" = "blocked" ] && [ "$hc" != "gate-unobservable" ]; then
+    bad "fragment must NOT be left status=blocked without halt_cause=gate-unobservable (stranded non-resumable)"
+  else
+    ok "fragment not left in a stranded non-resumable state (status='$stt' halt_cause='$hc')"
+  fi
 ) || true
 
 # ===========================================================================
