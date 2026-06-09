@@ -401,12 +401,19 @@ declarations. The loop halts for human attention ONLY when it cannot proceed
 automatically:
 - **`structural-finding`** — the reviewer tagged the finding structural, or the
   rework would touch a file outside the TDD's declared set / exceed its per-file
-  bound. The runner does NOT attempt a large in-iteration refactor; it BLOCKs and
-  appends a design-level entry to `docs/tdd/BLOCKERS.md` (FR-67).
+  bound by more than the tolerance factor `THROUGHLINE_STRUCTURAL_DIFF_TOLERANCE`
+  (default `1.6`, which absorbs the measured ~1.5× systematic estimate
+  under-count so only a genuine over-scope escalates — TDD 0041). The runner does
+  NOT attempt a large in-iteration refactor; it BLOCKs and appends a design-level
+  entry to `docs/tdd/BLOCKERS.md` (FR-67).
 - **`rework-scope-exceeded`** — a rework commit overran the scope cap; it is
   hard-reset off the branch before shipping and the TDD BLOCKs (FR-66).
 - **`rework-budget-exhausted`** — `THROUGHLINE_REWORK_MAX` (default 3) attempts
-  per gate-step did not converge; the TDD BLOCKs for `/tdd-author` (FR-65).
+  per gate-step did not converge; the TDD BLOCKs for `/tdd-author` (FR-65). Only
+  *shipped-but-still-flawed* attempts count toward the budget — an attempt
+  hard-reset for scope (`rework-scope-exceeded` / `structural-finding(b)`) never
+  shipped, so its increment is rolled back and does not consume the budget
+  (TDD 0041).
 Per-attempt token spend is recorded as telemetry (rework is expected to cost
 less than the original build — FR-68), not enforced as a hard cap. The four
 knobs are snapshotted into `run.json`'s `config.rework_config` so any halt is
