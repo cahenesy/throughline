@@ -1420,7 +1420,22 @@ _rework_pre_pass() {  # <slug> <tdd> <new-head> <cleared-sha> <build-start-sha> 
   done <<< "$names_a_out"
 
   # FR-67(b) per-file bound — cumulative since the build start (per §1).
+  # TDD 0041 §4 (FR-67 gap-closure): escalate only at actual > declared × K, where
+  # K = THROUGHLINE_STRUCTURAL_DIFF_TOLERANCE (default 1.6, sitting just above the
+  # measured ~1.55× systematic under-estimate). Read the knob ONCE (norm #6).
+  # Guard with an ERE test — the `*[!0-9]*` case-globs elsewhere in this function
+  # can't express "decimal with optional fraction" — and fall back to 1.6 on any
+  # non-numeric/empty value (a malformed knob must NEVER read as 0, which would
+  # make every file escalate: fail safe toward the default, not toward 0). Then
+  # floor at 1.0 (a tolerance < 1 would TIGHTEN the bound, re-introducing the
+  # false halts K exists to remove). Tolerance applies ONLY to this per-file
+  # actual-vs-declared check — the (a) out-of-set membership check and the
+  # design-time tdd-lint caps are untouched (there is no `actual` to tolerate at
+  # design time).
   local decl num exc actual names_b_out names_b_rc per_file_out per_file_rc
+  local K="${THROUGHLINE_STRUCTURAL_DIFF_TOLERANCE:-1.6}"
+  if ! [[ "$K" =~ ^[0-9]+([.][0-9]+)?$ ]]; then K=1.6; fi
+  awk -v k="$K" 'BEGIN{exit !(k<1)}' && K=1.0
   names_b_out="$(git diff --name-only "$base..$new_head" 2>/dev/null)"; names_b_rc=$?
   if [ "$names_b_rc" -ne 0 ]; then
     printf 'PRECHECK_FAIL: git-diff-failed (FR-67(b) per-file iteration, rc=%s, base=%s, head=%s)\n' \
@@ -1442,8 +1457,11 @@ _rework_pre_pass() {  # <slug> <tdd> <new-head> <cleared-sha> <build-start-sha> 
     fi
     actual="$(printf '%s\n' "$per_file_out" | awk '{a+=$1; d+=$2} END{print a+d+0}')"
     [ -z "$actual" ] && actual=0
-    if [ "$actual" -gt "$num" ] 2>/dev/null; then
-      printf 'PRECHECK_FAIL: structural-finding(b) %s %s > %s\n' "$file" "$actual" "$num"
+    # Escalate iff actual > num × K (awk does the multiply so a float K is exact,
+    # no bash integer-truncation games). The diagnostic carries the factor so the
+    # halt is self-explanatory and reproducible (ADR 0006).
+    if awk -v a="$actual" -v n="$num" -v k="$K" 'BEGIN{exit !(a > n*k)}'; then
+      printf 'PRECHECK_FAIL: structural-finding(b) %s %s > %s (tolerance ×%s)\n' "$file" "$actual" "$num" "$K"
       fail=1
     fi
   done <<< "$names_b_out"
