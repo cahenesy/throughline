@@ -224,6 +224,13 @@ EOF
   [ "$rc" = "1" ] && ok "knob OFF: pre-check no-ops, model review runs (revcount=1)" || bad "knob OFF should pass through to review (revcount=$rc)"
 ) || true
 
+echo "[§6] build-prompt.md carries the preventive self-gate (Component 2) + the aggregator wire-in rule (Component 3)"
+( BP="$REPO/scripts/build-prompt.md"
+  grep_has 'Self-verify test-first ordering BEFORE step 3' "$BP" "preventive self-gate bullet present (TDD 0038 §2)"
+  grep_has 'AGGREGATOR WIRE-IN is new gating behavior' "$BP" "aggregator wire-in rule present: new gating behavior (TDD 0038 §3)"
+  grep_has 'aggregator with the new eval stubbed to fail' "$BP" "wire-in rule mandates a failing wire-in test, not SKIPPED-eligible"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
