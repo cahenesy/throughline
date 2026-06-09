@@ -361,6 +361,18 @@ echo "[K10] knob override honored + malformed knob falls back to 1.6 (never read
     || ok "diagnostic reports the 1.6 fallback, not the malformed value"
 ) || true
 
+# ============================================================================
+# Component 5 — authoring-side estimate-padding heuristic in tdd-author SKILL.md
+# ============================================================================
+echo "[S11] tdd-author SKILL.md carries the estimate-padding heuristic (Component 5)"
+( F="$REPO/skills/tdd-author/SKILL.md"
+  _chk_present "$F" "-qiF" "test/eval"        "names the test/eval estimate class"
+  _chk_present "$F" "-qF"  "1.6×"             "test/eval padding multiplier ≈ 1.6×"
+  _chk_present "$F" "-qiF" "shell-library"    "names the shell-library / script estimate class"
+  _chk_present "$F" "-qF"  "1.4×"             "shell-library padding multiplier ≈ 1.4×"
+  _chk_present "$F" "-qiF" "Expected diff size" "the heuristic lives in the ## Expected diff size block"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
