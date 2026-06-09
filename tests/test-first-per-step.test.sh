@@ -265,32 +265,56 @@ echo "[§8] dogfood (Component 3): wiring this eval into the aggregator makes it
     || bad "aggregator AND-chain must be non-zero with TFP_FAIL=1 (got rc=$drive_rc)"
 ) || true
 
-echo "[§9] prose mention of TEST_FIRST_SKIPPED: on a NON-sentinel line does NOT bypass the gate (review:1 blocker)"
+echo "[§9] TEST_FIRST_SKIPPED: in trailing SAME-LINE prose after the sha does NOT bypass the gate (review:1 blocker)"
 ( D="$ROOT/s9"; mkdir -p "$D/state.d"
   export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
   TDDS=()
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
   setup_step_repo "$D/repo" || { bad "setup failed"; exit 0; }
   _write_tdd_fragment 0038-fix 38 docs/tdd/0038-fix.md 1 building build 1000 1000 "feat/0038-fix" "" log "" "" "" "" "" "" "" "" "" "" "" ""
-  # impl-only range (no test(failing):), knob ON. The build emits a SINGLE
-  # assistant event whose text mentions TEST_FIRST_SKIPPED: in PROSE on a line
-  # BEFORE the real sentinel (which carries NO token). The anchored parse reads
-  # the token off the STEP_COMMIT line only (grep -m1), so the prose on the other
-  # line must NOT suppress the deterministic BLOCK. The unanchored predecessor
-  # (case on the raw multi-line $text) would have matched the prose and bypassed.
+  # impl-only range (no test(failing):), knob ON. The sentinel line carries NO
+  # real token, but trailing PROSE after the sha mentions TEST_FIRST_SKIPPED:.
+  # The token MUST be read only from the optional group IMMEDIATELY after the sha
+  # (tail -1 of the same STEP_COMMIT regex used for step_id/sha), so prose
+  # elsewhere on the line cannot set skip. A whole-line `grep '^STEP_COMMIT:'`
+  # captures the trailing prose and bypasses (the review:1 residual).
   cat > "$D/repo/ctl/build_plan" <<'EOF'
 IFS= read -r _init || true
 echo "impl" >> src/a.txt
 git add -A >/dev/null 2>&1; git commit -q -m "step(1): work" >/dev/null 2>&1
-SHA="$(git rev-parse HEAD)"
-printf '{"type":"assistant","message":{"content":[{"type":"text","text":"Note: I am NOT emitting a TEST_FIRST_SKIPPED:none token for this step.\\nSTEP_COMMIT: 1 %s"}]}}\n' "$SHA"
+echo "STEP_COMMIT: 1 $(git rev-parse HEAD) (note: not a TEST_FIRST_SKIPPED:none step)"
 IFS= read -r _reply || true
 echo "BATCH_RESULT: OK"
 EOF
   _per_step_review_loop 0038-fix docs/tdd/0038-fix.md "$D/s9.log" >/dev/null 2>&1
-  grep_has 'STEP_REVIEW: BLOCK test-first:' "$D/s9.log" "prose TEST_FIRST_SKIPPED: on a non-sentinel line does NOT suppress the BLOCK"
+  grep_has 'STEP_REVIEW: BLOCK test-first:' "$D/s9.log" "same-line trailing prose token does NOT suppress the BLOCK"
   rc="$(revcount "$D/repo")"
-  [ "$rc" = "0" ] && ok "no model review spawned (the prose mention did not bypass the gate)" || bad "prose mention must not spawn a review (revcount=$rc)"
+  [ "$rc" = "0" ] && ok "no model review spawned (same-line prose did not bypass the gate)" || bad "same-line prose must not spawn a review (revcount=$rc)"
+) || true
+
+echo "[§10] a PRIOR STEP_COMMIT carrying a token does NOT bypass a later token-less sentinel (tail -1 consistency)"
+( D="$ROOT/s10"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  setup_step_repo "$D/repo" || { bad "setup failed"; exit 0; }
+  _write_tdd_fragment 0038-fix 38 docs/tdd/0038-fix.md 1 building build 1000 1000 "feat/0038-fix" "" log "" "" "" "" "" "" "" "" "" "" "" ""
+  # One assistant event with TWO STEP_COMMIT lines: a stale earlier one carrying a
+  # token, then the REAL impl-only sentinel with none. step_id/sha use `tail -1`
+  # (the real one); the skip check MUST too, else a `grep '^STEP_COMMIT:'` reads
+  # the stale token off the earlier line and bypasses the BLOCK.
+  cat > "$D/repo/ctl/build_plan" <<'EOF'
+IFS= read -r _init || true
+echo "impl" >> src/a.txt
+git add -A >/dev/null 2>&1; git commit -q -m "step(1): work" >/dev/null 2>&1
+printf '{"type":"assistant","message":{"content":[{"type":"text","text":"STEP_COMMIT: 1 deadbeefdeadbeef TEST_FIRST_SKIPPED:stale\\nSTEP_COMMIT: 1 %s"}]}}\n' "$(git rev-parse HEAD)"
+IFS= read -r _reply || true
+echo "BATCH_RESULT: OK"
+EOF
+  _per_step_review_loop 0038-fix docs/tdd/0038-fix.md "$D/s10.log" >/dev/null 2>&1
+  grep_has 'STEP_REVIEW: BLOCK test-first:' "$D/s10.log" "stale prior-sentinel token does NOT suppress the later token-less BLOCK"
+  rc="$(revcount "$D/repo")"
+  [ "$rc" = "0" ] && ok "no model review spawned (tail -1 sentinel, not the stale earlier one)" || bad "prior token must not bypass (revcount=$rc)"
 ) || true
 
 echo
