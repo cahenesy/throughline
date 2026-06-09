@@ -232,6 +232,33 @@ echo "[V4] structural-finding(c) does NOT roll back the counter (rollback scoped
 ) || true
 
 # ============================================================================
+# Component 3 — sweep-aware scope read (post-condition guarantee, no code change)
+# ============================================================================
+echo "[S7] rework scope cap reads the swept finding's SUMMED region_lines"
+( D="$ROOT/S7"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  # A swept finding: the primary `region` spans only 8 lines, but `region_lines`
+  # is the SUM across all enumerated sites (60). The cap MUST be derived from the
+  # summed region_lines (→ max(60, 3×60)=180), NOT from the primary region's
+  # 8-line range (→ 60) — else a whole-class fix would be scope-rejected for
+  # touching all its sites. This pins Component 3's post-condition so a future
+  # refactor that re-derives the span from `region` is caught.
+  L="$D/review.log"
+  printf 'FINDING_BEGIN\nseverity: major\nstructural: false\nstructural_reason: none\nregion: src/a.txt:1-8\nregion_lines: 60\npattern_tags: [binding-rule-sweep]\nsummary: binding rule violated at 3 sites\nevidence: site quotes\nFINDING_END\nREVIEW_RESULT: BLOCK sweep\n' > "$L"
+  _rework_extract_finding "$L"
+  [ "${RWK_REGION:-}" = "60" ] \
+    && ok "RWK_REGION = summed region_lines (60), not the 8-line primary region" \
+    || bad "RWK_REGION should read the summed region_lines 60 (got '${RWK_REGION:-}')"
+  cap="$(_rework_scope_cap "${RWK_REGION:-0}")"
+  [ "$cap" = "180" ] \
+    && ok "scope cap = max(60, 3×60) = 180 covers the full swept span" \
+    || bad "scope cap should be 180 for the summed span (got '$cap')"
+) || true
+
+# ============================================================================
 # Component 2 — binding-rule-sweep instruction in review-prompt.md
 # ============================================================================
 # Mechanical presence check. Each assertion distinguishes grep exit 0 (present),
