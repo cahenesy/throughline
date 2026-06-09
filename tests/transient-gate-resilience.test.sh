@@ -286,6 +286,55 @@ EOF
 ) || true
 
 # ===========================================================================
+# §E: Failure-modes & edge cases from the TDD (coverage hardening for behavior
+# already delivered in steps 1-3; no production change).
+# §E1 double-flake (initial + retry both fail) → FAIL — retry-once is bounded, it
+#     is NOT a retry-until-green loop (which could mask a 50%-flaky real failure).
+# §E2 RETRIES=2 raises the bound: a stub that passes only on the 3rd attempt
+#     recovers — the knob governs how many re-observations are allowed.
+# §E3 a malformed/truncated review verdict (matches ^REVIEW_RESULT: but is neither
+#     PASS nor BLOCK) resolves to gate-unobservable (couldn't-observe), never a
+#     guessed PASS/FAIL (NFR-4: ambiguity resolves to couldn't-observe).
+echo "[§E] Failure-modes: double-flake bounded to FAIL; RETRIES=2 raises the bound; malformed verdict → gate-unobservable"
+( D="$ROOT/sE"; mkdir -p "$D"; cd "$D" || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  mkdir -p "$D/state.d"; TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  # A stub that passes only on its Nth invocation (counter-keyed), N from $PASS_ON.
+  cnt="$D/ec.count"
+  cat > "$D/ci-passon.sh" <<EOF
+#!/usr/bin/env bash
+n=\$(( \$(cat "$cnt" 2>/dev/null || echo 0) + 1 )); echo "\$n" > "$cnt"
+[ "\$n" -ge "\${PASS_ON:-99}" ] && exit 0 || exit 1
+EOF
+  chmod +x "$D/ci-passon.sh"; export CI_CHECKS="$D/ci-passon.sh"
+
+  # §E1: passes only on attempt 3, but RETRIES=1 allows only 2 attempts → FAIL.
+  printf '0\n' > "$cnt"; : > "$D/e1.log"
+  PASS_ON=3 THROUGHLINE_CI_CHECKS_RETRIES=1 run_ci_checks "$D/e1.log"; rc=$?
+  [ "$rc" -ne 0 ] && ok "double-flake under RETRIES=1 → FAIL (retry-once is bounded, not retry-until-green)" || bad "RETRIES=1 must not recover a 3rd-attempt pass (got rc=$rc)"
+
+  # §E2: same stub, RETRIES=2 → 3 attempts allowed → recovers.
+  printf '0\n' > "$cnt"; : > "$D/e2.log"
+  PASS_ON=3 THROUGHLINE_CI_CHECKS_RETRIES=2 run_ci_checks "$D/e2.log"; rc2=$?
+  [ "$rc2" -eq 0 ] && ok "RETRIES=2 raises the bound (a 3rd-attempt pass recovers; the knob governs)" || bad "RETRIES=2 should allow 3 attempts (got rc=$rc2)"
+
+  # §E3: malformed/truncated review verdict → gate-unobservable.
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D" MAINREPO="$D/repo"
+  tgr_setup_review_repo "$D/repo" || { bad "setup failed"; exit 0; }
+  BS="$(git rev-parse HEAD)"; tgr_build_output
+  # Matches ^REVIEW_RESULT: but is neither PASS nor BLOCK — a truncated/garbled line.
+  printf 'REVIEW_RESULT: \n' > "$D/repo/ctl/review.out"
+  printf '0\n' > "$D/repo/ctl/review.rc"
+  : > "$D/e3.log"
+  st="$(gate_one docs/tdd/0099-fix.md "$BS" "$D/e3.log")"; rce=$?
+  F="$STATE_DIR/0099-fix.json"
+  hc="$(_read_fragment_field "$F" halt_cause)"
+  [ "$hc" = "gate-unobservable" ] \
+    && ok "a malformed/truncated verdict resolves to gate-unobservable (NFR-4: no guessed verdict)" || bad "malformed verdict should be gate-unobservable (got halt_cause='$hc', rc=$rce)"
+) || true
+
+# ===========================================================================
 # §6: enum membership + status.sh render (Component 3). set_halt_cause
 # <slug> gate-unobservable returns 0 and writes the cause; the first next-action
 # begins with `resume` (the resumable marker _resume_from + status.sh
