@@ -283,6 +283,84 @@ echo "[S6] review-prompt.md carries the binding-rule-sweep instruction (Componen
   _chk_present "$F" "-qiF" "review passes"              "the no-split clause covers multiple review passes"
 ) || true
 
+# ============================================================================
+# Component 4 — estimate-error tolerance (K) on the runtime per-file (b) check
+# ============================================================================
+# mk_pp_repo — git repo declaring src/a.txt at ~50 lines (no exception), for
+# driving _rework_pre_pass's FR-67(b) per-file check directly. Leaves PWD in the
+# repo with HEAD at the build-start commit.
+mk_pp_repo() {
+  git init -q -b master; git config user.email t@t.t; git config user.name t
+  printf 'base\n' > base.txt; git add -A; git commit -qm base >/dev/null
+  mkdir -p docs/tdd src
+  cat > docs/tdd/0099-fix.md <<'EOF'
+# TDD 0099: fixture
+Status: draft
+
+## Touched files
+- `src/a.txt` (post) — the in-scope file
+
+## Expected diff size
+- `src/a.txt` — ~50 lines added
+EOF
+  git add -A; git commit -qm "build start: declare scope" >/dev/null
+}
+
+echo "[K8] within-tolerance overrun (1.4× ≤ K=1.6) PASSES the pre-pass"
+( D="$ROOT/K8"; mkdir -p "$D/state.d"; cd "$D" || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  mk_pp_repo; BS="$(git rev-parse HEAD)"
+  # declared 50, actual 70 (1.4×). region 40 → scope cap 120 so the FR-66 cap does
+  # NOT fire, isolating the (b) per-file check. K=1.6 default → 70 ≤ 80 → no (b).
+  seq 1 70 > src/a.txt; git add -A; git commit -qm "rework: 70 lines (within tolerance)" >/dev/null
+  NH="$(git rev-parse HEAD)"
+  out="$(_rework_pre_pass 0099-fix docs/tdd/0099-fix.md "$NH" "$BS" "$BS" 40)"; rc=$?
+  [ "$rc" -eq 0 ] && ok "pre-pass clears a 1.4× overrun" || bad "1.4× overrun should pass under K=1.6 (rc=$rc, out=$out)"
+  printf '%s\n' "$out" | grep -q 'structural-finding(b)' \
+    && bad "must NOT emit structural-finding(b) within tolerance (got: $out)" \
+    || ok "no structural-finding(b) within tolerance"
+) || true
+
+echo "[K9] beyond-tolerance overrun (1.8× > K=1.6) ESCALATES with the factor in the diagnostic"
+( D="$ROOT/K9"; mkdir -p "$D/state.d"; cd "$D" || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  mk_pp_repo; BS="$(git rev-parse HEAD)"
+  # declared 50, actual 90 (1.8× > 1.6). region 40 → cap 120 (scope clear) → (b) fires.
+  seq 1 90 > src/a.txt; git add -A; git commit -qm "rework: 90 lines (beyond tolerance)" >/dev/null
+  NH="$(git rev-parse HEAD)"
+  out="$(_rework_pre_pass 0099-fix docs/tdd/0099-fix.md "$NH" "$BS" "$BS" 40)"; rc=$?
+  [ "$rc" -ne 0 ] && ok "pre-pass escalates a 1.8× overrun" || bad "1.8× overrun should still escalate (rc=$rc, out=$out)"
+  printf '%s\n' "$out" | grep -qF 'PRECHECK_FAIL: structural-finding(b) src/a.txt 90 > 50 (tolerance ×1.6)' \
+    && ok "diagnostic names the tolerance factor (90 > 50 (tolerance ×1.6))" \
+    || bad "diagnostic should read 'structural-finding(b) src/a.txt 90 > 50 (tolerance ×1.6)' (got: $out)"
+) || true
+
+echo "[K10] knob override honored + malformed knob falls back to 1.6 (never reads as 0)"
+( D="$ROOT/K10"; mkdir -p "$D/state.d"; cd "$D" || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  mk_pp_repo; BS="$(git rev-parse HEAD)"
+  seq 1 90 > src/a.txt; git add -A; git commit -qm "rework: 90 lines" >/dev/null
+  NH="$(git rev-parse HEAD)"
+  # Override K=2.0: 90 ≤ 50×2.0=100 → PASSES.
+  out="$(THROUGHLINE_STRUCTURAL_DIFF_TOLERANCE=2.0 _rework_pre_pass 0099-fix docs/tdd/0099-fix.md "$NH" "$BS" "$BS" 40)"; rc=$?
+  [ "$rc" -eq 0 ] && ok "K=2.0 override lets a 1.8× overrun pass" || bad "K=2.0 should pass 90 vs 50 (rc=$rc, out=$out)"
+  # Malformed K=abc → fall back to 1.6 default (NOT 0, which would escalate every file): 90 > 80 → (b).
+  out2="$(THROUGHLINE_STRUCTURAL_DIFF_TOLERANCE=abc _rework_pre_pass 0099-fix docs/tdd/0099-fix.md "$NH" "$BS" "$BS" 40)"; rc2=$?
+  [ "$rc2" -ne 0 ] && ok "malformed K falls back to 1.6 (90 escalates)" || bad "malformed K must default to 1.6 not 0 (rc=$rc2, out=$out2)"
+  printf '%s\n' "$out2" | grep -qF '(tolerance ×abc)' \
+    && bad "malformed knob must not echo abc as the tolerance — should fall back to 1.6 (got: $out2)" \
+    || ok "diagnostic reports the 1.6 fallback, not the malformed value"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
