@@ -28,6 +28,15 @@ bad()  { printf 'fail\n' >>"$RESULTS"; printf '  FAIL — %s\n' "$1"; }
 
 ROOT="$(mktemp -d)"; trap 'rm -rf "$ROOT"' EXIT
 
+# Test isolation: VP5's true-rewrite REFUSAL asserts _resume_from's default,
+# no-`--recover` divergence behavior. The runner sets RECOVER=1 for a `/implement
+# --recover` resume, and ci-checks runs this eval as a SUBPROCESS that INHERITS
+# that env — an inherited RECOVER=1 routes the refusal through resume.sh's
+# divergence re-baseline arm (TDD 0039 §3) instead of refusing, producing false
+# failures (green standalone, red only inside a --recover resume). Unset it so
+# every scenario controls RECOVER explicitly. (Sibling fix to run-recovery.test.sh.)
+unset RECOVER
+
 # A minimal review-prompt template so _render_review_prompt resolves without the
 # implement.sh setup block. The placeholders are the same ones the real template
 # carries; the content is irrelevant to the wrapper under test.
