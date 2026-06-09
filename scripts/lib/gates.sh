@@ -573,6 +573,10 @@ run_ci_checks() {  # <log>
       return 0
     fi
     if [ "$attempt" -ge "$retries" ]; then
+      # NFR-4 honesty: a retries-exhausted FAIL is recorded as explicitly as a
+      # recovery, so a reader can tell it apart from a single-shot failure.
+      printf 'ci-checks: FAILED after %d attempt(s) (initial + %d retries; retries exhausted, real FAIL)\n' \
+        "$((attempt + 1))" "$retries" >> "$log"
       return 1
     fi
     attempt=$((attempt + 1))
