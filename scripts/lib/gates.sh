@@ -1837,9 +1837,12 @@ _gate_output_tail() {  # <log> <pre-log-size>
 # can see WHY the gate could not run. set_halt_cause FIRST then _terminal_state
 # blocked (TDD 0040 §2 order): set_halt_cause preserves the current status while
 # writing the halt fields, and _terminal_state blocked then carries those fields
-# forward, so the fragment ends at status=blocked with the cause intact. This
-# helper is gate-agnostic: the review gate (_rework_loop, below) drives it; the
-# verify-runtime call site (gate_one in lib/resume.sh) reuses the SAME classifier.
+# forward, so the fragment ends at status=blocked with the cause intact. The
+# helper is gate-AGNOSTIC by design (it takes <gate> as a parameter): in THIS TDD
+# only the review gate (_rework_loop, below) drives it — the verify-runtime
+# no-verdict path lives in gate_one in lib/resume.sh, which is OUTSIDE this TDD's
+# declared ## Touched files and still records the old terminal `failed`; rewiring
+# that one call site to this classifier is a follow-up within resume.sh's scope.
 _classify_gate_no_verdict() {  # <slug> <gate> <tail>
   local slug="$1" gate="$2" tail="$3"
   set_halt_cause "$slug" gate-unobservable "$gate" "$gate gate emitted no parseable verdict: $tail" \

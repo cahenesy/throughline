@@ -14,10 +14,11 @@
 #   (a resumable blocked halt) instead of a terminal `failed` — couldn't-observe
 #   is not observed-wrong (ADR 0006 / NFR-4). The classification is a
 #   gate-agnostic helper (_classify_gate_no_verdict) the review gate (_rework_loop
-#   in lib/gates.sh) drives; the verify-runtime gate's terminal-state write lives
-#   in lib/resume.sh's gate_one (OUTSIDE this TDD's declared ## Touched files), so
-#   §4 exercises the helper with gate=verify-runtime to pin the gate-agnostic
-#   classification the verify call site reuses.
+#   in lib/gates.sh) drives. The verify-runtime gate's terminal-state write lives
+#   in lib/resume.sh's gate_one (OUTSIDE this TDD's declared ## Touched files) and
+#   is NOT rewired here — it still records the old terminal `failed`; §4 exercises
+#   the helper with gate=verify-runtime to pin that the classification is
+#   gate-agnostic, so a follow-up can wire that call site to it.
 #
 #   Component 3 — enum + render mirror. `gate-unobservable` is admitted by the
 #   closed FR-63 halt-cause enum with a resume-first next-action list (state.sh)
@@ -217,9 +218,11 @@ echo "[§3] review subprocess emits NO REVIEW_RESULT → gate-unobservable (resu
 
 # §4: verify no-verdict → gate-unobservable (gate=verify-runtime). The verify-gate
 # terminal-state write lives in lib/resume.sh's gate_one (OUTSIDE this TDD's
-# declared ## Touched files), so this exercises the gate-agnostic classifier the
-# verify call site reuses: _classify_gate_no_verdict <slug> verify-runtime <tail>
-# must record the SAME resumable gate-unobservable halt with gate=verify-runtime.
+# declared ## Touched files) and is NOT rewired here — it still records the old
+# terminal `failed`. This pins that the classifier is gate-AGNOSTIC so a future
+# follow-up can wire that call site to it: _classify_gate_no_verdict <slug>
+# verify-runtime <tail> records the SAME resumable gate-unobservable halt with
+# gate=verify-runtime that the review path produces.
 echo "[§4] verify-runtime no-verdict → gate-unobservable via the gate-agnostic helper (gate=verify-runtime)"
 ( D="$ROOT/s4"; mkdir -p "$D/state.d"; cd "$D" || { bad "cd failed"; exit 0; }
   export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
