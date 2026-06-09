@@ -976,11 +976,18 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
               # grounded (ADR 0006), token-free, and riding the existing per-step
               # BLOCK → build-fixes-and-re-emits path (ADR 0007; no new halt type).
               tf_skip=0
-              _tf_sentinel="$(printf '%s' "$text" | grep '^STEP_COMMIT:[[:space:]]')"
+              # Read the skip token off the SAME single sentinel match step_id/sha
+              # came from: the `tail -1` of the STEP_COMMIT regex EXTENDED with an
+              # optional trailing token group. This keeps the skip check consistent
+              # with the step_id/sha extraction (both take the LAST match), and the
+              # `-oE` span ends at the optional token — so the token is honored ONLY
+              # when it immediately follows the sha on that sentinel. A prose mention
+              # of TEST_FIRST_SKIPPED: elsewhere (a different line, trailing same-line
+              # prose, or a stale earlier STEP_COMMIT line) is outside the captured
+              # span and CANNOT set tf_skip — closing the grep-divergence bypass.
+              _tf_sentinel="$(printf '%s' "$text" | grep -aoE 'STEP_COMMIT:[[:space:]]+[0-9]+[[:space:]]+[^[:space:]]+([[:space:]]+TEST_FIRST_SKIPPED:[^[:space:]]+)?' | tail -1)"
               case "$_tf_sentinel" in *"TEST_FIRST_SKIPPED:"*) tf_skip=1 ;; esac
-              # Extract the sentinel line first so a prose mention of
-              # TEST_FIRST_SKIPPED: before the real sentinel cannot silently
-              # disable the BLOCK. Resolve the per-step base EXACTLY
+              # Resolve the per-step base EXACTLY
               # as _run_per_step_review does (gates.sh last_cleared_review_sha, else
               # build_start) so a stale prior test(failing): in a cleared step does
               # NOT satisfy this range; an unset STATE_DIR / absent fragment (the
