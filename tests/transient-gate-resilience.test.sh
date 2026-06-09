@@ -193,7 +193,8 @@ echo "[§3] review subprocess emits NO REVIEW_RESULT → gate-unobservable (resu
   TDDS=()
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
   tgr_setup_review_repo "$D/repo" || { bad "setup failed"; exit 0; }
-  BS="$(git rev-parse HEAD)"; tgr_build_output
+  BS="$(git rev-parse HEAD)" || { bad "git rev-parse failed"; exit 0; }
+  tgr_build_output || { bad "tgr_build_output failed"; exit 0; }
   # No-verdict review: emit the exec-error tail to stdout (captured to the gate
   # log by _claude_call) and exit non-zero, with NO REVIEW_RESULT line.
   printf "timeout: failed to run command 'claude': No such file or directory\n" > "$D/repo/ctl/review.out"
@@ -253,7 +254,8 @@ echo "[§5] observed REVIEW_RESULT: BLOCK drives bounded rework, NOT gate-unobse
   TDDS=()
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
   tgr_setup_review_repo "$D/repo" || { bad "setup failed"; exit 0; }
-  BS="$(git rev-parse HEAD)"; tgr_build_output
+  BS="$(git rev-parse HEAD)" || { bad "git rev-parse failed"; exit 0; }
+  tgr_build_output || { bad "tgr_build_output failed"; exit 0; }
   # Observed BLOCK + a non-structural major finding AND a non-zero exit — the
   # verdict must still win (not reclassified gate-unobservable).
   cat > "$D/repo/ctl/review.out" <<'EOF'
@@ -322,7 +324,8 @@ EOF
   # §E3: malformed/truncated review verdict → gate-unobservable.
   export INTEGRATION="master" CHANGE="ci" LOGDIR="$D" MAINREPO="$D/repo"
   tgr_setup_review_repo "$D/repo" || { bad "setup failed"; exit 0; }
-  BS="$(git rev-parse HEAD)"; tgr_build_output
+  BS="$(git rev-parse HEAD)" || { bad "git rev-parse failed"; exit 0; }
+  tgr_build_output || { bad "tgr_build_output failed"; exit 0; }
   # Matches ^REVIEW_RESULT: but is neither PASS nor BLOCK — a truncated/garbled line.
   printf 'REVIEW_RESULT: \n' > "$D/repo/ctl/review.out"
   printf '0\n' > "$D/repo/ctl/review.rc"
