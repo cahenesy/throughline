@@ -118,3 +118,15 @@ EOF
   printf '%s' "$warn" | grep -qiE 'not numeric|falling back' \
     && ok "non-numeric RETRIES emits a default-and-warn diagnostic" || bad "non-numeric RETRIES should warn (got: '$warn')"
 ) || true
+
+# --- report ----------------------------------------------------------------
+# Fail loud (FR-74 #1): the result tally is what makes every assertion above
+# enforceable — the final `[ "$FAIL" -eq 0 ]` sets the script's exit code, so a
+# single `bad` makes `bash tests/transient-gate-resilience.test.sh` exit non-zero
+# and the aggregator's `|| TGR_FAIL=1` (step 5) catches it.
+echo
+PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
+FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
+rm -f "$RESULTS"
+echo "=== transient-gate-resilience eval: $PASS passed, $FAIL failed ==="
+[ "$FAIL" -eq 0 ]
