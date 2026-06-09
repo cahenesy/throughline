@@ -124,6 +124,54 @@ EOF
     && ok "non-numeric RETRIES emits a default-and-warn diagnostic" || bad "non-numeric RETRIES should warn (got: '$warn')"
 ) || true
 
+# ===========================================================================
+# §6: enum membership + status.sh render (Component 3). set_halt_cause
+# <slug> gate-unobservable returns 0 and writes the cause; the first next-action
+# begins with `resume` (the resumable marker _resume_from + status.sh
+# --check-paused key on); a value NOT in the closed enum still returns 1 (the
+# addition is what admits gate-unobservable, not a wildcard). status.sh
+# --check-paused surfaces it resumable=blocked, and the full render emits no
+# unknown-cause warning.
+echo "[§6] gate-unobservable: closed-enum membership, resume-first action, status.sh render"
+( D="$ROOT/s6"; mkdir -p "$D/state.d"; cd "$D" || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  _next_actions_for_cause gate-unobservable >/dev/null 2>&1 \
+    && ok "_next_actions_for_cause admits gate-unobservable" || bad "gate-unobservable should be enumerated"
+  acts="$(_next_actions_for_cause gate-unobservable 2>/dev/null)"
+  printf '%s' "$acts" | grep -qE '^resume' \
+    && ok "gate-unobservable's first next-action begins with resume" || bad "first next-action must begin with resume (got '$acts')"
+  # The action labels must be comma-free per element so the CSV round-trips.
+  _write_tdd_fragment 0040-x 40 docs/tdd/0040-x.md 1 blocked review 1000 1000 "feat/0040-x" "" log "" "" "build,test-first,verify,verify-runtime" "" "" "" "" "" "" "" "" "" "" "" ""
+  set_halt_cause 0040-x gate-unobservable review "timeout: failed to run command 'claude': No such file or directory" 2>/dev/null; rc=$?
+  [ "$rc" -eq 0 ] && ok "set_halt_cause gate-unobservable returns 0" || bad "set_halt_cause should accept gate-unobservable (got rc=$rc)"
+  hc="$(_read_fragment_field "$STATE_DIR/0040-x.json" halt_cause)"
+  [ "$hc" = "gate-unobservable" ] && ok "halt_cause written = gate-unobservable" || bad "halt_cause should be gate-unobservable (got '$hc')"
+  # Negative: an unknown cause still returns 1 (the enum is still closed).
+  set_halt_cause 0040-x not-a-real-cause-xyz review "" 2>/dev/null; rc2=$?
+  [ "$rc2" -ne 0 ] && ok "an unknown cause still returns non-zero (enum stays closed)" || bad "unknown cause must return non-zero"
+) || true
+
+echo "[§6b] status.sh surfaces gate-unobservable as resumable=blocked with no unknown-cause warning"
+( D="$ROOT/s6b"; mkdir -p "$D/state.d"; cd "$D" || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  printf '{"schema":1,"started_at":1000,"updated_at":1001,"pid":1,"state":"blocked","total":1,"completed":0,"failed":0,"blocked":1,"skipped":0,"paused":0}\n' > "$D/state.d/run.json"
+  _write_tdd_fragment 0040-x 40 docs/tdd/0040-x.md 1 blocked review 1000 1000 "feat/0040-x" "" log "" "" "build,test-first,verify,verify-runtime" "" "" "" "" "" "" "" "" "" "" "" ""
+  set_halt_cause 0040-x gate-unobservable review "timeout: No such file or directory" 2>/dev/null
+  cp="$(bash "$REPO/scripts/status.sh" --logdir "$D" --check-paused 2>&1)"
+  printf '%s' "$cp" | grep -qE 'slug=0040-x .*cause=gate-unobservable resumable=blocked' \
+    && ok "--check-paused surfaces cause=gate-unobservable resumable=blocked" || bad "should surface gate-unobservable resumable=blocked (got: '$cp')"
+  out="$(bash "$REPO/scripts/status.sh" --logdir "$D" 2>&1)"
+  printf '%s' "$out" | grep -qi 'unknown halt_cause' \
+    && bad "status.sh must NOT warn unknown-cause for gate-unobservable (got: $out)" \
+    || ok "full render emits no unknown-cause fallback warning"
+  printf '%s' "$out" | grep -q 'gate-unobservable' \
+    && ok "the gate-unobservable cause label appears in the halt render" || bad "render should name gate-unobservable (got: $out)"
+) || true
+
 # --- report ----------------------------------------------------------------
 # Fail loud (FR-74 #1): the result tally is what makes every assertion above
 # enforceable — the final `[ "$FAIL" -eq 0 ]` sets the script's exit code, so a
