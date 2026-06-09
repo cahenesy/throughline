@@ -231,6 +231,31 @@ echo "[V4] structural-finding(c) does NOT roll back the counter (rollback scoped
     || bad "(c) must NOT roll back the counter — review:1 should stay 1 (got: $(_read_fragment_raw_object "$F" rework_attempts))"
 ) || true
 
+# ============================================================================
+# Component 2 — binding-rule-sweep instruction in review-prompt.md
+# ============================================================================
+# Mechanical presence check. Each assertion distinguishes grep exit 0 (present),
+# 1 (absent → bad), and ≥2 (error → fail closed), and fails on an unreadable file
+# (binding L-001/L-002).
+_chk_present() {  # <file> <grep-flags> <pattern> <desc>
+  local f="$1" flags="$2" pat="$3" desc="$4" rc
+  if [ ! -r "$f" ]; then bad "$desc (file unreadable: $f)"; return; fi
+  grep $flags -- "$pat" "$f" >/dev/null 2>&1; rc=$?
+  if   [ "$rc" -eq 0 ]; then ok  "$desc"
+  elif [ "$rc" -eq 1 ]; then bad "$desc (absent)"
+  else bad "$desc (grep error rc=$rc)"; fi
+}
+
+echo "[S6] review-prompt.md carries the binding-rule-sweep instruction (Component 2)"
+( F="$REPO/scripts/review-prompt.md"
+  _chk_present "$F" "-qF" "binding-rule-sweep"          "carries the binding-rule-sweep pattern tag"
+  _chk_present "$F" "-qiF" "more than one region"       "enumerates ALL sites when a rule is violated in more than one region"
+  _chk_present "$F" "-qiF" "sum of the enumerated"      "requires region_lines = SUM of the enumerated spans"
+  _chk_present "$F" "-qiF" "region_lines\` to the sum"  "names region_lines as the summed span"
+  _chk_present "$F" "-qiF" "must not split"             "instructs: do NOT split one binding rule across findings/passes"
+  _chk_present "$F" "-qiF" "review passes"              "the no-split clause covers multiple review passes"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
