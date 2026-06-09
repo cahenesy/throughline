@@ -976,7 +976,7 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
               # grounded (ADR 0006), token-free, and riding the existing per-step
               # BLOCK → build-fixes-and-re-emits path (ADR 0007; no new halt type).
               tf_skip=0
-              _tf_sentinel="$(printf '%s' "$text" | grep -m1 'STEP_COMMIT:[[:space:]]')"
+              _tf_sentinel="$(printf '%s' "$text" | grep 'STEP_COMMIT:[[:space:]]' | tail -1)"
               case "$_tf_sentinel" in *"TEST_FIRST_SKIPPED:"*) tf_skip=1 ;; esac
               # Extract the sentinel line first so a prose mention of
               # TEST_FIRST_SKIPPED: before the real sentinel cannot silently
