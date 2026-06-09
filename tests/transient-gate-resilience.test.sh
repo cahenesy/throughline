@@ -385,6 +385,34 @@ echo "[§6b] status.sh surfaces gate-unobservable as resumable=blocked with no u
     && ok "the gate-unobservable cause label appears in the halt render" || bad "render should name gate-unobservable (got: $out)"
 ) || true
 
+# ===========================================================================
+# §W: dogfood (TDD 0040 §5 / TDD 0038 §3 wire-in rule). Wiring this eval into the
+# aggregator is NEW gating behavior — the registration must make the aggregator's
+# exit go non-zero when THIS eval fails. Structural: the eval is referenced in
+# tests/implement-gate.test.sh. Behavioral: the aggregator's real final AND-chain
+# (extracted verbatim, driven against stub integers — no recursion) evaluates
+# false when TGR_FAIL=1. Before the wire-in the chain never references TGR_FAIL,
+# so it is true (RED); after, it includes [ "$TGR_FAIL" -eq 0 ] (GREEN).
+echo "[§W] the eval is wired into the aggregator and propagates failure (TDD 0040 §5)"
+( AGG="$REPO/tests/implement-gate.test.sh"
+  [ -r "$AGG" ] || { bad "INFRA: §W — aggregator unreadable: $AGG"; exit 0; }
+  grep -qE 'transient-gate-resilience\.test\.sh' "$AGG" \
+    && ok "the eval is registered in the aggregator" || bad "implement-gate.test.sh should register transient-gate-resilience.test.sh"
+  chain="$(grep -aE '^\[ "\$FAIL" -eq 0 \] &&' "$AGG" | tail -1)"
+  [ -n "$chain" ] || { bad "INFRA: §W — could not locate the aggregator final AND-chain"; exit 0; }
+  drive_rc="$(
+    set +u
+    for v in $(printf '%s' "$chain" | grep -aoE '\$[A-Za-z_][A-Za-z0-9_]*' | tr -d '$' | sort -u); do
+      eval "$v=0"
+    done
+    TGR_FAIL=1
+    eval "$chain"; echo $?
+  )"
+  [ "$drive_rc" != "0" ] \
+    && ok "aggregator final AND-chain goes non-zero when this eval fails (wire-in propagates)" \
+    || bad "aggregator AND-chain must be non-zero with TGR_FAIL=1 (got rc=$drive_rc)"
+) || true
+
 # --- report ----------------------------------------------------------------
 # Fail loud (FR-74 #1): the result tally is what makes every assertion above
 # enforceable — the final `[ "$FAIL" -eq 0 ]` sets the script's exit code, so a
