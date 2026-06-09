@@ -544,7 +544,47 @@ _fresh_review_verdict() {  # <log> <pre-log-size>
     | grep -aE '^[`[:space:]]*REVIEW_RESULT:' \
     | tail -1
 }
-run_ci_checks()    { bash "$CI_CHECKS" >>"$1" 2>&1; }
+# run_ci_checks <log> — TDD 0040 §1 (FR-15, NFR-4). Run ci-checks.sh; on a
+# non-zero exit, re-run the checks up to THROUGHLINE_CI_CHECKS_RETRIES (default 1)
+# more times in the SAME worktree (sequential, no parallelism). The FIRST passing
+# run wins (PASS); only the initial run AND every retry failing is a real FAIL —
+# so a transient suite flake is re-observed, never guessed past (ADR 0006), and a
+# reproducible regression still FAILs. A pass on retry writes a
+# "passed on retry N (initial run flaked)" telemetry line to the gate log so a
+# recovered flake is visible, not silent; a retries-exhausted FAIL writes an
+# equally explicit "FAILED after N attempt(s)" line (NFR-4: honest both ways).
+# THROUGHLINE_CI_CHECKS_RETRIES=0 restores the no-retry behavior (an escape hatch
+# for a deterministic-suite project); a non-numeric value defaults-and-warns
+# (mirrors the THROUGHLINE_WATCH_MAX_SECS validation pattern). The signature is
+# unchanged (<log> only) so the gate_one call site is untouched.
+run_ci_checks() {  # <log>
+  local log="$1"
+  local retries="${THROUGHLINE_CI_CHECKS_RETRIES:-1}"
+  case "$retries" in
+    ''|*[!0-9]*)
+      echo "warning: THROUGHLINE_CI_CHECKS_RETRIES='$retries' not numeric; falling back to 1" >&2
+      retries=1 ;;
+  esac
+  local attempt=0
+  while :; do
+    if bash "$CI_CHECKS" >>"$log" 2>&1; then
+      if [ "$attempt" -gt 0 ]; then
+        printf 'ci-checks: passed on retry %d (initial run flaked; recovered, NFR-4)\n' "$attempt" >> "$log"
+      fi
+      return 0
+    fi
+    if [ "$attempt" -ge "$retries" ]; then
+      # NFR-4 honesty: a retries-exhausted FAIL is recorded as explicitly as a
+      # recovery, so a reader can tell it apart from a single-shot failure.
+      printf 'ci-checks: FAILED after %d attempt(s) (initial + %d retries; retries exhausted, real FAIL)\n' \
+        "$((attempt + 1))" "$retries" >> "$log"
+      return 1
+    fi
+    attempt=$((attempt + 1))
+    printf 'ci-checks: attempt failed; re-running (retry %d of %d, THROUGHLINE_CI_CHECKS_RETRIES)\n' \
+      "$attempt" "$retries" >> "$log"
+  done
+}
 # _test_first_ok_range <base> <head> <skip-present> — the SHARED test-first
 # predicate (TDD 0038 §1 / FR-15a). Returns 0 iff `git log <base>..<head>`
 # contains a commit subject matching `^test(failing)` case-insensitively
