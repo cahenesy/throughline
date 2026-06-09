@@ -656,4 +656,20 @@ if [ -f "$TFP" ]; then
   bash "$TFP" || TFP_FAIL=1
 fi
 
-[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ] && [ "$SMS_FAIL" -eq 0 ] && [ "$PRM_FAIL" -eq 0 ] && [ "$GRM_FAIL" -eq 0 ] && [ "$BRL_FAIL" -eq 0 ] && [ "$SCB_FAIL" -eq 0 ] && [ "$RR_FAIL" -eq 0 ] && [ "$BCL_FAIL" -eq 0 ] && [ "$BO_FAIL" -eq 0 ] && [ "$IDP_FAIL" -eq 0 ] && [ "$RES_FAIL" -eq 0 ] && [ "$CVR_FAIL" -eq 0 ] && [ "$HRS_FAIL" -eq 0 ] && [ "$SHR_FAIL" -eq 0 ] && [ "$BPL_FAIL" -eq 0 ] && [ "$BDN_FAIL" -eq 0 ] && [ "$IDISC_FAIL" -eq 0 ] && [ "$ERC_FAIL" -eq 0 ] && [ "$SCP_FAIL" -eq 0 ] && [ "$IMR_FAIL" -eq 0 ] && [ "$RVR_FAIL" -eq 0 ] && [ "$WIC_FAIL" -eq 0 ] && [ "$RTH_FAIL" -eq 0 ] && [ "$TFP_FAIL" -eq 0 ]
+# Run the transient-gate-resilience eval (TDD 0040 / FR-15, FR-57, NFR-4; ADR
+# 0004, 0006, 0007) as part of the same suite so the ci-checks retry-once loop
+# (Component 1), the gate-unobservable no-verdict classification + the gate-agnostic
+# _classify_gate_no_verdict / _gate_output_tail helpers (Component 2), and the
+# closed-enum + status-render mirror for gate-unobservable (Component 3) are
+# regression-gated by ci-checks, not orphaned from the aggregator. Per the
+# TDD 0038 §3 wire-in rule this registration is new gating behavior — its failing
+# wire-in test (the eval's §W dogfood) drove the AND-chain term below red→green
+# before this block landed.
+TGR="$(dirname "$0")/transient-gate-resilience.test.sh"
+TGR_FAIL=0
+if [ -f "$TGR" ]; then
+  echo
+  bash "$TGR" || TGR_FAIL=1
+fi
+
+[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ] && [ "$SMS_FAIL" -eq 0 ] && [ "$PRM_FAIL" -eq 0 ] && [ "$GRM_FAIL" -eq 0 ] && [ "$BRL_FAIL" -eq 0 ] && [ "$SCB_FAIL" -eq 0 ] && [ "$RR_FAIL" -eq 0 ] && [ "$BCL_FAIL" -eq 0 ] && [ "$BO_FAIL" -eq 0 ] && [ "$IDP_FAIL" -eq 0 ] && [ "$RES_FAIL" -eq 0 ] && [ "$CVR_FAIL" -eq 0 ] && [ "$HRS_FAIL" -eq 0 ] && [ "$SHR_FAIL" -eq 0 ] && [ "$BPL_FAIL" -eq 0 ] && [ "$BDN_FAIL" -eq 0 ] && [ "$IDISC_FAIL" -eq 0 ] && [ "$ERC_FAIL" -eq 0 ] && [ "$SCP_FAIL" -eq 0 ] && [ "$IMR_FAIL" -eq 0 ] && [ "$RVR_FAIL" -eq 0 ] && [ "$WIC_FAIL" -eq 0 ] && [ "$RTH_FAIL" -eq 0 ] && [ "$TFP_FAIL" -eq 0 ] && [ "$TGR_FAIL" -eq 0 ]
