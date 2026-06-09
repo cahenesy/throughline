@@ -372,11 +372,11 @@ Total: 8 design files touched (+ build-applied `README.md` doc-sync and `plugin.
 
 - `scripts/lib/gates.sh` — ~90 lines added/changed (helper + anchored loop wiring + the long fixed BLOCK message; no recording).
 - `scripts/build-prompt.md` — ~22 lines added (self-gate + wire-in rule).
-- `tests/test-first-per-step.test.sh` — ~280 lines added (new eval: 8 observation points with fail-closed grep guards).
+- `tests/test-first-per-step.test.sh` — ~330 lines added (exception: a single cohesive per-step test-first eval — 9 observation points incl. the security-relevant prose-mention anchoring case §9, all sharing one stub-claude/handshake harness; splitting would fragment shared fixture setup and is more brittle than the marginal over-300 size).
 - `tests/implement-gate.test.sh` — ~18 lines added (aggregator wire-in + its failing test).
 - `tests/continuous-in-build-review.test.sh` — ~8 lines added (export + comment).
 - `tests/build-defensive-norms.test.sh` — ~8 lines added (export + comment).
 - `tests/step-commit-protocol.test.sh` — ~9 lines added (export + comment).
 - `tests/coproc-verdict-resilience.test.sh` — ~8 lines added (export + comment).
 
-Total expected diff: ~443 lines across 8 design files (each under the 300-line per-file bound). Build-applied `README.md` (~7 lines) + `plugin.json` bump ride the commit, not counted.
+Total expected diff: ~493 lines across 8 design files (all under the 300-line per-file bound except `test-first-per-step.test.sh`, which declares an inline exception above). Build-applied `README.md` (~7 lines) + `plugin.json` bump ride the commit, not counted.
