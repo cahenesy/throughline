@@ -988,6 +988,15 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
               [ -z "$tf_base" ] && tf_base="$build_start"
               # Honor the SAME knob as the whole-build gate: when 0, no-op.
               if [ "${THROUGHLINE_REQUIRE_TEST_FIRST:-1}" = "1" ] && ! _test_first_ok_range "$tf_base" "$sha" "$tf_skip"; then
+                # TDD 0030 §5: COMMIT the streaming interval that produced this step
+                # BEFORE writing the deterministic BLOCK — the SAME accounting as the
+                # review-verdict path (a deterministic BLOCK substitutes for the
+                # review at this step). Unlike the protocol-error correction path,
+                # which is bounded by a 2-attempt COUNT budget, the test-first BLOCK
+                # has no count budget; accumulating active seconds here is what lets
+                # the overall_active watchdog bound a build that loops on impl-first
+                # re-emits instead of letting it evade the watchdog indefinitely.
+                build_active_seconds=$((build_active_seconds + $(date +%s) - interval_start))
                 verdict="STEP_REVIEW: BLOCK test-first: step $step_id commits implementation in $tf_base..$sha with no preceding test(failing): commit (FR-15a). Add the failing test as a separate test(failing): <behavior> commit, then re-emit STEP_COMMIT: $step_id <new-sha> for the same step. If this step is genuinely no-new-behavior, re-emit as STEP_COMMIT: $step_id $sha TEST_FIRST_SKIPPED:<reason>."
                 printf '%s\n' "$verdict" >> "$log"
                 # Deterministic no-model BLOCK: write the verdict to the build's
@@ -1000,7 +1009,7 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
                   printf 'THROUGHLINE_COPROC_DEAD: build coprocess exited before test-first BLOCK delivery (step %s); cleared work is preserved (transient)\n' "$step_id" >> "$log"
                   break
                 fi
-                interval_start=$(date +%s)   # same clock handling as the protocol-error correction path
+                interval_start=$(date +%s)   # the next active interval (the build's rework) begins now
                 continue
               fi
               # A declared per-step skip records its reason as telemetry; the model
