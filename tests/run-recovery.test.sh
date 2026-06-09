@@ -20,6 +20,16 @@ bad()  { printf 'fail\n' >>"$RESULTS"; printf '  FAIL — %s\n' "$1"; }
 
 ROOT="$(mktemp -d)"; trap 'rm -rf "$ROOT"' EXIT
 
+# Test isolation: this eval's divergence-REFUSAL scenarios (e.g. [4.b]) assert
+# the default, no-`--recover` behavior of _resume_from. The runner sets RECOVER=1
+# for a `/implement --recover` resume, and ci-checks runs this eval as a SUBPROCESS
+# that INHERITS that environment — so an inherited RECOVER=1 silently routes the
+# refusal scenarios through resume.sh's divergence re-baseline arm instead of the
+# refuse path, producing false failures (the suite is green standalone but red when
+# ci-checks runs inside a --recover resume). Unset it so every scenario controls
+# RECOVER explicitly. (Same isolation class as the TDD 0019 token_spend mtime fix.)
+unset RECOVER
+
 # --- Step 1: schema extensions + paused status enum ---------------------------
 echo "[1.a] _write_tdd_fragment writes the four additive fields (paused_cause, gates_completed, retries, branch_head_at_pause)"
 ( D="$ROOT/1a"; mkdir -p "$D/state.d"
