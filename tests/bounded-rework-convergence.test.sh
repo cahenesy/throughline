@@ -373,6 +373,36 @@ echo "[S11] tdd-author SKILL.md carries the estimate-padding heuristic (Componen
   _chk_present "$F" "-qiF" "Expected diff size" "the heuristic lives in the ## Expected diff size block"
 ) || true
 
+# ============================================================================
+# Dogfood — wire this eval into the aggregator (TDD 0038 §3 wire-in rule)
+# ============================================================================
+# Wiring this eval into the aggregator is NEW gating behavior — the registration
+# must make the aggregator's overall exit go non-zero when THIS eval fails.
+# Structural: the eval is referenced in tests/implement-gate.test.sh. Behavioral:
+# the aggregator's real final AND-chain (extracted verbatim, driven against stub
+# integers — no recursion) evaluates false when BRC_FAIL=1. Before the wire-in the
+# chain never references BRC_FAIL, so it is true (RED); after, it includes
+# [ "$BRC_FAIL" -eq 0 ] (GREEN).
+echo "[W] the eval is wired into the aggregator and propagates failure (TDD 0038 §3)"
+( AGG="$REPO/tests/implement-gate.test.sh"
+  [ -r "$AGG" ] || { bad "INFRA: §W — aggregator unreadable: $AGG"; exit 0; }
+  grep -qE 'bounded-rework-convergence\.test\.sh' "$AGG" \
+    && ok "the eval is registered in the aggregator" || bad "implement-gate.test.sh should register bounded-rework-convergence.test.sh"
+  chain="$(grep -aE '^\[ "\$FAIL" -eq 0 \] &&' "$AGG" | tail -1)"
+  [ -n "$chain" ] || { bad "INFRA: §W — could not locate the aggregator final AND-chain"; exit 0; }
+  drive_rc="$(
+    set +u
+    for v in $(printf '%s' "$chain" | grep -aoE '\$[A-Za-z_][A-Za-z0-9_]*' | tr -d '$' | sort -u); do
+      eval "$v=0"
+    done
+    BRC_FAIL=1
+    eval "$chain"; echo $?
+  )"
+  [ "$drive_rc" != "0" ] \
+    && ok "aggregator final AND-chain goes non-zero when this eval fails (wire-in propagates)" \
+    || bad "aggregator AND-chain must be non-zero with BRC_FAIL=1 (got rc=$drive_rc)"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
