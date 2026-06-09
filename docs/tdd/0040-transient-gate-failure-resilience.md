@@ -149,6 +149,16 @@ fragment `note` string (existing field). No new persisted field.
   inside one run (each resume is a fresh human-or-watcher-initiated launch).
 - **`THROUGHLINE_CI_CHECKS_RETRIES` non-numeric** → default-and-warn (mirrors the
   `THROUGHLINE_WATCH_MAX_SECS` validation pattern).
+- **`set_halt_cause` write FAILS during no-verdict classification** → the
+  classification MUST fail loud, never silently leave a `blocked` fragment without
+  the `gate-unobservable` cause/next-actions. A silent partial-write would defeat
+  §2's core auto-resumability guarantee (the fragment would be `blocked` but not
+  surfaced as `resumable=blocked`, stranding it as human-routed). `_classify_gate_no_verdict`
+  propagates the write failure (returns non-zero + diagnostic) so the gate falls to
+  the existing fatal path with an actionable message, rather than recording a
+  half-classified non-resumable halt (NFR-4 honesty; mirrors the
+  `_decrement_rework_attempt` / `_accept_blocked_as_paused` fail-loud-on-write
+  convention). Verified by Verification §7.
 
 ## Verification plan
 
@@ -181,8 +191,12 @@ harness):
 6. **Status render.** `status.sh` renders a `gate-unobservable` fragment without
    an "unknown cause" warning (the `_halt_cause_known` mirror), and
    `--check-paused` surfaces it `resumable=blocked` (it has a resume action).
-
-**Mechanical-check robustness (binding — L-001/L-002):** absence assertions
+7. **`set_halt_cause` write-failure fails loud (no silent non-resumable halt).**
+   Drive a no-verdict gate where the `set_halt_cause` write is forced to fail (a
+   non-writable `STATE_DIR` / a stubbed mutator returning non-zero). Observe:
+   `_classify_gate_no_verdict` returns non-zero with a diagnostic and the gate
+   falls to the fatal path — it does NOT leave a `blocked` fragment lacking the
+   `gate-unobservable` cause (which would strand it as non-resumable, defeating §2). absence assertions
 distinguish grep exit 1 vs ≥2 and fail on unreadable; every target file asserted
 readable before content checks; stub subprocess exit codes + outputs are explicit
 fixtures (no reliance on real `claude`); fragment seeds are compact single-line
@@ -261,10 +275,10 @@ Total: 5 files touched.
 
 ## Expected diff size
 
-- `scripts/lib/gates.sh` — ~55 lines (retry loop ~25 + no-verdict classification → blocked+gate-unobservable ~30).
+- `scripts/lib/gates.sh` — ~120 lines (retry-once loop + the no-verdict `gate-unobservable` classification across BOTH the review and verify subprocesses + the fail-loud guard for a `set_halt_cause` write failure during classification — the surfaces are more interleaved with the existing gate wrappers than the initial ~55 estimate assumed).
 - `scripts/lib/state.sh` — ~12 lines (enum entry + `_next_actions_for_cause` resume mapping).
 - `scripts/status.sh` — ~4 lines (known-cause mirror).
-- `tests/transient-gate-resilience.test.sh` — ~165 lines (6 cases with explicit stub fixtures, fail-closed assertions, file-readable guards).
-- `tests/implement-gate.test.sh` — ~12 lines (aggregator wire-in).
+- `tests/transient-gate-resilience.test.sh` — ~430 lines (exception: a single cohesive transient-gate eval — the retry-once, no-verdict-review, no-verdict-verify, verdict-wins-over-rc, and resumability cases each need their own stubbed ci-checks / gate subprocess + fail-closed assertions, ~33 checks total; splitting would fragment shared stub/fixture setup and is more brittle than the over-300 size).
+- `tests/implement-gate.test.sh` — ~20 lines (aggregator wire-in).
 
-Total expected diff: ~242 lines across 5 files. No exceptions needed (each file is under the 300-line per-file bound).
+Total expected diff: ~586 lines across 5 files. Only `transient-gate-resilience.test.sh` exceeds the 300-line per-file bound (inline exception above); the four others are within it.
