@@ -121,6 +121,29 @@ or an accepted ADR as a finding.
 categorical pattern; they are recorded against the cleared step so a later pass
 can detect a recurrence (FR-59), so be consistent in how you name them.
 
+### Binding-rule sweep — one fix target per binding rule (FR-58/FR-59)
+
+When a finding violates a **TDD-binding rule** — a rule the governing TDD states
+as binding (a "MUST"/"binding" discipline in its Verification plan or Approach) —
+AND the SAME diff violates that rule in **more than one region**, emit ONE finding
+covering the whole class, NOT one finding per site (and do NOT reserve the other
+sites for a later pass). In that single finding:
+
+- put the primary violating site in `region` and enumerate EVERY other violating
+  site in `evidence`, one verbatim quote per site (each grounded per ADR 0006 —
+  quoted verbatim from the diff, never "and others");
+- add `binding-rule-sweep` to `pattern_tags`;
+- set `region_lines` to the SUM of the enumerated spans, so the bounded-rework
+  scope cap (FR-66) covers the whole-class fix instead of just one site.
+
+You MUST NOT split a single binding-rule class across multiple findings or across
+multiple review passes — that is what wastes the rework budget one site at a time.
+The sweep is for the instances of ONE binding rule only: do not lump distinct
+issues together (an evidence mismatch a human PR review would catch). A binding
+rule violated in just ONE place is an ordinary single finding (the sweep triggers
+only on > 1 site); a non-binding, site-specific quality nit stays one finding per
+site, as today.
+
 ## Diff vs narrative check (FR-71)
 
 After the per-finding checks, run this honesty check. Read the build's last
