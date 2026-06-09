@@ -334,7 +334,7 @@ EOF
   F="$STATE_DIR/0099-fix.json"
   hc="$(_read_fragment_field "$F" halt_cause)"
   [ "$hc" = "gate-unobservable" ] \
-    && ok "a malformed/truncated verdict resolves to gate-unobservable (NFR-4: no guessed verdict)" || bad "malformed verdict should be gate-unobservable (got halt_cause='$hc', rc=$rce)"
+    && ok "a malformed/truncated verdict resolves to gate-unobservable (NFR-4: no guessed verdict)" || bad "malformed verdict should be gate-unobservable (got halt_cause='$hc', rc=$rce, st='$st')"
 ) || true
 
 # ===========================================================================
