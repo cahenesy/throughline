@@ -372,6 +372,21 @@ build-time surprise:
   pre-pass — split it instead. The bounds are env-overridable for
   experimentation, matching the `THROUGHLINE_REVIEW_MODEL` pattern.
 
+  **Calibrate per-file estimates by the measured per-class bias (advisory, TDD
+  0041 Component 5).** First-instinct per-file estimates run ~1.5× LOW
+  systematically (a history study found mean 1.55× across implemented TDDs, with
+  8 upward mid-build revisions and 0 downward — a one-sided bias, not noise).
+  Before declaring each number, pad your first instinct by the class multiplier:
+  **test/eval files ≈ 1.6×, shell-library / script files ≈ 1.4×** (the most
+  under-counted classes — test scaffolding and helper plumbing), prose/markdown
+  ≈ 1.2×. This is advisory authoring guidance, NOT a gate: nothing emits a
+  `PRECHECK_FAIL` for skipping it and the design-critique gate does not check
+  whether it was applied (mirroring the FR-73 learning-surfacing posture). A
+  closer declared number makes the runtime tolerance
+  (`THROUGHLINE_STRUCTURAL_DIFF_TOLERANCE`, the FR-67(b) escalation's K-factor)
+  pure headroom rather than the only guard. The multipliers are data-derived, not
+  arbitrary — treat them as a starting calibration to refine as more runs accrue.
+
 ```
 # TDD NNNN: <feature>
 Status: draft | ready | implemented
