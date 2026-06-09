@@ -545,16 +545,33 @@ _fresh_review_verdict() {  # <log> <pre-log-size>
     | tail -1
 }
 run_ci_checks()    { bash "$CI_CHECKS" >>"$1" 2>&1; }
+# _test_first_ok_range <base> <head> <skip-present> — the SHARED test-first
+# predicate (TDD 0038 §1 / FR-15a). Returns 0 iff `git log <base>..<head>`
+# contains a commit subject matching `^test(failing)` case-insensitively
+# (grep -qiE — identical to test_first_ok's historical match, so the whole-build
+# gate's exact semantics are preserved), OR <skip-present> is the literal `1`;
+# returns 1 otherwise. Git-history only (ADR 0006) — never author self-report.
+# The THROUGHLINE_REQUIRE_TEST_FIRST knob is checked by each CALLER (the
+# whole-build gate below and the per-step pre-check in _per_step_review_loop), so
+# this stays a pure range predicate both scopes reuse with one definition of "a
+# test(failing): precursor exists".
+_test_first_ok_range() {  # <base> <head> <skip-present>
+  local base="$1" head="$2" skip="$3"
+  [ "$skip" = "1" ] && return 0
+  git log --format='%s' "$base..$head" 2>/dev/null | grep -qiE '^test\(failing\)' && return 0
+  return 1
+}
 # test-first gate: mechanical, git-history only. The build must show failing-test-
 # first discipline — a dedicated `test(failing): ...` commit BEFORE the impl —
 # unless it emits `TEST_FIRST: SKIPPED` for a genuine no-new-behavior change. The
 # independent review gate judges test QUALITY; this just proves the order existed.
+# Delegates to _test_first_ok_range so the whole-build and per-step scopes share
+# one definition; the whole-build skip is the `TEST_FIRST: SKIPPED` log line.
 test_first_ok() {  # <base-ref> <log>
   [ "${THROUGHLINE_REQUIRE_TEST_FIRST:-1}" = "1" ] || return 0
-  local base="$1" log="$2"
-  grep -aqE 'TEST_FIRST:[[:space:]]*SKIPPED' "$log" && return 0
-  git log --format='%s' "$base..HEAD" 2>/dev/null | grep -qiE '^test\(failing\)' && return 0
-  return 1
+  local base="$1" log="$2" skip=0
+  grep -aqE 'TEST_FIRST:[[:space:]]*SKIPPED' "$log" && skip=1
+  _test_first_ok_range "$base" HEAD "$skip"
 }
 # TDD 0019 carry-over fix 1 (TDD 0017 review): propagate git failures. The git
 # add / commit were redirected to the log with no exit-code check, so a failed
@@ -902,7 +919,7 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
   # build_active_seconds accumulates committed intervals; _active_exceeded flags an
   # active-budget kill and _backstop_exceeded an inline-backstop kill for the
   # post-loop classifier.
-  local evt text step_id sha verdict read_rc=0 attempt
+  local evt text step_id sha verdict read_rc=0 attempt tf_skip tf_base tf_reason
   local build_active_seconds=0 interval_start clock_active=1 _active_exceeded=0 _backstop_exceeded=0 _now _active
   # TDD 0032 §4: per-build-attempt protocol-correction budget. Loop-local (a
   # pause/resume spawns a fresh coprocess + fresh counters — the budget is "2
@@ -951,6 +968,47 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
             step_id="$(printf '%s' "$text" | grep -aoE 'STEP_COMMIT:[[:space:]]+[0-9]+[[:space:]]+[^[:space:]]+' | tail -1 | awk '{print $2}')"
             sha="$(printf '%s' "$text"     | grep -aoE 'STEP_COMMIT:[[:space:]]+[0-9]+[[:space:]]+[^[:space:]]+' | tail -1 | awk '{print $3}')"
             if [ -n "$step_id" ] && [ -n "$sha" ]; then
+              # TDD 0038 §1 / FR-15(a): DETERMINISTIC per-step test-first pre-check
+              # BEFORE the model review. If this step's commit range introduces
+              # implementation with no preceding `test(failing):` commit (and no
+              # per-step TEST_FIRST_SKIPPED: token on the sentinel), write a fixed
+              # STEP_REVIEW: BLOCK and SKIP the model review entirely — git-history
+              # grounded (ADR 0006), token-free, and riding the existing per-step
+              # BLOCK → build-fixes-and-re-emits path (ADR 0007; no new halt type).
+              tf_skip=0
+              case "$text" in *"TEST_FIRST_SKIPPED:"*) tf_skip=1 ;; esac
+              # $text is already the extracted STEP_COMMIT event text, so the token
+              # match is structurally confined to the sentinel line (no prose
+              # mention elsewhere can reach it). Resolve the per-step base EXACTLY
+              # as _run_per_step_review does (gates.sh last_cleared_review_sha, else
+              # build_start) so a stale prior test(failing): in a cleared step does
+              # NOT satisfy this range; an unset STATE_DIR / absent fragment (the
+              # THROUGHLINE_SOURCE_ONLY path) degrades to build_start identically.
+              tf_base="$(_read_fragment_field "${STATE_DIR:-}/$slug.json" last_cleared_review_sha 2>/dev/null || true)"
+              [ -z "$tf_base" ] && tf_base="$build_start"
+              # Honor the SAME knob as the whole-build gate: when 0, no-op.
+              if [ "${THROUGHLINE_REQUIRE_TEST_FIRST:-1}" = "1" ] && ! _test_first_ok_range "$tf_base" "$sha" "$tf_skip"; then
+                verdict="STEP_REVIEW: BLOCK test-first: step $step_id commits implementation in $tf_base..$sha with no preceding test(failing): commit (FR-15a). Add the failing test as a separate test(failing): <behavior> commit, then re-emit STEP_COMMIT: $step_id <new-sha> for the same step. If this step is genuinely no-new-behavior, re-emit as STEP_COMMIT: $step_id $sha TEST_FIRST_SKIPPED:<reason>."
+                printf '%s\n' "$verdict" >> "$log"
+                # Deterministic no-model BLOCK: write the verdict to the build's
+                # stdin via the SIGPIPE-safe _coproc_write path (same as the
+                # review-verdict write, TDD 0030 §1); a dead coproc breaks to the
+                # post-loop classifier identically. NO review claude -p is spawned.
+                # (Recording-site marker for [[0042]]: this writes the verdict only
+                # and records nothing.)
+                if ! _coproc_write "${build_in}" "$(_user_turn_json "$verdict")"; then
+                  printf 'THROUGHLINE_COPROC_DEAD: build coprocess exited before test-first BLOCK delivery (step %s); cleared work is preserved (transient)\n' "$step_id" >> "$log"
+                  break
+                fi
+                interval_start=$(date +%s)   # same clock handling as the protocol-error correction path
+                continue
+              fi
+              # A declared per-step skip records its reason as telemetry; the model
+              # review still runs to judge the no-new-behavior claim.
+              if [ "$tf_skip" = 1 ]; then
+                tf_reason="$(printf '%s' "$text" | grep -aoE 'TEST_FIRST_SKIPPED:[^[:space:]]+' | tail -1)"
+                printf 'THROUGHLINE_TEST_FIRST_SKIP: step %s %s\n' "$step_id" "${tf_reason:-TEST_FIRST_SKIPPED:}" >> "$log"
+              fi
               # TDD 0030 §5: PAUSE the active clock — commit the streaming interval
               # up to this sentinel read, then run the review off the clock.
               build_active_seconds=$((build_active_seconds + $(date +%s) - interval_start))
