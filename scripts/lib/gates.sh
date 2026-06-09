@@ -976,10 +976,11 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
               # grounded (ADR 0006), token-free, and riding the existing per-step
               # BLOCK → build-fixes-and-re-emits path (ADR 0007; no new halt type).
               tf_skip=0
-              case "$text" in *"TEST_FIRST_SKIPPED:"*) tf_skip=1 ;; esac
-              # $text is already the extracted STEP_COMMIT event text, so the token
-              # match is structurally confined to the sentinel line (no prose
-              # mention elsewhere can reach it). Resolve the per-step base EXACTLY
+              _tf_sentinel="$(printf '%s' "$text" | grep -m1 'STEP_COMMIT:[[:space:]]')"
+              case "$_tf_sentinel" in *"TEST_FIRST_SKIPPED:"*) tf_skip=1 ;; esac
+              # Extract the sentinel line first so a prose mention of
+              # TEST_FIRST_SKIPPED: before the real sentinel cannot silently
+              # disable the BLOCK. Resolve the per-step base EXACTLY
               # as _run_per_step_review does (gates.sh last_cleared_review_sha, else
               # build_start) so a stale prior test(failing): in a cleared step does
               # NOT satisfy this range; an unset STATE_DIR / absent fragment (the
