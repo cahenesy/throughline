@@ -23,6 +23,13 @@ bad()  { printf 'fail\n' >>"$RESULTS"; printf '  FAIL — %s\n' "$1"; }
 
 ROOT="$(mktemp -d)"; trap 'rm -rf "$ROOT"' EXIT
 
+# This fixture exercises coproc verdict-write / death-resilience mechanics, not
+# test-first ordering; disable the orthogonal default-on per-step pre-check
+# (TDD 0038 §1) so its `step(N): work` impl-only commits do not hit the
+# deterministic BLOCK before reaching the path under test. The dedicated eval
+# (tests/test-first-per-step.test.sh) covers the gate ON.
+export THROUGHLINE_REQUIRE_TEST_FIRST=0
+
 # setup_step_repo <dir>: a git repo + scope-declaring TDD + a state fragment + a
 # stub `claude` that acts as BOTH the multi-turn build (runs $CTL/build_plan,
 # which emits STEP_COMMIT lines and reads STEP_REVIEW replies) and the per-step

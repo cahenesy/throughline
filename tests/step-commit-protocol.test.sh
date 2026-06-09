@@ -29,6 +29,14 @@ bad() { printf 'fail\n' >>"$RESULTS"; printf '  FAIL — %s\n' "$1"; }
 
 ROOT="$(mktemp -d)"; trap 'rm -rf "$ROOT" "$RESULTS"' EXIT
 
+# This fixture exercises sequencing-label / protocol-sentinel mechanics, not
+# test-first ordering; disable the orthogonal default-on per-step pre-check
+# (TDD 0038 §1) so the real-sentinel `step(N)` case does not hit the deterministic
+# BLOCK before reaching the path under test (the malformed-label cases never parse
+# a step-id, so the pre-check is unreached; the export is set once for uniformity).
+# The dedicated eval (tests/test-first-per-step.test.sh) covers the gate ON.
+export THROUGHLINE_REQUIRE_TEST_FIRST=0
+
 # mk_seq_tdd <file> <sequencing-body-heredoc-on-stdin> — write a minimal fixture
 # TDD whose `## Sequencing / implementation plan` section is the stdin content.
 mk_seq_tdd() {  # <file>  (body on stdin)
