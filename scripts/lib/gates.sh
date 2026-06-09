@@ -1846,7 +1846,7 @@ _gate_output_tail() {  # <log> <pre-log-size>
 _classify_gate_no_verdict() {  # <slug> <gate> <tail>
   local slug="$1" gate="$2" tail="$3"
   set_halt_cause "$slug" gate-unobservable "$gate" "$gate gate emitted no parseable verdict: $tail" \
-    || echo "warning: _classify_gate_no_verdict: set_halt_cause failed for $slug ($gate)" >&2
+    || return 1
   _terminal_state "$slug" blocked "" "$gate gate produced no parseable verdict (couldn't observe; resumable, re-runs the gate)"
 }
 
