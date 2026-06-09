@@ -267,7 +267,9 @@ echo "[S7] rework scope cap reads the swept finding's SUMMED region_lines"
 _chk_present() {  # <file> <grep-flags> <pattern> <desc>
   local f="$1" flags="$2" pat="$3" desc="$4" rc
   if [ ! -r "$f" ]; then bad "$desc (file unreadable: $f)"; return; fi
-  grep $flags -- "$pat" "$f" >/dev/null 2>&1; rc=$?
+  # $flags is a single combined short-flag token (e.g. "-qiF"); grep parses it as
+  # -q -i -F, so it is correctly passed quoted (no word-split needed).
+  grep "$flags" -- "$pat" "$f" >/dev/null 2>&1; rc=$?
   if   [ "$rc" -eq 0 ]; then ok  "$desc"
   elif [ "$rc" -eq 1 ]; then bad "$desc (absent)"
   else bad "$desc (grep error rc=$rc)"; fi
