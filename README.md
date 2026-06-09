@@ -232,6 +232,7 @@ throughline/
 │   ├── interactive-draft-persistence.test.sh # eval: draft files written after every elicitation
 │   ├── bounded-tdd-scope.test.sh          # eval: expected-diff-size + touched-files bounds
 │   ├── continuous-in-build-review.test.sh # eval: per-step scoped review
+│   ├── test-first-per-step.test.sh        # eval: mechanical per-step test-first pre-check
 │   ├── bounded-rework-loop.test.sh        # eval: in-invocation sonnet rework + budget
 │   ├── halt-taxonomy.test.sh              # eval: closed cause enum + one-screen context
 │   ├── severity-honest-reporting.test.sh  # eval: severity tags + diff-grounded report + author self-review + per-file coverage
@@ -263,7 +264,10 @@ process:
 
 1. **Failing-test-first** — a `test(failing):` commit must precede the
    implementation (mechanical, read straight from git history; the build follows
-   `superpowers:test-driven-development`).
+   `superpowers:test-driven-development`). Enforced **per step** as well as
+   whole-build: a step that commits implementation with no preceding
+   `test(failing):` in its range (and no declared per-step skip) gets a
+   deterministic `STEP_REVIEW: BLOCK` *before* any model review runs.
 2. **`ci-checks.sh`** — mechanically re-runs the project's tests + typecheck +
    linter (this is CI's job — running tests, not verification).
    Package-manager-aware (pnpm/yarn/bun/npm) and prefers your declared `test` /
