@@ -103,6 +103,11 @@ EOF
   [ "$rc" -ne 0 ] && ok "red-twice run_ci_checks returns non-zero (real FAIL, no false PASS)" || bad "a reproducible failure must FAIL even with retry (got rc=$rc)"
   ! grep -qiE 'passed on retry' "$D/red.log" \
     && ok "no recovered-flake telemetry on a genuine FAIL" || bad "must NOT log a recovered flake when it really failed"
+  # NFR-4 honesty: a real FAIL must be as visible in the gate log as a recovery —
+  # record an explicit "FAILED after N attempt(s)" line on retry exhaustion so a
+  # reader can tell a retries-exhausted FAIL from a single-shot one.
+  grep -qiE 'ci-checks: FAILED after [0-9]+ attempt' "$D/red.log" \
+    && ok "retry exhaustion logs an explicit FAILED-after-N telemetry line" || bad "a retries-exhausted FAIL must be logged (NFR-4); log: $(cat "$D/red.log")"
 
   # Non-numeric RETRIES → default-and-warn (still bounded; mirrors WATCH_MAX_SECS).
   printf '0\n' > "$D/c2"
