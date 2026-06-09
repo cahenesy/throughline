@@ -225,6 +225,28 @@ from the PRD forward. throughline owns the *governance* of verification; the
   project and to `superpowers:verification-before-completion` / the `/verify` skill
   (FR-22, ADR 0002). — Acceptance: no verification framework is vendored into consumer
   repos by throughline.
+- **FR-78 Per-requirement test-coverage map.** For each TDD that lands, throughline
+  produces a verification-status map of every requirement in *that TDD's scope*,
+  classifying each as exactly one of: **pinned** (a test that exists today asserts
+  it), **proposed** (a test is recommended or planned but does not yet assert it),
+  **justified-no-surface** (no observable surface to verify — a recorded `SKIP` per
+  FR-23/FR-25), or **unverified gap** (an observable requirement that no test
+  asserts). The map cannot read falsely-green: a requirement whose only verification
+  is a not-yet-written or non-asserting test is never shown as `pinned`, and a
+  requirement legitimately lacking an observable surface is shown as
+  `justified-no-surface`, never as a gap (NFR-4 honesty). The map is *surfaced for
+  the human review* at the PR gate; an unverified gap is a visible finding, **not**
+  an automatic flip-blocker — the four gates of FR-15 remain the sole automatic
+  flip authority. This closes the gap FR-15(a)/FR-23/FR-71 leave: FR-15(a) gates
+  that a test *precedes* implementation (per-commit discipline, not per-requirement
+  coverage); FR-23 states *intended* observation points (design intent, pre-build);
+  FR-71 reports the actual diff and scope (not per-requirement verification status).
+  Scope is the landing TDD's in-scope requirements; a retroactive whole-system audit
+  of pre-existing requirements is out of scope. — Acceptance: for a landed TDD, an
+  artifact lists each in-scope FR/NFR with exactly one of {`pinned`, `proposed`,
+  `justified-no-surface`, `unverified-gap`}; a requirement that no test asserts reads
+  `proposed` or `unverified-gap`, never `pinned`; and a requirement with no
+  observable surface reads `justified-no-surface`, never `unverified-gap`.
 
 ### Run progress visibility
 - **FR-27 Structured run state.** A running `/implement` maintains a structured,
@@ -887,6 +909,15 @@ can use.
 - **Bundling a verification harness/framework** — the verification *mechanism* (DOM,
   CLI, HTTP, return values, logs, …) is the project's; throughline governs only that a
   plan exists, is executed, and yields evidence (FR-26).
+- **A pre-build de-risking spike** — there is no requirement to validate a design's
+  riskiest assumption with a prototype/experiment *before* building it; for
+  engineering design the build is typically the cheapest test, and the design-critique
+  gate (FR-10) plus the interrogator discipline (FR-75/FR-76) already pressure-test
+  assumptions at design time. (Considered and explicitly excluded.)
+- **The per-requirement coverage map as a hard auto-gate or a whole-system audit** —
+  FR-78's map is *reported* for the human review, not an automatic flip-blocker (the
+  FR-15 gates remain the auto-authority), and it covers only the *landing TDD's*
+  in-scope requirements, not a retroactive audit of every pre-existing requirement.
 - **Precise time-to-completion ETAs** for LLM-driven builds — progress is an honest
   estimate, not a forecast (FR-30).
 - **Run control from the progress view** — it is read-only observability, not a console
@@ -1067,3 +1098,14 @@ can use.
   findings. Whether the discrepancy check runs as part of the in-build
   review gate (FR-56) or as a separate mechanical pass before the
   review gate is a design decision deferred to `/tdd-author`.
+
+## Evaluation rubric
+
+Co-created criteria for the requirements added in this update (FR-78). A later
+design gate grades the requirement against these.
+
+| Criterion | High-quality | Acceptable | Failing |
+|---|---|---|---|
+| Observable acceptance criterion | FR-78 states a falsifiable surface (an artifact lists each in-scope requirement with exactly one status; a requirement no test asserts never reads `pinned`; an unobservable one reads `justified-no-surface`) | acceptance present and checkable | "a test exists for X" / unobservable |
+| Stays WHAT, not HOW | no format / file location / which-gate / which-mechanism detail | mostly WHAT, minor leakage | prescribes the mechanism (belongs in a TDD) |
+| Distinct + bounded | the delta vs FR-15(a)/FR-23/FR-71 is stated, and the non-goals are explicit (reported-not-gate; per-build scope; justified-SKIP ≠ gap; no whole-system retro-audit; no pre-build spike) | distinct, most non-goals stated | duplicates an existing FR or the scope sprawls |
