@@ -88,19 +88,27 @@ consolidated review, TDD 0019/0020).
   skip must not silently satisfy a per-step range check.
 - **Wiring in `_per_step_review_loop`** (the `STEP_COMMIT` branch, after `step_id`
   + `sha` parse, BEFORE `_run_per_step_review`):
-  - Parse the OPTIONAL per-step skip token off the sentinel text:
-    `skip_present=0; case "$text" in *"TEST_FIRST_SKIPPED:"*) skip_present=1 ;; esac`.
-    The token is read with `grep -aoE 'TEST_FIRST_SKIPPED:[^[:space:]]+'` for its
-    `<reason>` (telemetry). `$text` here is ALREADY the extracted STEP_COMMIT
-    event text (the loop is inside the `*"STEP_COMMIT: "*` branch), so the match
-    is structurally confined to the sentinel line — no extra line-anchoring is
-    needed and a prose mention elsewhere in the build's output cannot reach it.
-    This is additive to the sentinel and
-    **backward-compatible with the TDD 0032 parser**: the `STEP_COMMIT:` step-id
-    + sha extractor (`grep -aoE 'STEP_COMMIT:[[:space:]]+[0-9]+[[:space:]]+[^[:space:]]+'`)
-    matches the first three tokens and ignores any trailing token, so the
-    extended form parses cleanly and never reaches the malformed/protocol-error
-    branch (which keys on a `<` placeholder or an unparseable step-id).
+  - Parse the OPTIONAL per-step skip token **off the extracted sentinel match,
+    NOT off the raw `$text`** (review:1 blocker fix). `$text` is the full
+    multi-line assistant event (that is why `step_id`/`sha` are themselves
+    `grep -aoE … | tail -1`'d out of it), so an unanchored
+    `case "$text" in *"TEST_FIRST_SKIPPED:"*)` would match a *prose* mention of
+    the token anywhere in the turn and silently disable the gate — a build that
+    writes "I am not using TEST_FIRST_SKIPPED here" before its real sentinel would
+    bypass the deterministic BLOCK. The skip token MUST therefore be read from the
+    SAME single sentinel line the step-id/sha came from. Extend the existing
+    extractor with an OPTIONAL trailing-token group and capture the chosen
+    sentinel once:
+    `sentinel="$(printf '%s' "$text" | grep -aoE 'STEP_COMMIT:[[:space:]]+[0-9]+[[:space:]]+[^[:space:]]+([[:space:]]+TEST_FIRST_SKIPPED:[^[:space:]]+)?' | tail -1)"`,
+    then `skip_present=0; case "$sentinel" in *"TEST_FIRST_SKIPPED:"*) skip_present=1 ;; esac`,
+    and read the `<reason>` for telemetry with
+    `printf '%s' "$sentinel" | grep -aoE 'TEST_FIRST_SKIPPED:[^[:space:]]+'`. Because
+    the match is the same `tail -1` sentinel used for step-id/sha, a prose mention
+    elsewhere in the turn cannot reach it. The step-id/sha extractor is unchanged
+    and **backward-compatible with the TDD 0032 parser**: the optional group is at
+    the END, so for a sentinel with no token the match is byte-identical to today's
+    three-token form, and the malformed/protocol-error branch (which keys on a `<`
+    placeholder or an unparseable step-id) is never reached.
   - Resolve the per-step base = the SAME base `_run_per_step_review` uses for this
     step: the fragment's `last_cleared_review_sha` if set, else `build_start`
     (gates.sh:720–721's derivation). When `STATE_DIR` is unset or the fragment is
@@ -180,8 +188,10 @@ untouched.
 ## Sequencing / implementation plan
 
 1. Factor `_test_first_ok_range` from `test_first_ok` and wire the per-step
-   pre-check into `_per_step_review_loop` (Component 1), including the optional
-   `TEST_FIRST_SKIPPED:` sentinel parse and the deterministic no-model BLOCK.
+   pre-check into `_per_step_review_loop` (Component 1), including the
+   **sentinel-anchored** optional `TEST_FIRST_SKIPPED:` parse (read off the single
+   `tail -1` extracted sentinel, never the raw multi-line `$text`) and the
+   deterministic no-model BLOCK.
 2. Add the preventive self-gate bullet and the aggregator wire-in rule to
    `build-prompt.md` (Components 2 + 3).
 3. Add `export THROUGHLINE_REQUIRE_TEST_FIRST=0` (with the why-comment) to the
@@ -206,6 +216,13 @@ untouched.
   sha still parse (token ignored by the 0032 extractor); `skip_present=1` and the
   build proceeds. The empty `<reason>` is the build's responsibility to make
   meaningful; the human / consolidated gate still sees an impl-only range.
+- **Prose mention of the token before the sentinel** (review:1 blocker). A build
+  that writes `TEST_FIRST_SKIPPED:` in narrative text earlier in the same turn,
+  then emits a real impl-only `STEP_COMMIT` with no token, must STILL be BLOCKed.
+  Because `skip_present` is read from the single extracted sentinel match (the
+  `tail -1` of the anchored `STEP_COMMIT: <id> <sha>[ TEST_FIRST_SKIPPED:<reason>]`
+  regex), not from the raw `$text`, the prose mention is unreachable and the gate
+  holds. Verified by observation point §8.
 - **`THROUGHLINE_REQUIRE_TEST_FIRST=0`** (a batch of pure refactors, OR the four
   reconciled fixtures). The per-step pre-check no-ops exactly as the whole-build
   gate does — one knob, both scopes.
@@ -247,6 +264,12 @@ fixtures following `tests/bounded-rework-loop.test.sh`'s harness):
    `coproc-verdict-resilience`) run green under the default (knob unset → ON),
    each carrying the `THROUGHLINE_REQUIRE_TEST_FIRST=0` export — driven by
    `ci-checks.sh` / `tests/implement-gate.test.sh` on the build branch.
+8. **Prose-mention does not bypass the gate (review:1 blocker).** Drive a
+   `STEP_COMMIT` whose event `$text` contains a narrative `TEST_FIRST_SKIPPED:`
+   line BEFORE the real sentinel, where the sentinel itself carries NO token and
+   the range is impl-only (knob ON). Expected: `skip_present=0`, a
+   `STEP_REVIEW: BLOCK test-first:` line is written (the prose mention is NOT read
+   off the raw `$text`), and zero review spawns.
 
 **Mechanical-check robustness (folds in L-001 / L-002).** Every grep-based
 assertion in the new eval (i) anchors on a SPECIFIC new string (no vacuous match
@@ -324,26 +347,36 @@ decision.
 
 ## Touched files
 
-- `scripts/lib/gates.sh` — `_test_first_ok_range` helper; per-step pre-check + `TEST_FIRST_SKIPPED:` parse in `_per_step_review_loop`; deterministic no-model BLOCK (no recording — that is 0042).
+The eight files below are the design scope. The build ALSO applies two
+mechanical, non-design changes that ride the same commit and are NOT counted
+here (mirroring how the runner's `plugin.json` version bump is never a declared
+design surface): a build-mandated **doc-sync** to `README.md` (~7 lines: add
+`test-first-per-step.test.sh` to the `tests/` file-tree listing + one sentence on
+per-step enforcement under the failing-test-first gate) and the `plugin.json`
+version bump. Neither is a design decision; the runtime structural check
+(FR-67) does not flag them (it gates per-file diff of the declared set and
+rework that strays outside it, not build-applied doc/version sync).
+
+- `scripts/lib/gates.sh` — `_test_first_ok_range` helper; per-step pre-check + anchored `TEST_FIRST_SKIPPED:` sentinel parse in `_per_step_review_loop`; deterministic no-model BLOCK (no recording — that is 0042).
 - `scripts/build-prompt.md` — preventive self-gate bullet (Component 2) + aggregator wire-in rule (Component 3).
-- `tests/test-first-per-step.test.sh` — new eval (per-step routing, skip token, sentinel compat, knob-off no-op, fixture-non-regression).
+- `tests/test-first-per-step.test.sh` — new eval (per-step routing, skip token, sentinel compat, knob-off no-op, prose-mention anchoring, fixture-non-regression, aggregator dogfood).
 - `tests/implement-gate.test.sh` — wire the new eval into the aggregator (with its failing wire-in test per Component 3).
 - `tests/continuous-in-build-review.test.sh` — `THROUGHLINE_REQUIRE_TEST_FIRST=0` export (orthogonal-gate opt-out).
 - `tests/build-defensive-norms.test.sh` — `THROUGHLINE_REQUIRE_TEST_FIRST=0` export.
 - `tests/step-commit-protocol.test.sh` — `THROUGHLINE_REQUIRE_TEST_FIRST=0` export.
 - `tests/coproc-verdict-resilience.test.sh` — `THROUGHLINE_REQUIRE_TEST_FIRST=0` export.
 
-Total: 8 files touched.
+Total: 8 design files touched (+ build-applied `README.md` doc-sync and `plugin.json` version bump, not design scope).
 
 ## Expected diff size
 
-- `scripts/lib/gates.sh` — ~55 lines added/changed (helper + loop wiring; no recording).
-- `scripts/build-prompt.md` — ~28 lines added (self-gate + wire-in rule).
-- `tests/test-first-per-step.test.sh` — ~175 lines added (new eval: 7 observation points with fail-closed grep guards).
-- `tests/implement-gate.test.sh` — ~12 lines added (aggregator wire-in + its failing test).
-- `tests/continuous-in-build-review.test.sh` — ~2 lines added (export + comment).
-- `tests/build-defensive-norms.test.sh` — ~2 lines added (export + comment).
-- `tests/step-commit-protocol.test.sh` — ~2 lines added (export + comment).
-- `tests/coproc-verdict-resilience.test.sh` — ~2 lines added (export + comment).
+- `scripts/lib/gates.sh` — ~90 lines added/changed (helper + anchored loop wiring + the long fixed BLOCK message; no recording).
+- `scripts/build-prompt.md` — ~22 lines added (self-gate + wire-in rule).
+- `tests/test-first-per-step.test.sh` — ~280 lines added (new eval: 8 observation points with fail-closed grep guards).
+- `tests/implement-gate.test.sh` — ~18 lines added (aggregator wire-in + its failing test).
+- `tests/continuous-in-build-review.test.sh` — ~8 lines added (export + comment).
+- `tests/build-defensive-norms.test.sh` — ~8 lines added (export + comment).
+- `tests/step-commit-protocol.test.sh` — ~9 lines added (export + comment).
+- `tests/coproc-verdict-resilience.test.sh` — ~8 lines added (export + comment).
 
-Total expected diff: ~278 lines across 8 files. No exceptions needed (each file is under the 300-line per-file bound).
+Total expected diff: ~443 lines across 8 design files (each under the 300-line per-file bound). Build-applied `README.md` (~7 lines) + `plugin.json` bump ride the commit, not counted.
