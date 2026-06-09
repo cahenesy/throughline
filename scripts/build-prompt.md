@@ -48,6 +48,17 @@ Build discipline:
      commit. (For a no-new-behavior step that legitimately emits
      `TEST_FIRST: SKIPPED`, the `step(<step-id>):` commit IS the only commit
      for the step.)
+     - **Self-verify test-first ordering BEFORE step 3 (preventive self-gate,
+       TDD 0038 §2 / FR-15a).** Run `git log --format='%s'
+       <last-cleared-or-build-start>..HEAD | grep '^test(failing)'`. If this step
+       introduced new behavior but no `test(failing):` commit precedes the
+       implementation commit, you MUST add the failing test as a separate
+       `test(failing):` commit (fixing the order) BEFORE emitting `STEP_COMMIT`.
+       Only a genuine no-new-behavior step instead emits `STEP_COMMIT: <step-id>
+       <sha> TEST_FIRST_SKIPPED:<reason>` (the optional per-step skip token). This
+       makes you catch your own slip before the runner round-trip; the runner's
+       mechanical per-step pre-check (TDD 0038 §1) is the deterministic backstop
+       that BLOCKs the step if you do not.
   3. Emit a single line on your final output for that turn: `STEP_COMMIT:
      <step-id> <sha>` where `<sha>` is the full SHA of the commit you just
      made. The runner intercepts this sentinel and runs a scoped per-step
@@ -98,6 +109,15 @@ Build discipline:
     tests + typecheck on the build branch and the runtime-verify gate drives the
     BUILT artifact, so the four-gate system still catches anything the local
     hook would have.
+  - AGGREGATOR WIRE-IN is new gating behavior (TDD 0038 §3 / FR-15a), NOT
+    `TEST_FIRST: SKIPPED`-eligible. Wiring a new eval into the CI aggregator
+    (`tests/implement-gate.test.sh`) adds a `*_FAIL` accumulator to the gate's
+    final AND-chain, so the aggregator now exits non-zero on a new condition —
+    that is a behavior change, not no-op glue. Its `test(failing):` asserts the
+    aggregator's overall exit goes non-zero when the newly-wired eval fails:
+    drive the aggregator with the new eval stubbed to fail and assert the final
+    pass/fail expression is non-zero, BEFORE adding the wire-in that makes it
+    pass. Only pure no-op glue that does NOT change the AND-chain may `SKIP`.
 - After each step run the relevant tests and the typecheck; fix failures at the
   ROOT CAUSE — never suppress errors, never weaken assertions to go green.
 - The format-and-lint hook runs on each edit; resolve anything it reports.

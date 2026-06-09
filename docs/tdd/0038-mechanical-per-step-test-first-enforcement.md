@@ -1,6 +1,6 @@
 # TDD 0038: Mechanical per-step test-first enforcement
 
-Status: draft
+Status: implemented
 PRD refs: FR-15 (gap-closure: FR-15(a) enforcement)
 PRD-rev: d289607
 ADR constraints: 0005, 0006, 0007

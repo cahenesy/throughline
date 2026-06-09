@@ -29,6 +29,13 @@ bad()  { printf 'fail\n' >>"$RESULTS"; printf '  FAIL — %s\n' "$1"; }
 
 ROOT="$(mktemp -d)"; trap 'rm -rf "$ROOT"' EXIT
 
+# This fixture exercises coproc/handshake/review mechanics, not test-first
+# ordering; disable the orthogonal default-on per-step pre-check (TDD 0038 §1) so
+# its `step(N): work` impl-only commits do not hit the deterministic BLOCK before
+# reaching the path under test. The dedicated eval (tests/test-first-per-step.test.sh)
+# covers the gate ON.
+export THROUGHLINE_REQUIRE_TEST_FIRST=0
+
 # ===========================================================================
 # §0: the norms file's structural contract. The H2 anchor must be present and
 # UNIQUE (the §3 reminder extracts the numbered list under it), and there must be

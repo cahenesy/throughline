@@ -26,6 +26,13 @@ bad()  { printf 'fail\n' >>"$RESULTS"; printf '  FAIL — %s\n' "$1"; }
 
 ROOT="$(mktemp -d)"; trap 'rm -rf "$ROOT"' EXIT
 
+# This fixture exercises coproc/handshake/review mechanics, not test-first
+# ordering; disable the orthogonal default-on per-step pre-check (TDD 0038 §1) so
+# its `step(N): work` impl-only commits do not hit the deterministic BLOCK before
+# reaching the path under test. The dedicated eval (tests/test-first-per-step.test.sh)
+# covers the gate ON.
+export THROUGHLINE_REQUIRE_TEST_FIRST=0
+
 # --- §4 / Data: cleared-step log + last-cleared-SHA fields -------------------
 echo "[A1] _write_tdd_fragment writes last_cleared_review_sha + cleared_step_log (params 24-25)"
 ( D="$ROOT/A1"; mkdir -p "$D/state.d"
