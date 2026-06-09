@@ -238,6 +238,33 @@ echo "[§7] the four per-step-loop fixtures opt out of the orthogonal gate (THRO
   done
 ) || true
 
+echo "[§8] dogfood (Component 3): wiring this eval into the aggregator makes its exit go non-zero when the eval fails"
+( AGG="$REPO/tests/implement-gate.test.sh"
+  if [ ! -r "$AGG" ]; then bad "INFRA: §8 — aggregator unreadable: $AGG"; exit 0; fi
+  # Structural: the new eval is registered (run) in the aggregator. Anchored on
+  # the eval filename so an unwired aggregator is RED. Fail-closed on grep error.
+  grep_has 'test-first-per-step\.test\.sh' "$AGG" "the new eval is wired into the aggregator (registration present)"
+  # Behavioral: DRIVE the aggregator's real final AND-chain (extracted verbatim)
+  # with every accumulator green EXCEPT this eval (TFP_FAIL), stubbed to fail.
+  # Before the wire-in the chain never references TFP_FAIL, so it evaluates true
+  # (exit 0 = RED); after the wire-in it includes `[ "$TFP_FAIL" -eq 0 ]` and
+  # evaluates false (exit non-zero = GREEN). Artifact-grounded (ADR 0006); no
+  # recursion (the chain runs against stub integers, not the real sub-evals).
+  chain="$(grep -aE '^\[ "\$FAIL" -eq 0 \] &&' "$AGG" | tail -1)"
+  if [ -z "$chain" ]; then bad "INFRA: §8 — could not locate the aggregator final AND-chain"; exit 0; fi
+  drive_rc="$(
+    set +u
+    for v in $(printf '%s' "$chain" | grep -aoE '\$[A-Za-z_][A-Za-z0-9_]*' | tr -d '$' | sort -u); do
+      eval "$v=0"
+    done
+    TFP_FAIL=1
+    eval "$chain"; echo $?
+  )"
+  [ "$drive_rc" != "0" ] \
+    && ok "aggregator final AND-chain goes non-zero when the new eval fails (wire-in propagates)" \
+    || bad "aggregator AND-chain must be non-zero with TFP_FAIL=1 (got rc=$drive_rc)"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
