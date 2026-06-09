@@ -418,18 +418,22 @@ scope; no new cross-cutting decision.
 - `scripts/lib/state.sh` — `_decrement_rework_attempt` fragment-mutator helper (atomic compact, error-checked, floored at 0).
 - `scripts/review-prompt.md` — binding-rule-sweep instruction (enumerate all violating regions of one binding rule in one finding).
 - `skills/tdd-author/SKILL.md` — estimate-padding heuristic in the `## Expected diff size` authoring block (advisory multipliers: test/eval ≈1.6×, shell-lib ≈1.4×) (Component 5).
+- `skills/implement/SKILL.md` — required same-commit doc-sync: the implement behavior spec describes the bounded-rework budget + structural(b) escalation that Components 1/4 change, so it is updated in lockstep (no behavior of its own added).
 - `tests/bounded-rework-convergence.test.sh` — new eval (rollback accounting + sweep-rule presence + scope read + K-tolerance threshold + heuristic presence).
+- `tests/bounded-rework-loop.test.sh` — update the existing bounded-rework eval whose (b)-escalation / budget-accounting expectations change under Components 1/4 (the K-tolerance + counter rollback).
 - `tests/implement-gate.test.sh` — wire the new eval into the aggregator.
 
-Total: 6 files touched.
+Total: 8 files touched.
 
 ## Expected diff size
 
 - `scripts/lib/gates.sh` — ~48 lines (two `_decrement_rework_attempt` calls + telemetry note + summed-span read for the scope cap + the Component 4 K-tolerance comparison, knob guard, and diagnostic).
-- `scripts/lib/state.sh` — ~16 lines (`_decrement_rework_attempt` helper).
-- `scripts/review-prompt.md` — ~22 lines (binding-rule-sweep instruction block).
-- `skills/tdd-author/SKILL.md` — ~12 lines (estimate-padding heuristic block).
-- `tests/bounded-rework-convergence.test.sh` — ~215 lines (11 cases: rollback on (b)/scope-exceeded, counted-when-shipped, (c)-unchanged, floor, sweep-present, sweep-scope, K within-tolerance pass, K beyond-tolerance escalate, K knob-override + malformed-fallback, heuristic-present; fail-closed assertions).
-- `tests/implement-gate.test.sh` — ~12 lines (aggregator wire-in).
+- `scripts/lib/state.sh` — ~45 lines (`_decrement_rework_attempt` helper: atomic compact-JSON read-modify-write, floored at 0, error-checked).
+- `scripts/review-prompt.md` — ~24 lines (binding-rule-sweep instruction block).
+- `skills/tdd-author/SKILL.md` — ~16 lines (estimate-padding heuristic block).
+- `skills/implement/SKILL.md` — ~15 lines (doc-sync of the budget/(b)-escalation behavior spec; no new behavior).
+- `tests/bounded-rework-convergence.test.sh` — ~420 lines (exception: one cohesive convergence eval — 11+ cases sharing the same harness/stub/fixture setup, over the 300 per-file cap; splitting would fragment the shared setup). (rollback on (b)/scope-exceeded, counted-when-shipped, (c)-unchanged, floor, sweep-present, sweep-scope, K within-tolerance pass, K beyond-tolerance escalate, K knob-override + malformed-fallback, heuristic-present; fail-closed assertions.)
+- `tests/bounded-rework-loop.test.sh` — ~10 lines (update the (b)-escalation / budget-accounting expectations for the K-tolerance + rollback).
+- `tests/implement-gate.test.sh` — ~20 lines (aggregator wire-in).
 
-Total expected diff: ~325 lines across 6 files. No per-file exception needed (each file is under the 300-line per-file bound; the eval at ~215 has margin under 300).
+Total expected diff: ~598 lines across 8 files. One per-file exception declared (`tests/bounded-rework-convergence.test.sh`, a single cohesive convergence eval over the 300-line per-file bound); every other file is under 300.
