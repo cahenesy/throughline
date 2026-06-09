@@ -935,6 +935,17 @@ _next_actions_for_cause() {
       # is revised + merged (the §3 verify-plan-unrevised guard enforces the
       # precondition). Mirrors structural-finding's resume-after-revision shape.
       echo "resume (re-run runtime-verify against the revised verification plan),revise the TDD's ## Verification plan via /tdd-author" ;;
+    gate-unobservable)
+      # TDD 0040 §3 (FR-57, NFR-4): a review/runtime-verify gate SUBPROCESS that
+      # exited leaving NO parseable verdict line (crash, exec failure, empty
+      # output) is couldn't-observe, not observed-wrong (ADR 0006: a missing
+      # verdict is the absence of an artifact, so it cannot BE a verdict). The
+      # FIRST element begins with `resume`, the machine-readable marker
+      # status.sh --check-paused and _resume_from's blocked arm key on. Unlike
+      # verify-unobservable (which needs a verification-plan revision first), a
+      # no-verdict gate is genuinely safe to re-run with no operator intent — the
+      # gate simply could not run — so the resume needs no revision precondition.
+      echo "resume (re-runs the gate),see the gate log for why the gate emitted no verdict" ;;
     design-escalation)
       echo "revise TDD via /tdd-author,/adr-new if a constraint is being challenged" ;;
     external-blocker)
