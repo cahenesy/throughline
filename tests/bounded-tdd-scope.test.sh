@@ -222,6 +222,41 @@ Total expected diff: unknown.
 EOF
 }
 
+# A `## Touched files` bullet that yields no extractable path (TDD 0048 / FR-53,
+# FR-54): a stray `- ` note whose em-dash-split + backtick-strip + trim leaves an
+# empty path. All other sections are in-bounds so ONLY touched-files-malformed
+# fires.
+make_touched_malformed() {  # <path>
+  cat > "$1" <<'EOF'
+# TDD 9008: malformed touched-files bullet
+Status: draft
+PRD refs: FR-53
+PRD-rev: deadbee
+ADR constraints: none
+
+## Approach
+One touched-files bullet yields no extractable path.
+
+## Verification plan
+Run it, observe exit code 0.
+
+## Requirement traceability
+| FR-53 | x |
+
+## Dependencies considered
+None.
+
+## Touched files
+- scripts/foo.sh — the real change
+- — a stray note with no extractable path
+
+## Expected diff size
+- scripts/foo.sh — 40 lines
+
+Total expected diff: 40 lines across 1 file.
+EOF
+}
+
 # ============================================================================
 echo "[bounds-clean] in-bounds TDD: --bounds exits 0 with no PRECHECK_FAIL"
 (
@@ -332,6 +367,66 @@ echo "[bounds-env-raise] raising THROUGHLINE_TDD_MAX_TOUCHED clears the 12-file 
 )
 
 # --- design-reviewer prompt (FR-55 / §4) ------------------------------------
+# --- TDD 0048 / FR-53, FR-54: touched-files path-extractability validation ----
+echo "[bounds-touched-malformed] a touched-files bullet yielding no path emits touched-files-malformed and exits non-zero"
+(
+  TMP="$(mktemp -d)"; f="$TMP/malformed.md"; make_touched_malformed "$f"
+  out="$(bash "$LINT" --bounds "$f" 2>/dev/null)"; rc=$?
+  [ "$rc" -ne 0 ] && ok "exits non-zero on a malformed touched-files bullet" \
+    || bad "expected non-zero exit on a malformed bullet (rc=$rc, out=$out)"
+  printf '%s\n' "$out" | grep -q 'PRECHECK_FAIL: touched-files-malformed'; g=$?
+  case "$g" in
+    0) ok "emits 'PRECHECK_FAIL: touched-files-malformed'" ;;
+    1) bad "expected touched-files-malformed (got: $out)" ;;
+    *) bad "grep errored (exit $g) scanning lint output" ;;
+  esac
+)
+
+echo "[bounds-touched-bare-ok] a bare-but-extractable touched-files path does NOT fire touched-files-malformed"
+(
+  # make_clean declares its touched file with a BARE path (`- scripts/foo.sh — …`);
+  # the tolerant parser extracts it, so no malformed PRECHECK and a clean exit.
+  TMP="$(mktemp -d)"; f="$TMP/clean.md"; make_clean "$f"
+  out="$(bash "$LINT" --bounds "$f" 2>/dev/null)"; rc=$?
+  [ "$rc" -eq 0 ] && ok "bare-but-extractable fixture exits zero" \
+    || bad "a bare-but-extractable path should not fail (rc=$rc, out=$out)"
+  printf '%s\n' "$out" | grep -q 'touched-files-malformed'; g=$?
+  case "$g" in
+    1) ok "no touched-files-malformed for a bare-but-extractable path" ;;
+    0) bad "bare-but-extractable path wrongly flagged malformed (got: $out)" ;;
+    *) bad "grep errored (exit $g) scanning lint output" ;;
+  esac
+)
+
+echo "[bounds-parser-agreement] _tl_extract_touched_paths (tdd-lint) and _rework_touched_files (gates.sh) agree byte-for-byte"
+(
+  TMP="$(mktemp -d)"; f="$TMP/agree.md"
+  cat > "$f" <<'EOF'
+# TDD 9009: parser-agreement fixture
+Status: draft
+
+## Touched files
+- `scripts/lib/gates.sh` — `coverage_map_block` with backticked words
+- scripts/lib/tdd-lint.sh — `_tl_extract_touched_paths` description backticks
+- scripts/foo.sh trailing words with no em-dash
+EOF
+  # Source BOTH libs in one subshell and diff the two extractors on the SAME
+  # fixture; the env mirrors the bounded-rework cases' THROUGHLINE_SOURCE_ONLY path.
+  agree="$(
+    export STATE_DIR="$TMP/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+    export INTEGRATION="master" CHANGE="ci" LOGDIR="$TMP"
+    mkdir -p "$STATE_DIR"
+    TDDS=()
+    THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" 2>/dev/null || { printf 'SOURCE_FAIL gates'; exit 0; }
+    source "$LINT" 2>/dev/null || { printf 'SOURCE_FAIL lint'; exit 0; }
+    a="$(_rework_touched_files "$f")"
+    b="$(_tl_extract_touched_paths "$f")"
+    [ "$a" = "$b" ] && printf 'AGREE' || printf 'DIFF a=[%s] b=[%s]' "$a" "$b"
+  )"
+  [ "$agree" = "AGREE" ] && ok "the two parsers emit byte-identical output (drift guard)" \
+    || bad "parser drift between tdd-lint and gates.sh: $agree"
+)
+
 echo "[agent-scope] design-reviewer carries the scope-coherence working-memory item"
 (
   grep -qi 'scope.coherence' "$AGENT" \
