@@ -1,6 +1,6 @@
 # TDD 0043: Rework on the build model (Opus) — restore author↔reviewer diversity on rework iterations
 
-Status: draft
+Status: implemented
 PRD refs: NFR-3 (gap-closure: rework author↔reviewer diversity); FR-65; FR-66
 PRD-rev: 0aa1e28
 ADR constraints: 0005, 0006, 0007, 0008
