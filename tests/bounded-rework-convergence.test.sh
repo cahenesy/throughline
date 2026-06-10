@@ -300,7 +300,7 @@ mk_pp_repo() {
 Status: draft
 
 ## Touched files
-- `src/a.txt` (post) — the in-scope file
+- `src/a.txt` — (post) the in-scope file
 
 ## Expected diff size
 - `src/a.txt` — ~50 lines added
