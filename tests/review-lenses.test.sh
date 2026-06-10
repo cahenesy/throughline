@@ -11,6 +11,12 @@
 #      absence; documented-but-unenforced is a finding; evidence must cite BOTH
 #      sides (ADR 0006); severity by behavioral boundary (intent-unenforced);
 #      explicit scope guard against out-of-scope blocking.
+#   §2 policy-shadow lens: a test asserting an extracted helper in isolation is
+#      a finding ONLY when the reviewer can NAME the real enforcement path
+#      (<file>:<line> where the framework should call the helper) AND show the
+#      test misses it; no concrete gap -> NO finding (grounded, ADR 0006);
+#      severity major with pattern_tags [policy-shadow], raised against the
+#      test file's region.
 #
 # Observation point per the TDD's verification plan: render the prompt the
 # review `claude -p` actually receives via _render_review_prompt (the same path
@@ -93,6 +99,45 @@ echo "[§1] rendered prompt: intent-conformance lens (FR-10 / FR-15(d))"
     ok "lens placed after Grounding and before Prior-addressed-patterns (inherits grounding)"
   else
     bad "lens must sit between Grounding and Prior-addressed-patterns (heading lines: $order)"
+  fi
+) || true
+
+# ===========================================================================
+# §2: the rendered prompt carries the policy-shadow lens — heading, the
+# helper-vs-framework-path distinction, the name-the-real-path requirement,
+# the no-finding-without-a-concrete-gap rule (the false-positive guard), and
+# the severity rule (major, policy-shadow tag, test file's region).
+echo "[§2] rendered prompt: policy-shadow lens (FR-15)"
+( OUT="$(render_prompt "$ROOT/s2")"
+  if [ -z "$OUT" ]; then bad "INFRA: §2 — could not render the review prompt"; exit 0; fi
+  out_has '^## Lens: policy-shadow tests \(FR-15\)' \
+    "lens section heading present"
+  out_has 'framework actually invokes that helper' \
+    "duty: check the framework actually invokes the helper on the governed path"
+  out_has 'Name the real enforcement path' \
+    "name-the-real-path requirement present"
+  out_has 'where the framework should call the helper' \
+    "the named location is where the framework should call the helper"
+  out_has 'without driving the framework entry point' \
+    "the shown gap: test calls the helper without driving the framework entry point"
+  out_has 'raise NO finding' \
+    "no-finding-without-a-concrete-gap rule present (false-positive guard)"
+  out_has 'pattern_tags: \[policy-shadow\]' \
+    "shadow test for a governance/gate behavior tagged policy-shadow"
+  out_has 'is `major` with' \
+    "shadow test for a governance/gate behavior is major"
+  out_has "against the test file's region" \
+    "finding raised against the test file's region"
+  # Placement: after the intent-conformance lens, before Prior-addressed-
+  # patterns — both lenses sit under the Grounding section's rules.
+  order="$(printf '%s\n' "$OUT" | grep -nE '^## (Lens: intent-conformance|Lens: policy-shadow|Prior addressed patterns)' \
+    | sed -E 's/:.*//' | paste -sd' ' -)"
+  # shellcheck disable=SC2086 # intentional word-split: $order is "N N N" line numbers
+  set -- $order
+  if [ "$#" -eq 3 ] && [ "$1" -lt "$2" ] && [ "$2" -lt "$3" ]; then
+    ok "lens placed after intent-conformance and before Prior-addressed-patterns"
+  else
+    bad "lens must sit between the intent-conformance lens and Prior-addressed-patterns (heading lines: $order)"
   fi
 ) || true
 
