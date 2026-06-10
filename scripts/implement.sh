@@ -118,6 +118,24 @@ _reclaim_stale_worktree() {  # <workroot> <report>
   git worktree prune >>"$report" 2>&1
 }
 
+# _pr_coverage_pointer <prurl> <log> (TDD 0044 / FR-78)
+# After a successful `gh pr create --fill`, post a one-line PR COMMENT pointing
+# the human reviewer at the run report's `## Per-requirement coverage` section.
+# A comment is purely additive — the --fill body stays untouched — and all
+# three create sites (sequential / combined / parallel) share this helper, so
+# the pointer string stays in sync by construction. Best-effort: a failed
+# `gh pr comment` warns into <log> and returns 0 — the map still lives in
+# $REPORT; only the PR convenience pointer is lost (the one accepted
+# degradation). Defined above the SOURCE_ONLY guard so the test suite can
+# drive it in isolation.
+_pr_coverage_pointer() {  # <prurl> <log>
+  local prurl="${1:-}" log="${2:-/dev/null}"
+  [ -n "$prurl" ] || return 0
+  gh pr comment "$prurl" --body "Per-requirement coverage map (FR-78 — reported, advisory): see the \`## Per-requirement coverage\` section in this run's report at ${REPORT:-report.md}. An \`unverified-gap\` there is a finding for the human reviewer, not an automatic block." >>"$log" 2>&1 \
+    || echo "warning: _pr_coverage_pointer: could not post the coverage-map pointer comment to $prurl (the map still lives in ${REPORT:-report.md}; only the PR pointer is lost)" >>"$log"
+  return 0
+}
+
 # THROUGHLINE_SOURCE_ONLY=1 lets the test suite source this script to call
 # helpers in isolation. Runtime side effects (arg parsing, lock, drivers,
 # report) live below the guard; helpers are defined unconditionally above.
@@ -451,7 +469,10 @@ if [ "$PARALLEL" -eq 1 ]; then
       if [ "$rc" -eq 0 ] && [ "$HASGH" -eq 1 ]; then
         if git push -u origin "feat/$slug" >>"$abslog" 2>&1; then
           prurl="$(gh pr create --base "$BASE" --head "feat/$slug" --fill 2>>"$abslog")"
-          [ -n "$prurl" ] && set_tdd_meta "$slug" "pr_url=$prurl"
+          if [ -n "$prurl" ]; then
+            set_tdd_meta "$slug" "pr_url=$prurl"
+            _pr_coverage_pointer "$prurl" "$abslog"   # TDD 0044 / FR-78
+          fi
         fi
       fi ) &
     pids+=("$!")
@@ -551,6 +572,7 @@ else
         if [ -n "$prurl" ]; then
           echo "Opened ONE combined PR: $prurl (not merged — merging is your gate)." >>"$REPORT"
           for tdd in "${TDDS[@]}"; do set_tdd_meta "$(basename "$tdd" .md)" "pr_url=$prurl"; done
+          _pr_coverage_pointer "$prurl" "$REPORT"   # TDD 0044 / FR-78
         fi
       fi
     elif [ "$HASGH" -ne 1 ]; then echo "gh/remote not available: commits are on branch '$CHANGE'; open a PR manually." >>"$REPORT"; fi
@@ -625,6 +647,7 @@ else
               prurl="$(gh pr create --base "$pbase" --head "$branch" --fill 2>>"$log")"
               if [ -n "$prurl" ]; then pr=", $prurl"; PR_PLAN+=("$prurl  (base $pbase)")
                 set_tdd_meta "$slug" "pr_url=$prurl"
+                _pr_coverage_pointer "$prurl" "$log"   # TDD 0044 / FR-78
               else pr=", PR create failed (see log)"; fi
             else pr=", push failed (see log)"; fi
           fi

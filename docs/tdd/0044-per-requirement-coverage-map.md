@@ -1,5 +1,5 @@
 # TDD 0044: Per-requirement test-coverage map
-Status: draft
+Status: implemented
 PRD refs: FR-78
 PRD-rev: 0aa1e28
 ADR constraints: 0004, 0005, 0006

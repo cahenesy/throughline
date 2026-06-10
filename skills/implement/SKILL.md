@@ -433,8 +433,14 @@ resolve.
 When the build finishes: a report at
 `docs/tdd/.implement-logs/<timestamp>/report.md` lists per-feature status
 (OK / FAIL verification / FAIL review / BLOCKED) with log paths, and the PR(s)
-await review. If `docs/tdd/BLOCKERS.md` gained entries, run `/tdd-author` to
-revise the design, then re-run `/implement`.
+await review. For each TDD whose review cleared, the report also carries a
+`## Per-requirement coverage (<slug>, FR-78 — reported, advisory)` section
+mapping that TDD's in-scope requirements to
+`pinned` / `proposed` / `justified-no-surface` / `unverified-gap` — advisory
+input for your PR review (an `unverified-gap` is a finding for you, the human
+reviewer, never an automatic flip-blocker; each opened PR gets a one-line
+pointer comment to the section). If `docs/tdd/BLOCKERS.md` gained entries, run
+`/tdd-author` to revise the design, then re-run `/implement`.
 
 ## Merging the stack (sequential mode)
 Sequential PRs are STACKED: PR 2's base is TDD 1's branch, PR 3's base is TDD 2's,
