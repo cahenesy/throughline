@@ -292,7 +292,7 @@ mk_rework_repo() {
 Status: draft
 
 ## Touched files
-- `src/a.txt` (post) — the in-scope file
+- `src/a.txt` — (post) the in-scope file
 - `src/b.txt` — another in-scope file
 
 ## Expected diff size
@@ -413,6 +413,86 @@ echo "[C8] _rework_pre_pass falls back to build-start SHA when no cleared SHA"
     || bad "degraded mode should still reject oversized (rc=$rc, out=$out)"
   printf '%s\n' "$out" | grep -q 'PRECHECK_FAIL: rework-scope-exceeded' \
     && ok "fallback uses build-start SHA for the scope diff" || bad "should still emit scope-exceeded (got: $out)"
+) || true
+
+# --- TDD 0048 / FR-67(a): _rework_touched_files path-extraction robustness -----
+# The parser must extract the PATH from a `## Touched files` bullet the SAME way
+# its sibling _rework_file_declared_bound does (em-dash split + backtick-strip +
+# trim), so a backticked path, a BARE path, a bare path whose DESCRIPTION uses
+# backticks, and a bare path with no em-dash all yield the path — never the first
+# stray description backtick token (the TDD 0044 false structural-finding(a)).
+mk_extract_tdd() {  # writes docs/tdd/0048-extract.md with assorted bullet forms
+  mkdir -p docs/tdd
+  cat > docs/tdd/0048-extract.md <<'EOF'
+# TDD 0048: extraction fixture
+Status: draft
+
+## Touched files
+- `scripts/lib/gates.sh` — `coverage_map_block`/`emit` with backticked words
+- scripts/lib/tdd-lint.sh — `_tl_extract_touched_paths`/`check` description backticks
+- scripts/foo.sh trailing words with no em-dash
+- — a stray note with no extractable path
+
+## Expected diff size
+- `scripts/lib/gates.sh` — 25 lines
+EOF
+}
+
+echo "[C9] _rework_touched_files extracts the path (bare / backticked / desc-backticks / no-em-dash) and drops a no-path bullet"
+( D="$ROOT/C9"; mkdir -p "$D/state.d"; cd "$D" || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  git init -q -b master; git config user.email t@t.t; git config user.name t
+  mk_extract_tdd
+  out="$(_rework_touched_files docs/tdd/0048-extract.md)"
+  exp="$(printf 'scripts/lib/gates.sh\nscripts/lib/tdd-lint.sh\nscripts/foo.sh')"
+  [ "$out" = "$exp" ] && ok "emits exactly the three real paths, drops the no-path bullet" \
+    || bad "expected the three paths only (got: $(printf '%s' "$out" | tr '\n' '|'))"
+  # the TDD 0044 regression specifically: the BARE path whose description uses
+  # backticks must yield the PATH, not the first description backtick token.
+  printf '%s\n' "$out" | grep -qx '_tl_extract_touched_paths'; g=$?
+  case "$g" in
+    1) ok "bare-with-description-backticks yields the path, not the desc token" ;;
+    0) bad "regression: emitted the description backtick token, not the path" ;;
+    *) bad "grep errored (exit $g) scanning the extractor output" ;;
+  esac
+) || true
+
+echo "[C10] _rework_pre_pass does NOT fire structural-finding(a) for an in-scope edit to a BARE-path-declared file (the TDD 0044 false halt)"
+( D="$ROOT/C10"; mkdir -p "$D/state.d"; cd "$D" || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  git init -q -b master; git config user.email t@t.t; git config user.name t
+  printf 'base\n' > base.txt; git add -A; git commit -qm base >/dev/null
+  mkdir -p docs/tdd
+  cat > docs/tdd/0048-bare.md <<'EOF'
+# TDD 0048: bare-path membership fixture
+Status: draft
+
+## Touched files
+- scripts/lib/gates.sh — `_rework_touched_files` parser, BARE path declared
+
+## Expected diff size
+- scripts/lib/gates.sh — 25 lines
+EOF
+  git add -A; git commit -qm "build start: bare-path scope" >/dev/null
+  BS="$(git rev-parse HEAD)"
+  mkdir -p scripts/lib; printf 'l1\nl2\nl3\n' > scripts/lib/gates.sh
+  git add -A; git commit -qm "rework: small in-scope edit to the bare-path file" >/dev/null
+  NH="$(git rev-parse HEAD)"
+  out="$(_rework_pre_pass 0048-bare docs/tdd/0048-bare.md "$NH" "$BS" "$BS" 8)"; rc=$?
+  printf '%s\n' "$out" | grep -q 'structural-finding(a)'; g=$?
+  case "$g" in
+    1) ok "no structural-finding(a) for the in-scope bare-path file" ;;
+    0) bad "false structural-finding(a) on an in-scope bare-path edit (got: $out)" ;;
+    *) bad "grep errored (exit $g) scanning the pre-pass output" ;;
+  esac
+  [ "$rc" -eq 0 ] && ok "pre-pass clears the in-scope bare-path rework" \
+    || bad "pre-pass should clear the bare-path rework (rc=$rc, out=$out)"
 ) || true
 
 # --- §5 / FR-61, FR-62: _rework_one spawns a bounded fix + commits -----------
