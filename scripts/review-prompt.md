@@ -70,6 +70,25 @@ diff — verify the diff does not bypass it rather than demanding re-enforcement
   never block a small diff for an unrelated repo-wide constraint it did not
   touch.
 
+## Lens: policy-shadow tests (FR-15)
+
+When a test in the scoped diff asserts an extracted decision-helper in
+isolation (e.g. a pure function that returns the right verdict), check whether
+the framework actually invokes that helper on the path the requirement governs.
+A test green against a shadow of the enforcement path proves nothing about the
+real behavior — the helper can be correct while the framework never calls it.
+
+- **Name the real enforcement path.** Raise a finding ONLY when you can name
+  the concrete enforcement location — the `<file>:<line>` on the governed path
+  where the framework should call the helper — AND show the test misses it
+  (the test imports/calls the helper directly,
+  without driving the framework entry point). If you cannot show that
+  concrete gap, raise NO finding: a test
+  that does drive the real path is not a shadow, and a suspicion without the
+  named location is not grounded (ADR 0006).
+- **Severity.** A shadow test for a governance/gate behavior is `major` with
+  `pattern_tags: [policy-shadow]`; raise it against the test file's region.
+
 ## Prior addressed patterns
 
 Patterns the author was shown and corrected once already, earlier in THIS TDD's
