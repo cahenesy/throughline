@@ -19,6 +19,11 @@
 #      missing block / missing log → empty + rc 0 (non-fatal)
 #   §3 coverage_map_normalize: status validation + BOTH model-independent
 #      pinned downgrades (no-citation shape, citation-not-in-diff)
+#   §4 write_coverage_report: rendered table with the downgrades observable,
+#      unlisted-id drop, advisory legend, idempotent per-slug replace
+#   §5 missing block → "coverage map unavailable", never a false all-covered;
+#      append failure warns and continues (report-only, rc 0)
+#   §6 wiring: the consolidated-review clear in _rework_loop calls the writer
 #
 # Run: bash tests/coverage-map.test.sh
 set -uo pipefail
@@ -198,6 +203,147 @@ tests/a.test.sh'
   # empty stdin (missing block) → empty output, rc 0.
   out="$(printf '' | norm)"; rc=$?
   [ "$rc" -eq 0 ] && [ -z "$out" ] && ok "empty block → empty output, rc 0" || bad "empty block must be empty+rc0 (rc=$rc, out=[$out])"
+) || true
+
+# ===========================================================================
+# §4: write_coverage_report — the verification plan's fixture: a review log
+# whose block carries one pinned (cited, file IN the diff), one pinned (NO
+# citation), one pinned (cited, file NOT in the diff), one justified-no-surface,
+# one unverified-gap, plus an unlisted requirement id. Renders a
+# `## Per-requirement coverage (<slug>, FR-78 — reported, advisory)` section
+# into $logdir/report.md with both downgrades observable in the table, the
+# unlisted id dropped with a note, the advisory legend, and an idempotent
+# per-slug replace on a second invocation.
+echo "[§4] write_coverage_report: rendered table, downgrades observable, idempotent replace"
+( D="$ROOT/s4"; mkdir -p "$D/state.d" "$D/logs"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D/logs"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "INFRA: §4 — source guard missing"; exit 0; }
+  command -v write_coverage_report >/dev/null 2>&1 || { bad "write_coverage_report is not defined after sourcing"; exit 0; }
+
+  # Fixture repo: base commit, then a head commit touching tests/a.test.sh —
+  # the runner-derived scoped-diff list the citation check verifies against.
+  mkdir -p "$D/repo"; cd "$D/repo" || { bad "INFRA: §4 — cd failed"; exit 0; }
+  git init -q; git config user.email t@t.t; git config user.name t
+  echo base > base.txt; git add -A; git commit -qm base
+  BASE_SHA="$(git rev-parse HEAD)"
+  mkdir -p tests docs/tdd
+  echo "test fixture" > tests/a.test.sh
+  cat > docs/tdd/0099-fixture.md <<'EOF'
+# TDD 0099: fixture
+Status: ready
+
+## Requirement traceability
+| Requirement | Design element |
+|---|---|
+| FR-1 (extraction) | the extractor |
+| FR-2 (downgrade a) | the shape check |
+| FR-3 (downgrade b) | the diff check |
+| FR-4 (skip) | the skip status |
+| FR-5 (gap) | the gap status |
+EOF
+  git add -A; git commit -qm head
+
+  RLOG="$LOGDIR/0099-fixture.log"
+  cat > "$RLOG" <<'EOF'
+COVERAGE_MAP_BEGIN
+COVERAGE: FR-1 pinned tests/a.test.sh::case_a
+COVERAGE: FR-2 pinned a test is planned for this
+COVERAGE: FR-3 pinned tests/elsewhere.test.sh::case_x
+COVERAGE: FR-4 justified-no-surface prompt-only change; no observable surface (recorded SKIP)
+COVERAGE: FR-5 unverified-gap halt path has no asserting test
+COVERAGE: FR-99 pinned tests/a.test.sh::case_a
+COVERAGE_MAP_END
+REVIEW_RESULT: PASS
+EOF
+  printf '# run report\n\npre-existing run content\n' > "$LOGDIR/report.md"
+
+  write_coverage_report "$LOGDIR" "0099-fixture" "$RLOG" "$BASE_SHA" "HEAD"; rc=$?
+  R="$LOGDIR/report.md"
+  [ "$rc" -eq 0 ] && ok "writer returns 0 (report-only)" || bad "writer must rc 0 (got $rc)"
+  grep -qF '## Per-requirement coverage (0099-fixture, FR-78 — reported, advisory)' "$R" \
+    && ok "per-slug section heading rendered" || bad "section heading missing from report.md"
+  grep -qF '| FR-1 | pinned | tests/a.test.sh::case_a |' "$R" \
+    && ok "cited-in-diff pinned row stays pinned with its citation" || bad "FR-1 pinned row wrong"
+  grep -qF '| FR-2 | unverified-gap | pinned-without-citation: a test is planned for this |' "$R" \
+    && ok "uncited pinned rendered as unverified-gap (pinned-without-citation)" || bad "FR-2 downgrade row wrong"
+  grep -qF '| FR-3 | unverified-gap | pinned-citation-not-in-diff: tests/elsewhere.test.sh::case_x |' "$R" \
+    && ok "cited-but-not-in-diff pinned rendered as unverified-gap (pinned-citation-not-in-diff)" || bad "FR-3 downgrade row wrong"
+  grep -qF '| FR-4 | justified-no-surface | prompt-only change; no observable surface (recorded SKIP) |' "$R" \
+    && ok "justified-no-surface row carries its skip reason, NOT rendered as a gap" || bad "FR-4 row wrong"
+  grep -qF '| FR-5 | unverified-gap | halt path has no asserting test |' "$R" \
+    && ok "unverified-gap row carries its note" || bad "FR-5 row wrong"
+  grep -qF 'unlisted requirement FR-99 ignored' "$R" \
+    && ok "unlisted requirement dropped with a note" || bad "unlisted-id note missing"
+  grep -qF '| FR-99 |' "$R" \
+    && bad "unlisted requirement must NOT get a table row" || ok "no table row for the unlisted requirement"
+  grep -qF 'not an automatic block' "$R" \
+    && ok "advisory legend present (gap = human-review finding)" || bad "advisory legend missing"
+  grep -qF 'pre-existing run content' "$R" \
+    && ok "pre-existing report content preserved" || bad "writer must append, not clobber, report.md"
+
+  # Idempotent per-slug replace: a second invocation (a resume re-running the
+  # final review) replaces the prior section rather than duplicating it.
+  write_coverage_report "$LOGDIR" "0099-fixture" "$RLOG" "$BASE_SHA" "HEAD"
+  n="$(grep -cF '## Per-requirement coverage (0099-fixture,' "$R")"
+  [ "$n" = "1" ] && ok "second invocation replaces the per-slug section (1 heading)" || bad "expected 1 section heading after re-run (got $n)"
+  n="$(grep -cF '| FR-1 | pinned |' "$R")"
+  [ "$n" = "1" ] && ok "no duplicated table rows after re-run" || bad "expected 1 FR-1 row after re-run (got $n)"
+) || true
+
+# ===========================================================================
+# §5: degraded paths — a review log with NO block yields an explicit
+# "coverage map unavailable" line (never a falsely-green all-covered table);
+# an append failure warns to stderr and continues with rc 0 (report-only,
+# never fails the build — NFR-4).
+echo "[§5] write_coverage_report: missing block → unavailable; append failure warns + rc 0"
+( D="$ROOT/s5"; mkdir -p "$D/state.d" "$D/logs"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D/logs"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "INFRA: §5 — source guard missing"; exit 0; }
+  command -v write_coverage_report >/dev/null 2>&1 || { bad "write_coverage_report is not defined after sourcing"; exit 0; }
+  mkdir -p "$D/repo"; cd "$D/repo" || { bad "INFRA: §5 — cd failed"; exit 0; }
+  git init -q; git config user.email t@t.t; git config user.name t
+  echo base > base.txt; git add -A; git commit -qm base
+  BASE_SHA="$(git rev-parse HEAD)"
+  echo head > head.txt; git add -A; git commit -qm head
+
+  printf 'no fences here\nREVIEW_RESULT: PASS\n' > "$LOGDIR/0099-fixture.log"
+  : > "$LOGDIR/report.md"
+  write_coverage_report "$LOGDIR" "0099-fixture" "$LOGDIR/0099-fixture.log" "$BASE_SHA" "HEAD"; rc=$?
+  R="$LOGDIR/report.md"
+  [ "$rc" -eq 0 ] && ok "rc 0 on a block-less review log" || bad "missing block must not fail the writer (rc=$rc)"
+  grep -qF '## Per-requirement coverage (0099-fixture,' "$R" \
+    && ok "section still rendered (no silent omission)" || bad "section heading missing for the unavailable case"
+  grep -qiF 'coverage map unavailable' "$R" \
+    && ok "explicit 'coverage map unavailable' line (never a false all-covered)" || bad "unavailable line missing"
+  grep -qF '| FR-' "$R" \
+    && bad "no requirement rows may be rendered without a block" || ok "no fabricated requirement rows"
+
+  # Append failure: read-only logdir → warn to stderr, rc 0, build unaffected.
+  RO="$D/ro-logs"; mkdir -p "$RO"; printf 'x\n' > "$RO/r.log"; chmod 555 "$RO"
+  err="$(write_coverage_report "$RO" "0099-fixture" "$RO/r.log" "$BASE_SHA" "HEAD" 2>&1 >/dev/null)"; rc=$?
+  chmod 755 "$RO"
+  [ "$rc" -eq 0 ] && ok "append failure still returns 0 (report-only, never fails the build)" || bad "append failure must rc 0 (got $rc)"
+  printf '%s' "$err" | grep -qi 'warning' \
+    && ok "append failure warns to stderr (not silent)" || bad "append failure must warn to stderr (got: [$err])"
+) || true
+
+# ===========================================================================
+# §6: wiring — the consolidated-review clear path in _rework_loop calls
+# write_coverage_report (after the per-file coverage check passes, before the
+# genuinely-clear return that leads to the flip/PR step). Structural check on
+# gates.sh: the FR-78 writer must not be an orphaned helper.
+echo "[§6] wiring: _rework_loop's clear path calls write_coverage_report"
+( G="$REPO/scripts/lib/gates.sh"
+  if [ ! -r "$G" ]; then bad "INFRA: §6 — gates.sh unreadable: $G"; exit 0; fi
+  grep_has 'write_coverage_report "\$\{LOGDIR:-\}" "\$slug" "\$log" "\$rbase" "HEAD"' "$G" \
+    "the consolidated clear path invokes the writer with the runner's scope"
+  # The call must live on the genuinely-clear branch: inside the
+  # _per_file_coverage_check-passed arm, before its return 0.
+  awk '/_per_file_coverage_check "\$log" "\$pre_log_size"/{inarm=1} inarm && /write_coverage_report/{found=1} inarm && /return 0/{exit} END{exit !found}' "$G" \
+    && ok "writer is called between the coverage-check clear and the return" \
+    || bad "write_coverage_report must run on the clear path before return 0"
 ) || true
 
 echo
