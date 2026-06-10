@@ -26,6 +26,8 @@
 #   §6 wiring: the consolidated-review clear in _rework_loop calls the writer
 #   §7 _pr_coverage_pointer: best-effort gh pr comment naming the report
 #      section, warn-and-continue on failure, wired at all three create sites
+#   §W dogfood: wiring this eval into the aggregator makes the aggregator's
+#      final AND-chain go non-zero when this eval fails (TDD 0038 §3 rule)
 #
 # Run: bash tests/coverage-map.test.sh
 set -uo pipefail
@@ -400,6 +402,36 @@ EOF
   n="$(grep -c '_pr_coverage_pointer "\$prurl"' "$IMPL")"
   [ "$n" = "3" ] && ok "all three gh-pr-create sites invoke the shared pointer helper" \
     || bad "expected 3 _pr_coverage_pointer call sites in implement.sh (got $n)"
+) || true
+
+# ===========================================================================
+# §W: dogfood (TDD 0038 §3 wire-in rule) — registering this eval in the
+# aggregator adds a CMAP_FAIL accumulator to its final AND-chain, so the
+# aggregator now exits non-zero on a new condition. Drive the REAL extracted
+# chain with every accumulator green EXCEPT this eval's, stubbed to fail:
+# before the wire-in the chain never references CMAP_FAIL and evaluates true
+# (RED); after, it includes the term and evaluates false (GREEN).
+echo "[§W] dogfood: wiring this eval into the aggregator makes its exit go non-zero when the eval fails"
+( AGG="$REPO/tests/implement-gate.test.sh"
+  if [ ! -r "$AGG" ]; then bad "INFRA: §W — aggregator unreadable: $AGG"; exit 0; fi
+  # Structural: the new eval is registered (run) in the aggregator. Anchored on
+  # the eval filename so an unwired aggregator is RED. Fail-closed on grep error.
+  grep_has 'coverage-map\.test\.sh' "$AGG" "the new eval is wired into the aggregator (registration present)"
+  # Behavioral: extract the aggregator's real final AND-chain verbatim and
+  # evaluate it against stub integers (no recursion into the sub-evals).
+  chain="$(grep -aE '^\[ "\$FAIL" -eq 0 \] &&' "$AGG" | tail -1)"
+  if [ -z "$chain" ]; then bad "INFRA: §W — could not locate the aggregator final AND-chain"; exit 0; fi
+  drive_rc="$(
+    set +u
+    for v in $(printf '%s' "$chain" | grep -aoE '\$[A-Za-z_][A-Za-z0-9_]*' | tr -d '$' | sort -u); do
+      eval "$v=0"
+    done
+    CMAP_FAIL=1
+    eval "$chain"; echo $?
+  )"
+  [ "$drive_rc" != "0" ] \
+    && ok "aggregator final AND-chain goes non-zero when the new eval fails (wire-in propagates)" \
+    || bad "aggregator AND-chain must be non-zero with CMAP_FAIL=1 (got rc=$drive_rc)"
 ) || true
 
 echo
