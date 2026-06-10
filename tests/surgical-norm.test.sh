@@ -12,6 +12,12 @@
 #      required-change classes named, so a future edit cannot drop the
 #      carve-out and reintroduce the doc-update contradiction); control: the
 #      mandated "Keep docs in sync IN THIS COMMIT" duty is still present.
+#   §2 rework prompt: the single-finding-scope echo (fix ONLY the cited
+#      finding; nothing outside the finding region except where mechanically
+#      required; no adjacent improvement) reaches the prompt _rework_one
+#      assembles; the shared "Surgical changes" token appears in BOTH prompts
+#      (drift guard); control: the "Fix only the cited finding" hard bound is
+#      still present.
 #
 # Run: bash tests/surgical-norm.test.sh
 set -uo pipefail
@@ -46,6 +52,51 @@ echo "[§1] rendered build prompt: surgical-changes norm + carve-out; doc-sync d
   has 'superseding an accepted ADR'     "carve-out names accepted-ADR/design-doc supersession"
   has 'not when it is zero'             "carve-out: a required change's minimum is not zero"
   has 'Keep docs in sync IN THIS COMMIT' "control: the mandated doc-sync duty is still present"
+) || true
+
+# ===========================================================================
+# §2: the rendered rework prompt carries the single-finding-scope echo of the
+# norm. Observation point: the prompt the rework `claude -p` actually receives
+# — a stub claude captures it from _rework_one's real template load + render.
+echo "[§2] rendered rework prompt: single-finding-scope echo; hard bounds intact"
+( D="$ROOT/s2"; mkdir -p "$D/state.d" "$D/bin"; cd "$D" || { bad "INFRA: §2 — cd failed"; exit 0; }
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "INFRA: §2 — source guard missing"; exit 0; }
+  export RWTMPL="$REPO/scripts/rework-prompt.md"
+  git init -q -b master; git config user.email t@t.t; git config user.name t
+  mkdir -p src docs/tdd
+  printf 'bug\n' > src/a.txt
+  cat > docs/tdd/0046-fix.md <<'EOF'
+# TDD 0046: fixture
+Status: draft
+
+## Touched files
+- `src/a.txt` — file
+EOF
+  git add -A; git commit -qm "build start" >/dev/null
+  # stub claude: capture the assembled prompt, then act as the rework model.
+  cat > "$D/bin/claude" <<EOF
+#!/usr/bin/env bash
+prompt=""
+while [ \$# -gt 0 ]; do case "\$1" in -p) prompt="\$2"; shift 2;; *) shift;; esac; done
+printf '%s' "\$prompt" > "$D/captured-prompt"
+printf 'fixed\n' > src/a.txt
+git add -A >/dev/null 2>&1; git commit -q -m "rework: fix the cited finding" >/dev/null 2>&1
+echo done
+EOF
+  chmod +x "$D/bin/claude"
+  export PATH="$D/bin:$PATH"
+  _rework_one docs/tdd/0046-fix.md "$D/rw.log" "review-1:1" "src/a.txt:1 has a bug" 60 >/dev/null
+  if [ ! -s "$D/captured-prompt" ]; then bad "INFRA: §2 — stub claude captured no prompt"; exit 0; fi
+  rhas() { grep -qF "$1" "$D/captured-prompt" && ok "$2" || bad "$2 (expected '$1' in rendered rework prompt)"; }
+  rhas 'Surgical changes'          "the shared norm token reaches the rework prompt (drift guard with §1)"
+  rhas 'ONLY the cited'            "echo: a rework fixes ONLY the cited finding"
+  rhas 'outside the finding'       "echo: nothing outside the finding region"
+  rhas 'mechanically requires'     "echo: except where the fix mechanically requires it"
+  rhas 'no adjacent improvement'   "echo: no adjacent improvement"
+  rhas 'Fix only the cited finding.' "control: the existing hard-bound bullet is still present"
 ) || true
 
 # --- report ----------------------------------------------------------------
