@@ -139,9 +139,9 @@ None. Strengthens FR-76 interrogation/authoring without changing the PRD.
 None. Authoring-guidance refinement; no durable cross-cutting decision.
 
 ## Touched files
-- skills/tdd-author/SKILL.md — add red-team ranking bullet + failure-mode taxonomy note + self-review line
-- tests/tdd-author-redteam.test.sh — assert both additions present; infra-guarded, positive-grep (L-001/L-002)
-- tests/implement-gate.test.sh — register the new eval
+- `skills/tdd-author/SKILL.md` — add red-team ranking bullet + failure-mode taxonomy note + self-review line
+- `tests/tdd-author-redteam.test.sh` — assert both additions present; infra-guarded, positive-grep (L-001/L-002)
+- `tests/implement-gate.test.sh` — register the new eval
 
 ## Expected diff size
 - skills/tdd-author/SKILL.md — 60 lines
