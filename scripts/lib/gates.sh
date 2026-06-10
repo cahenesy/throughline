@@ -1821,6 +1821,97 @@ _per_file_coverage_check() {  # <review-log> <pre-log-size> <slug> <scope-base> 
   return 1
 }
 
+# === Per-requirement coverage map (TDD 0044 / FR-78; ADR 0005, 0006) ===========
+# Report-only extractors for the consolidated review's COVERAGE_MAP block. The
+# map is ADVISORY: it lands in report.md for the human PR review and never gates
+# a status transition (the FR-15 four gates keep sole auto-flip authority).
+# Every function here therefore degrades to warn-and-continue, never a build
+# failure.
+
+# coverage_map_block <review-log> — echo the lines STRICTLY between
+# COVERAGE_MAP_BEGIN and COVERAGE_MAP_END from the review log. Last COMPLETE
+# block wins (a rework re-review appends a fresh block; mirrors
+# verify_runtime_status's tail-1 discipline); an unterminated trailing BEGIN is
+# never emitted. The fence anchors admit only leading/trailing whitespace or
+# backticks (reviewers emit sentinels as markdown inline code) — the
+# diff-vs-narrative facts quote narrative lines with a leading "| ", so a
+# narrative-embedded fence cannot match (ADR 0006: the author cannot forge the
+# block). Missing block or unreadable log → empty output, rc 0 (non-fatal).
+coverage_map_block() {  # <review-log>
+  local log="${1:-}"
+  { [ -n "$log" ] && [ -r "$log" ]; } || return 0   # no log → empty, report-only
+  awk '
+    /^[`[:space:]]*COVERAGE_MAP_BEGIN[`[:space:]]*$/ { inblk = 1; buf = ""; next }
+    /^[`[:space:]]*COVERAGE_MAP_END[`[:space:]]*$/   { if (inblk) { last = buf; have = 1 } inblk = 0; next }
+    inblk { buf = buf $0 "\n" }
+    END { if (have) printf "%s", last }
+  ' "$log" 2>/dev/null
+  return 0
+}
+
+# coverage_map_normalize <scoped-diff-files> — read extracted COVERAGE: lines on
+# stdin and emit one TAB-separated "req<TAB>status<TAB>evidence" row per line.
+# <scoped-diff-files> is the RUNNER-derived newline-separated
+# `git diff --name-only <base>..<head>` list — re-derived by the caller, never
+# taken from the model, so both downgrades below are model-independent (the
+# stronger half of FR-78's anti-false-green guarantee):
+#   (a) a `pinned` whose evidence does not open with a <file>::<name> or
+#       <file>:<line> citation → unverified-gap, note pinned-without-citation;
+#   (b) a syntactically valid citation whose file path is NOT in the scoped
+#       diff list → unverified-gap, note pinned-citation-not-in-diff (a
+#       fabricated citation to a path outside the build's own diff cannot
+#       survive).
+# An out-of-enum status token resolves to unverified-gap naming the bad token
+# (NFR-4: malformed is surfaced, never silently green). Non-COVERAGE lines are
+# ignored. Always rc 0 (report-only).
+coverage_map_normalize() {  # <scoped-diff-files>  (block lines on stdin)
+  local diff_files="${1:-}"
+  local line req status evidence cite file ln
+  while IFS= read -r line; do
+    line="${line#"${line%%[![:space:]]*}"}"            # ltrim
+    case "$line" in COVERAGE:*) : ;; *) continue ;; esac
+    line="${line#COVERAGE:}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    req="${line%%[[:space:]]*}"
+    [ -n "$req" ] || continue                          # no req id → nothing to report against
+    line="${line#"$req"}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    status="${line%%[[:space:]]*}"
+    evidence="${line#"$status"}"
+    evidence="${evidence#"${evidence%%[![:space:]]*}"}"
+    evidence="$(printf '%s' "$evidence" | tr '\t' ' ')"   # keep the TSV row intact
+    case "$status" in
+      pinned)
+        # Citation = the evidence's first token; derive the cited file path.
+        cite="${evidence%%[[:space:]]*}"
+        file=""
+        case "$cite" in
+          *::*)
+            file="${cite%%::*}"
+            [ -n "${cite#*::}" ] || file=""            # "<file>::" with no name is not a citation
+            ;;
+          *:*)
+            ln="${cite##*:}"
+            case "$ln" in ''|*[!0-9]*) : ;; *) file="${cite%:*}" ;; esac
+            ;;
+        esac
+        if [ -z "$file" ]; then
+          status="unverified-gap"; evidence="pinned-without-citation: ${evidence:-<no evidence>}"
+        elif ! printf '%s\n' "$diff_files" | grep -qxF "$file"; then
+          status="unverified-gap"; evidence="pinned-citation-not-in-diff: $evidence"
+        fi
+        ;;
+      proposed|justified-no-surface|unverified-gap) : ;;
+      *)
+        evidence="invalid-status '${status:-<empty>}': ${evidence:-<no evidence>}"
+        status="unverified-gap"
+        ;;
+    esac
+    printf '%s\t%s\t%s\n' "$req" "$status" "$evidence"
+  done
+  return 0
+}
+
 # _rework_extract_finding <review-log> [<pre-log-size>]  — set RWK_STRUCTURAL /
 # RWK_STRUCTURAL_REASON / RWK_REGION / RWK_REF / RWK_TEXT for the FIRST halting
 # finding in the review output. RWK_STRUCTURAL_REASON (TDD 0034 / FR-67) carries
