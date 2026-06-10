@@ -71,7 +71,7 @@ loses:
 | The author reviews itself — same context, same blind spots, polite agreement. | The review gate runs in a separate `claude -p` on a **different model**, fanning out to specialized subagents (code review, silent-failure-hunter, security review). Different opinions, not an echo chamber. |
 | Verification means "the tests passed." | Verification means **driving the real artifact** to where a user meets it (CLI output, HTTP response, log line, DOM, file write) and confirming the TDD's named observations hold. Tests-green is necessary, never sufficient. |
 | Scope creeps. A "small fix" turns into a 540-line PR with 11 manual review-fix iterations. | Every TDD declares its **expected diff size + touched-file set** at design time. The design-critique gate refuses over-ambitious designs before any build runs. throughline's own scripts comply with the same bounds it enforces on yours. |
-| Review is end-of-build — when something's wrong, you re-do the whole build. | Review runs **continuously, per step**, against the diff range since the last cleared pass. Cleared code is never re-evaluated. A halting finding triggers a **bounded automatic rework loop** on sonnet (cheaper, scope-capped) inside the same `/implement` invocation — not a manual fix-loop you babysit. |
+| Review is end-of-build — when something's wrong, you re-do the whole build. | Review runs **continuously, per step**, against the diff range since the last cleared pass. Cleared code is never re-evaluated. A halting finding triggers a **bounded automatic rework loop** on the build model (opus, scope-capped) inside the same `/implement` invocation — not a manual fix-loop you babysit. |
 | Findings are flat — every comment looks equally severe; the human reads all of them. | Every finding carries `severity: blocker | major | minor | nit` and a `structural: true|false` tag. The runner halts only on `{blocker, major}`. Minors and nits ship in the report but don't gate. |
 | Reports are narrative. "I refactored the auth module to be cleaner." | Reports are **diff-grounded**: actual file list, line counts, traceability check, scope-bound check. The author's own self-review runs first (cheaper) and is then independently checked. |
 | When work pauses for you, you guess why. "Did it crash? Hit a rate limit? Need a decision?" | A **closed halt taxonomy** of `human-needed` causes (rate-limit, structural-finding, rework-budget-exhausted, design-escalation, external-blocker, …) plus a **one-screen halt context** that names the cause, the artifact, and exactly what you need to do. |
@@ -176,7 +176,7 @@ holds off a second `/implement`, so two builds can't race.
   `/implement`.
 - **Halting review finding (in-build):** the runner classifies the finding as
   structural-or-fixable. *Fixable* → enters a bounded automatic rework loop on
-  sonnet (scope-capped per FR-66/67, attempt-budget-bounded per FR-65); the
+  the build model (scope-capped per FR-66/67, attempt-budget-bounded per FR-65); the
   next per-step review pass runs against the new diff. *Structural* → routed to
   `docs/tdd/BLOCKERS.md` as a design-action-required cause, halts the TDD.
 - **Rate-limit / transient pause:** the runner enters `paused` with the cause
@@ -233,7 +233,7 @@ throughline/
 │   ├── bounded-tdd-scope.test.sh          # eval: expected-diff-size + touched-files bounds
 │   ├── continuous-in-build-review.test.sh # eval: per-step scoped review
 │   ├── test-first-per-step.test.sh        # eval: mechanical per-step test-first pre-check
-│   ├── bounded-rework-loop.test.sh        # eval: in-invocation sonnet rework + budget
+│   ├── bounded-rework-loop.test.sh        # eval: in-invocation rework + budget
 │   ├── halt-taxonomy.test.sh              # eval: closed cause enum + one-screen context
 │   ├── severity-honest-reporting.test.sh  # eval: severity tags + diff-grounded report + author self-review + per-file coverage
 │   ├── build-phase-learnings.test.sh      # eval: recurring-pattern detection + watcher liveness + LEARNINGS.md persistence
@@ -291,7 +291,7 @@ process:
    `throughline:security-reviewer`, and every finding carries
    `severity: blocker | major | minor | nit` + `structural: true|false`. A
    halting finding (`{blocker, major}`) triggers a **bounded automatic rework
-   loop** inside the same `/implement` invocation (sonnet, scope-capped,
+   loop** inside the same `/implement` invocation (the build model, scope-capped,
    structural-escalation aware, attempt-budget-bounded); `{minor, nit}`
    findings ship in the report but never gate. After all steps clear, a
    final consolidated pass issues the flip-authority `REVIEW_RESULT: PASS`
@@ -341,7 +341,9 @@ before a flip — but *when* it runs is split:
   surfaced to the step-(N+1) reviewer as context, so the same class of bug
   isn't re-introduced one step later.
 - **Halting finding → bounded automatic rework.** A `{blocker, major}` with
-  `structural: false` triggers a sonnet rework attempt: the model gets the
+  `structural: false` triggers a rework attempt on the build model (opus —
+  Sonnet is reserved for the review gates, so the reviewer never shares the
+  rework author's blind spots): the model gets the
   finding, the scope bounds, and the cleared-code map. Its commit faces the
   mechanical pre-pass first; on clear it ships and the next per-step review
   pass runs against the new diff range. The loop has an attempt budget (per
@@ -351,8 +353,8 @@ before a flip — but *when* it runs is split:
   routes to `BLOCKERS.md` as a design-escalation cause; the rework loop does
   **not** silently expand scope to fix it.
 
-The net effect: cheap minor fixes happen inside the build on sonnet without you
-babysitting; real design problems escalate visibly with a one-screen context.
+The net effect: minor fixes happen inside the build without you babysitting;
+real design problems escalate visibly with a one-screen context.
 
 ## Severity-honest reporting + author self-review
 
