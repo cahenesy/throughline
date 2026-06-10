@@ -2,7 +2,7 @@
 
 Status: draft
 PRD refs: NFR-3 (gap-closure: rework author↔reviewer diversity); FR-65; FR-66
-PRD-rev: d289607
+PRD-rev: 0aa1e28
 ADR constraints: 0005, 0006, 0007, 0008
 
 ## Approach
@@ -64,20 +64,26 @@ disposition — is revised here, via a new ADR scoped to that decision.
 
 ## Components & interfaces
 
-### 1. Rework-model default → the build model — `scripts/lib/gates.sh`
+### 1. Rework-model default → the build model — `scripts/lib/gates.sh`, `scripts/lib/state.sh`
 
-Two sites resolve the rework model from the same knob with a `sonnet` fallback:
+THREE sites resolve the rework model from the same knob with a `sonnet` fallback —
+two in `gates.sh` (the runtime spawn + telemetry reads) and one in `state.sh` (the
+run.json config-snapshot read):
 
-- `gates.sh:1351` — `local rm="${THROUGHLINE_REWORK_MODEL:-sonnet}"`
-- `gates.sh:1876` — `local model="${THROUGHLINE_REWORK_MODEL:-sonnet}"`
+- `gates.sh:1555` — `_rework_one`: `local rm="${THROUGHLINE_REWORK_MODEL:-sonnet}"` — the **spawn** read (passed as `--model "$rm"` to the rework `claude -p`).
+- `gates.sh:2129` — `_rework_loop`: `local model="${THROUGHLINE_REWORK_MODEL:-sonnet}"` — the per-attempt **telemetry** read recorded in `rework_log[*].model`.
+- `state.sh:357` — `_rework_config_json`: `local model="${THROUGHLINE_REWORK_MODEL:-sonnet}"` — the **run.json config-snapshot** read recorded in `config.rework_config.model` (and the value test A1 observes). Also update the now-stale adjacent comment (~:353–355) that claims "the model default `sonnet` resolves to the same alias `THROUGHLINE_REVIEW_MODEL` resolves to" — after the flip the default is `opus` and no longer matches the review-model alias.
 
-Change BOTH fallbacks `sonnet` → **`opus`**, so an unset `THROUGHLINE_REWORK_MODEL`
+Change ALL THREE fallbacks `sonnet` → **`opus`**, so an unset `THROUGHLINE_REWORK_MODEL`
 resolves to `opus` (the build default). The knob itself is unchanged — an explicit
-`THROUGHLINE_REWORK_MODEL=<x>` still overrides at both sites (the override path is
-untouched). The two sites MUST stay in lock-step (the same default), since they are
-the resolve-for-spawn and resolve-for-telemetry reads of one value; a future helper
-could centralize them, but this TDD keeps the minimal two-line change and the
-verification asserts both resolve identically.
+`THROUGHLINE_REWORK_MODEL=<x>` still overrides at all three sites (the override path is
+untouched). The three sites MUST stay in lock-step (the same default): they are the
+resolve-for-spawn, resolve-for-telemetry, and resolve-for-config-snapshot reads of one
+value. `_rework_config_json` (state.sh) re-resolves the knob INDEPENDENTLY of the
+gates.sh reads — it does not read their result — so flipping only the gates.sh sites
+would leave the config snapshot defaulting to `sonnet`, disagreeing with the spawned
+and telemetry models; a future helper could centralize all three, but this TDD keeps
+the minimal three-line change and the verification asserts they resolve identically.
 
 ### 2. Documentation reconciliation — `skills/implement/SKILL.md`, `README.md`
 
@@ -105,15 +111,20 @@ of the NFR-3 boundary and stays correct.
 
 No schema change. `rework_log[*].model` already records the model per attempt
 (0019); after this change a default run records `"model":"opus"` there. No run.json
-config-shape change — `rework_config.model` already snapshots the resolved value
-(it will now snapshot `opus` by default).
+config-shape change either, but `config.rework_config.model` is NOT a copy of the
+resolved gates.sh value — `_rework_config_json` (state.sh:357) re-resolves
+`THROUGHLINE_REWORK_MODEL` independently with its OWN `sonnet` fallback, so it must be
+flipped in lock-step (Component 1) for the snapshot to record `opus` by default and
+agree with the spawned/telemetry model.
 
 ## Sequencing / implementation plan
 
-1. Flip both `THROUGHLINE_REWORK_MODEL` fallbacks `sonnet`→`opus` in
-   `scripts/lib/gates.sh` (Component 1).
+1. Flip all THREE `THROUGHLINE_REWORK_MODEL` fallbacks `sonnet`→`opus`: the two in
+   `scripts/lib/gates.sh` (`_rework_one` spawn read, `_rework_loop` telemetry read) and
+   the one in `scripts/lib/state.sh` (`_rework_config_json` config-snapshot read)
+   (Component 1).
 2. Reconcile the rework-default text in `skills/implement/SKILL.md` (two sites) and
-   `README.md` (two sites) (Component 2).
+   `README.md` (all six rework-on-sonnet mentions) (Component 2).
 3. Update `tests/bounded-rework-loop.test.sh` at **four** assertion sites that
    currently encode the Sonnet default:
    - **A1** (`~line 44`): the default-model assertion now expects `opus`.
@@ -130,9 +141,12 @@ config-shape change — `rework_config.model` already snapshots the resolved val
 
 ## Failure modes & edge cases
 
-- **The two gates.sh sites drift** (one flipped, one not) → telemetry and the
-  spawned model would disagree. Verification §1 asserts BOTH resolve to `opus` on
-  an unset knob, catching a half-applied change.
+- **The three sites drift** (one or two flipped, the rest not) → the spawned model,
+  the `rework_log` telemetry, and the `config.rework_config` snapshot would disagree.
+  In particular `_rework_config_json` (state.sh:357) is the value test A1 observes, so
+  a flip that misses it leaves A1 asserting `opus` against a `sonnet` snapshot — red.
+  Verification §1 asserts the default resolves to `opus` on an unset knob across all
+  three reads, catching a half-applied change.
 - **An operator who wants the old behavior** sets `THROUGHLINE_REWORK_MODEL=sonnet`
   — the override path is unchanged, so the old cost/behavior is one env var away
   (Verification §2).
@@ -154,11 +168,13 @@ the reconciled doc text.
 existing harness which stubs `claude` and records the rework `--model`, plus greps
 on the docs):
 
-1. **Default resolves to opus (both sites).** With `THROUGHLINE_REWORK_MODEL`
-   unset, drive a rework attempt: the recorded `rework_log` entry has
-   `"model":"opus"` (the existing line-44 assertion, flipped from `sonnet`). The
-   telemetry read (gates.sh:1876) and the spawn read (gates.sh:1351) agree (the one
-   recorded value reflects both).
+1. **Default resolves to opus (all three sites).** With `THROUGHLINE_REWORK_MODEL`
+   unset: (a) test A1 calls `_rework_config_json` directly and asserts its output has
+   `"model":"opus"` (the existing ~line-44 assertion, flipped from `sonnet`) — this is
+   the `state.sh:357` config-snapshot read; (b) the rework loop's per-attempt
+   `rework_log` entry records `"model":"opus"` (the telemetry read, gates.sh:2129); the
+   spawn read (gates.sh:1555) uses the same resolution. All three resolve identically
+   because all three flip together.
 2. **Override still honored.** With `THROUGHLINE_REWORK_MODEL=sonnet` exported, the
    same rework records `"model":"sonnet"` — proving the override path is intact
    against the new default (the repointed override test).
@@ -236,6 +252,19 @@ mechanism is authoritative); only that one default + claim is revised, on the
 strength of the author↔reviewer reading of NFR-3 and the FR-66 scope-cap mitigation
 of the wander risk 0019/0007 were guarding against.
 
+**BLOCKERS.md resolution (2026-06-10).** The first `/implement` build of this TDD
+halted `BATCH_RESULT: BLOCKED` (design): Component 1 declared only the two `gates.sh`
+rework-model fallbacks but missed the third site, `_rework_config_json`
+(`state.sh:357`), which is the `config.rework_config.model` snapshot test A1 observes —
+so with `state.sh` outside `## Touched files`, A1's flipped `opus` assertion could
+never pass and the snapshot would disagree with the spawned model. Resolved by this
+in-place revision (draft): Component 1, the Sequencing plan, `## Touched files`, and
+`## Expected diff size` now include `scripts/lib/state.sh`; `## Data & state` no longer
+claims the snapshot is a copy of the resolved value; and the README reconciliation is
+widened to all six rework-on-sonnet mentions so the fail-closed §3 doc grep is
+satisfiable. No design substance changed — only the declared scope was corrected to
+match the three real resolution sites. The `BLOCKERS.md` entry is checked off.
+
 ## Decisions to promote (ADR candidates)
 
 **Promote ADR 0008 — "Rework authoring on the build model (author↔reviewer
@@ -245,23 +274,27 @@ be a silent default flip. ADR 0008 records: the rework gate authors on the build
 model (Opus default) so Sonnet is reserved for the review gates, satisfying NFR-3's
 author↔reviewer reading on rework iterations; it revises ADR 0007's rework-model
 consequence specifically while ADR 0007's halt-model decision remains accepted; the
-cost/wander tradeoff is accepted and bounded by the FR-66 scope cap. This skill
-invokes `adr-new` to author ADR 0008, which rides this design PR with the TDD.
+cost/wander tradeoff is accepted and bounded by the FR-66 scope cap. ADR 0008 was
+authored via `adr-new` in the original design pass and is already `accepted` on the
+integration branch (`docs/adr/0008-rework-authoring-on-build-model.md`); it rode the
+original design PR with this TDD. This blocker-resolution revision adds no ADR work.
 
 ## Touched files
 
-- `scripts/lib/gates.sh` — flip both `THROUGHLINE_REWORK_MODEL` fallbacks `sonnet`→`opus` (gates.sh:1351, :1876).
+- `scripts/lib/gates.sh` — flip both `THROUGHLINE_REWORK_MODEL` fallbacks `sonnet`→`opus` (the spawn read in `_rework_one` ~:1555, the telemetry read in `_rework_loop` ~:2129).
+- `scripts/lib/state.sh` — flip the third `THROUGHLINE_REWORK_MODEL` fallback `sonnet`→`opus` in `_rework_config_json` (~:357), the run.json config-snapshot read test A1 observes; and update the now-stale adjacent comment (~:353–355) that claims the default matches the `THROUGHLINE_REVIEW_MODEL` alias.
 - `skills/implement/SKILL.md` — reconcile the rework-default text (rework-loop description :395 + knob list :458) to the build model (opus); review-model line :448 unchanged.
-- `README.md` — reconcile the two rework-on-sonnet mentions (:74 comparison table, :235 file-tree comment).
+- `README.md` — reconcile every rework-on-sonnet mention to the build model / opus (or drop the model word): the comparison-table line (:74), the structural-or-fixable prose (:178–179), the file-tree comment (:236), the bounded-rework prose (:294), and the continuous-review section (:344, :354). The review-model / runtime-verify "sonnet" mentions (:80, :284) are unrelated and stay.
 - `tests/bounded-rework-loop.test.sh` — four assertion sites encoding the Sonnet default: A1 default `sonnet`→`opus`; A2 override test repointed to `sonnet`; E1 + E2 default-driven assertions `sonnet`→`opus` (B7's literal-arg case unaffected).
 
-Total: 4 files touched (plus the new ADR 0008, which rides the design PR — see `## Decisions to promote`).
+Total: 5 files touched (plus ADR 0008, already accepted, which rode the original design PR — see `## Decisions to promote`).
 
 ## Expected diff size
 
 - `scripts/lib/gates.sh` — ~2 lines (two fallback literals).
+- `scripts/lib/state.sh` — ~3 lines (one fallback literal in `_rework_config_json` + the stale adjacent comment).
 - `skills/implement/SKILL.md` — ~6 lines (two text sites, including the rationale clause).
-- `README.md` — ~2 lines (two mentions).
+- `README.md` — ~7 lines (six rework-on-sonnet mentions reconciled: :74, :178–179, :236, :294, :344, :354).
 - `tests/bounded-rework-loop.test.sh` — ~10 lines (four assertion sites: A1/E1/E2 → opus, A2 override → sonnet).
 
-Total expected diff: ~20 lines across 4 files. No exceptions needed (each file is far under the 300-line per-file bound). The new ADR 0008 is a separate doc that rides the design PR (ADRs are not counted in the touched-source-file scope bound).
+Total expected diff: ~28 lines across 5 files. No exceptions needed (each file is far under the 300-line per-file bound). ADR 0008 (already accepted) is a separate doc and is not counted in the touched-source-file scope bound.
