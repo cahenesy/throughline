@@ -1,6 +1,6 @@
 # TDD 0042: Per-step BLOCK learning capture
 
-Status: draft
+Status: implemented
 PRD refs: FR-72, FR-73
 PRD-rev: d289607
 ADR constraints: 0005, 0006, 0007
