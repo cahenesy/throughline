@@ -1,6 +1,6 @@
 # TDD 0041: Bounded-rework convergence — tolerate estimate error, don't burn budget on scope-rejected attempts, sweep binding-rule violations
 
-Status: draft
+Status: implemented
 PRD refs: FR-65 (gap-closure); FR-66; FR-67 (gap-closure: (b) tolerance); FR-58; FR-59
 PRD-rev: d289607
 ADR constraints: 0005, 0006, 0007
