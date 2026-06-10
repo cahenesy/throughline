@@ -1912,6 +1912,120 @@ coverage_map_normalize() {  # <scoped-diff-files>  (block lines on stdin)
   return 0
 }
 
+# _coverage_inscope_reqs <tdd-file> — echo the unique FR/NFR ids from the first
+# column of the TDD's `## Requirement traceability` table, one per line. This is
+# FR-78's domain: exactly the landing TDD's in-scope requirements, never the
+# whole PRD. Fence-aware section walk mirrors _rework_touched_files. Missing
+# file or table → empty output, rc 0 (the writer then skips the unlisted-id
+# filter rather than dropping every row).
+_coverage_inscope_reqs() {  # <tdd-file>
+  local f="${1:-}"
+  { [ -n "$f" ] && [ -f "$f" ]; } || return 0
+  awk '
+    BEGIN { in_fence = 0; in_sec = 0 }
+    /^[[:space:]]*```/ { in_fence = !in_fence; next }
+    !in_fence && /^## Requirement traceability[[:space:]]*$/ { in_sec = 1; next }
+    !in_fence && /^## / { in_sec = 0; next }
+    in_sec && /^\|/ { n = split($0, c, "|"); if (n >= 2) print c[2] }
+  ' "$f" 2>/dev/null | grep -aoE '(FR|NFR)-[0-9]+[A-Za-z]?' | sort -u
+  return 0
+}
+
+# write_coverage_report <logdir> <slug> <review-log> <scope-base> <scope-head>
+# — compute the scoped-diff file list (`git diff --name-only <base>..<head>`,
+# runner-derived), normalize the review's COVERAGE_MAP block against it, and
+# append a `## Per-requirement coverage (<slug>, FR-78 — reported, advisory)`
+# section to $logdir/report.md (the detect_build_learnings append pattern).
+# Called once after the final review pass clears, before the flip/PR step.
+# Idempotent per-slug: any prior section for the same slug is replaced, not
+# duplicated (a resume re-running the final review regenerates it). Degradation
+# contract (NFR-4): a missing block renders an explicit "coverage map
+# unavailable" line (never a false all-covered); a COVERAGE: row whose id is
+# not in the TDD's traceability table is dropped with a visible note; any
+# write failure warns to stderr and continues. ALWAYS rc 0 — report-only,
+# never a flip authority (ADR 0005).
+write_coverage_report() {  # <logdir> <slug> <review-log> <scope-base> <scope-head>
+  local logdir="${1:-}" slug="${2:-}" rlog="${3:-}" sbase="${4:-}" shead="${5:-HEAD}"
+  if [ -z "$logdir" ] || [ ! -d "$logdir" ]; then
+    echo "warning: write_coverage_report: log dir unavailable ('${logdir:-<unset>}'); coverage section skipped (report-only, FR-78)" >&2
+    return 0
+  fi
+  if [ -z "$slug" ]; then
+    echo "warning: write_coverage_report: empty slug; coverage section skipped" >&2
+    return 0
+  fi
+  case "$slug" in
+    */*|*..*)  # slug names docs/tdd/<slug>.md below — refuse path traversal
+      echo "warning: write_coverage_report: slug '$slug' is not a bare TDD slug; coverage section skipped" >&2
+      return 0 ;;
+  esac
+  local report="$logdir/report.md"
+  # Runner-derived scoped-diff list (the model-independent half of the
+  # anti-false-green guarantee). A failed git diff must not silently read as
+  # "empty diff": every pinned citation then downgrades (conservative, never
+  # falsely green) and the section says so.
+  local diff_files="" diff_note=""
+  if [ -z "$sbase" ] || ! diff_files="$(git diff --name-only "$sbase..$shead" 2>/dev/null)"; then
+    diff_files=""
+    diff_note="(scoped-diff file list unavailable — git diff failed or no base; pinned citations could not be diff-verified and are downgraded conservatively)"
+  fi
+  local block rows=""
+  block="$(coverage_map_block "$rlog")"
+  [ -n "$block" ] && rows="$(printf '%s\n' "$block" | coverage_map_normalize "$diff_files")"
+  # FR-78 domain filter: drop rows whose id is not a traceability-table row.
+  local inscope table_rows="" dropped_notes="" req status evidence
+  inscope="$(_coverage_inscope_reqs "docs/tdd/$slug.md")"
+  if [ -n "$rows" ]; then
+    while IFS=$'\t' read -r req status evidence; do
+      [ -n "$req" ] || continue
+      if [ -n "$inscope" ] && ! printf '%s\n' "$inscope" | grep -qxF "$req"; then
+        dropped_notes="${dropped_notes}- unlisted requirement $req ignored (not a row of the TDD's \`## Requirement traceability\` table)"$'\n'
+        continue
+      fi
+      # Escape '|' so an evidence string cannot break the table row.
+      evidence="$(printf '%s' "$evidence" | sed 's/|/\\|/g')"
+      table_rows="${table_rows}| $req | $status | $evidence |"$'\n'
+    done <<< "$rows"
+  fi
+  # Idempotent per-slug replace: strip any prior section for this slug (from
+  # its heading up to, not including, the next `## ` heading) before appending.
+  # Temp + mv mirrors detect_build_learnings' atomic-write pattern.
+  if [ -f "$report" ] && grep -qF "## Per-requirement coverage ($slug," "$report" 2>/dev/null; then
+    local tmp="$report.cov.tmp.$$"
+    if awk -v hdr="## Per-requirement coverage ($slug," '
+         {
+           if (index($0, hdr) == 1) { skip = 1; next }
+           if (skip && /^## /) skip = 0
+           if (!skip) print
+         }
+       ' "$report" > "$tmp" 2>/dev/null; then
+      mv "$tmp" "$report" 2>/dev/null \
+        || { echo "warning: write_coverage_report: could not replace prior coverage section in $report (appending a fresh one)" >&2; rm -f "$tmp" 2>/dev/null; }
+    else
+      echo "warning: write_coverage_report: prior-section strip failed for $report (appending a fresh one)" >&2
+      rm -f "$tmp" 2>/dev/null
+    fi
+  fi
+  {
+    echo
+    echo "## Per-requirement coverage ($slug, FR-78 — reported, advisory)"
+    echo
+    if [ -z "$table_rows" ] && [ -z "$dropped_notes" ]; then
+      echo "coverage map unavailable for this build (the consolidated review log carries no COVERAGE_MAP block / no parseable COVERAGE: rows) — this is NOT a statement that requirements are covered (NFR-4)."
+    else
+      [ -n "$diff_note" ] && echo "$diff_note" && echo
+      echo "| Requirement | Status | Evidence |"
+      echo "|---|---|---|"
+      printf '%s' "$table_rows"
+      if [ -n "$dropped_notes" ]; then echo; printf '%s' "$dropped_notes"; fi
+    fi
+    echo
+    echo "Legend: this map is REPORTED for the human PR review (FR-78). An \`unverified-gap\` is a finding for the human reviewer, not an automatic block — the FR-15 four gates remain the sole automatic flip authority (ADR 0005)."
+  } >> "$report" 2>/dev/null \
+    || echo "warning: write_coverage_report: could not append the coverage section to $report (report-only; the build is unaffected)" >&2
+  return 0
+}
+
 # _rework_extract_finding <review-log> [<pre-log-size>]  — set RWK_STRUCTURAL /
 # RWK_STRUCTURAL_REASON / RWK_REGION / RWK_REF / RWK_TEXT for the FIRST halting
 # finding in the review output. RWK_STRUCTURAL_REASON (TDD 0034 / FR-67) carries
@@ -2123,6 +2237,12 @@ _rework_loop() {  # <slug> <tdd> <rbase> <log>
       # PASS + zero halting findings. TDD 0021 §3c / issue #35: gate the clear on
       # per-file coverage — every file in the diff must carry a disposition.
       if _per_file_coverage_check "$log" "$pre_log_size" "$slug" "$rbase" "HEAD" "review:$step"; then
+        # TDD 0044 (FR-78): the consolidated review just cleared — render the
+        # advisory per-requirement coverage map into the run's report.md before
+        # the flip/PR step. Report-only: the writer warns-and-continues
+        # internally and always returns 0, so it can never gate the clear
+        # (ADR 0005 — the four gates keep sole flip authority).
+        write_coverage_report "${LOGDIR:-}" "$slug" "$log" "$rbase" "HEAD"
         return 0   # complete coverage → genuinely clear
       fi
       # Incomplete coverage. _per_file_coverage_check recorded an
