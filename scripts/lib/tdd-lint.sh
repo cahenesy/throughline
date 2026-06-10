@@ -451,9 +451,46 @@ check_tdd_doc_size() {  # <tdd-path>
   return 0
 }
 
+# _tl_extract_touched_paths <tdd> [mode] — extract one path per `## Touched files`
+# bullet (fence/section-aware) using the IDENTICAL em-dash-split + backtick-strip
+# + trim logic as gates.sh _rework_touched_files (TDD 0048 / FR-53, FR-54), so the
+# design-time and build-time parsers agree (the Verification §2 cross-check asserts
+# byte-identical output as the durable guard against a one-sided edit re-introducing
+# the drift). The path is whatever precedes the em-dash (`—`, U+2014), or — when a
+# bullet has no em-dash — its first whitespace-delimited token; backticks are
+# stripped so a bare or backticked path both parse.
+#   mode=paths (default): emit each non-empty extracted path (drop empties) — this
+#     is the surface the cross-check diffs against _rework_touched_files.
+#   mode=malformed: emit the 60-char excerpt of each `- ` bullet whose extracted
+#     path is empty (a stray bullet with no parseable path), for the PRECHECK below.
+_tl_extract_touched_paths() {  # <tdd> [mode]
+  local f="$1" mode="${2:-paths}"
+  [ -f "$f" ] || return 0
+  awk -v MODE="$mode" '
+    BEGIN { in_fence=0; in_sec=0 }
+    /^[[:space:]]*```/ { in_fence = !in_fence; next }
+    !in_fence && /^## Touched files[[:space:]]*$/ { in_sec=1; next }
+    !in_fence && /^## / { in_sec=0; next }
+    in_sec && !in_fence && /^- / {
+      rest = substr($0, 3)                       # drop "- "
+      em = index(rest, "—")                      # em-dash separates path from purpose
+      if (em > 0) { file = substr(rest, 1, em - 1) }
+      else        { file = rest; sub(/[[:space:]].*/, "", file) }  # no em-dash: first token
+      gsub(/`/, "", file)                        # strip backticks if the path was quoted
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", file)
+      if (MODE == "malformed") { if (file == "") print substr($0, 1, 60) }
+      else                     { if (file != "") print file }
+    }
+  ' "$f"
+}
+
 # check_touched_file_count — count `^- \S` entries in the `## Touched files`
 # section (fence-aware) and fail if it exceeds THROUGHLINE_TDD_MAX_TOUCHED. A
-# missing section is itself a PRECHECK_FAIL (the section is REQUIRED).
+# missing section is itself a PRECHECK_FAIL (the section is REQUIRED). Also flags
+# any bullet that yields no extractable path (TDD 0048 / FR-53, FR-54) via
+# `touched-files-malformed`, so a touched-files section the build-time parser
+# cannot turn into a scope set is refused at design time rather than discovered as
+# a build-time false halt.
 check_touched_file_count() {  # <tdd-path>
   local f="$1"
   if [ ! -f "$f" ]; then
@@ -482,11 +519,22 @@ check_touched_file_count() {  # <tdd-path>
     _tl_precheck_fail "missing-section ## Touched files"
     return 1
   fi
+  local rc=0
+  # TDD 0048 (FR-53/FR-54): flag any bullet the parser cannot turn into a path, so
+  # an unparseable touched-files section is refused here rather than at build time.
+  local malformed b
+  malformed="$(_tl_extract_touched_paths "$f" malformed)"
+  if [ -n "$malformed" ]; then
+    while IFS= read -r b; do
+      [ -n "$b" ] && _tl_precheck_fail "touched-files-malformed $b"
+    done <<< "$malformed"
+    rc=1
+  fi
   if [ "$n" -gt "$max" ]; then
     _tl_precheck_fail "touched-files $n > $max"
-    return 1
+    rc=1
   fi
-  return 0
+  return "$rc"
 }
 
 # check_per_file_diff_bound — parse the `## Expected diff size` section into

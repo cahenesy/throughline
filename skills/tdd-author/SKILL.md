@@ -367,9 +367,12 @@ plan is BLOCKed by the design-critique gate (step 7b).
 scope in two sections so the bound is a falsifiable design input, not a
 build-time surprise:
 - `## Touched files` — an explicit list of the source files this TDD changes,
-  one per line as `- <path> — <one-line purpose>`. This is the declared set the
-  build-time structural-finding check (FR-67) reads to detect a fix that touches
-  files outside it.
+  one per line as `` - `<path>` — <one-line purpose> ``. This is the declared set
+  the build-time structural-finding check (FR-67) reads to detect a fix that
+  touches files outside it. The path may be backticked or bare — both parse (the
+  extractor splits on the em-dash and strips backticks) — but backtick it for
+  rendering, matching every existing TDD; keep any annotation AFTER the em-dash so
+  the path before it stays clean.
 - `## Expected diff size` — a per-file estimate of lines added/removed, one per
   line as `- <path> — <N> lines`, closed by a summary line
   `Total expected diff: <N> lines across <M> files.`. A file legitimately over

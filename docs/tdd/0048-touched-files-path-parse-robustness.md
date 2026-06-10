@@ -1,5 +1,5 @@
 # TDD 0048: Touched-files path-parse robustness (consistent declared-scope extraction)
-Status: draft
+Status: implemented
 PRD refs: FR-67 (criterion (a) touched-file-set check); FR-53; FR-54
 PRD-rev: 0aa1e28
 ADR constraints: 0005, 0006
@@ -237,6 +237,7 @@ parsing correct) and ADR 0006.
 - `skills/tdd-author/SKILL.md` — template example → canonical backticked form + a one-line "both parse" note.
 - `tests/bounded-rework-loop.test.sh` — `_rework_touched_files` extraction cases (bare / backticked / description-backticks-only / no-em-dash / malformed) + a bare-path (a)-membership case.
 - `tests/bounded-tdd-scope.test.sh` — tdd-lint `touched-files-malformed` cases + the lint↔parser agreement cross-check.
+- `tests/bounded-rework-convergence.test.sh` — conform the `mk_pp_repo` fixture's `## Touched files` bullet to the canonical path-before-em-dash form (same one-line fix already applied to `mk_rework_repo`), so the new em-dash-split parser reads `src/a.txt` rather than `src/a.txt (post)`.
 
 ## Expected diff size
 - `scripts/lib/gates.sh` — 25 lines (replace the one-line match with the ~12-line extraction block + comments).
@@ -244,4 +245,5 @@ parsing correct) and ADR 0006.
 - `skills/tdd-author/SKILL.md` — 10 lines (template example + note).
 - `tests/bounded-rework-loop.test.sh` — 70 lines (five extraction cases + the membership case + the one-line `mk_rework_repo` fixture fix, sharing one fixture builder).
 - `tests/bounded-tdd-scope.test.sh` — 95 lines (malformed + bare-ok lint cases + the dual-sourced parser-agreement cross-check, sharing one fixture).
-Total expected diff: ~245 lines across 5 files. No exceptions needed (each file is well under the 300-line per-file cap; estimates padded per the systematic underestimation lesson).
+- `tests/bounded-rework-convergence.test.sh` — 1 line (the `mk_pp_repo` fixture conforming edit).
+Total expected diff: ~246 lines across 6 files. No exceptions needed (each file is well under the 300-line per-file cap; estimates padded per the systematic underestimation lesson).
