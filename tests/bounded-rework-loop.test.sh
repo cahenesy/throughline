@@ -38,11 +38,14 @@ echo "[A1] _rework_config_json emits the four §6 knobs with defaults"
 ( D="$ROOT/A1"; mkdir -p "$D/state.d"
   export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
   export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  # This case observes the DEFAULT resolution (TDD 0043 §1); a runner-inherited
+  # THROUGHLINE_REWORK_MODEL override would poison it, so drop it explicitly.
+  unset THROUGHLINE_REWORK_MODEL
   TDDS=()
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
   out="$(_rework_config_json)"
-  printf '%s' "$out" | grep -q '"model":"sonnet"' \
-    && ok "default model=sonnet" || bad "default rework model should be sonnet (got: $out)"
+  printf '%s' "$out" | grep -q '"model":"opus"' \
+    && ok "default model=opus (build model, TDD 0043)" || bad "default rework model should be opus (got: $out)"
   printf '%s' "$out" | grep -q '"max":3' \
     && ok "default max=3" || bad "default rework max should be 3 (got: $out)"
   printf '%s' "$out" | grep -q '"scope_floor":60' \
@@ -55,13 +58,16 @@ echo "[A2] _rework_config_json honors env overrides"
 ( D="$ROOT/A2"; mkdir -p "$D/state.d"
   export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
   export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
-  export THROUGHLINE_REWORK_MODEL="opus" THROUGHLINE_REWORK_MAX="5"
+  # Override to sonnet — the value that DIFFERS from the new opus default
+  # (TDD 0043), so this still proves the knob overrides the default rather
+  # than coinciding with it.
+  export THROUGHLINE_REWORK_MODEL="sonnet" THROUGHLINE_REWORK_MAX="5"
   export THROUGHLINE_REWORK_SCOPE_FLOOR="100" THROUGHLINE_REWORK_SCOPE_FACTOR="2"
   TDDS=()
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
   out="$(_rework_config_json)"
-  printf '%s' "$out" | grep -q '"model":"opus"' \
-    && ok "model override honored" || bad "model override should be opus (got: $out)"
+  printf '%s' "$out" | grep -q '"model":"sonnet"' \
+    && ok "model override honored" || bad "model override should be sonnet (got: $out)"
   printf '%s' "$out" | grep -q '"max":5' \
     && ok "max override honored" || bad "max override should be 5 (got: $out)"
   printf '%s' "$out" | grep -q '"scope_floor":100' \
@@ -580,6 +586,9 @@ echo "[E1] single fixable finding → rework ships → re-review PASS → flippe
 ( D="$ROOT/E1"; mkdir -p "$D/state.d"
   export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
   export INTEGRATION="master" CHANGE="ci" LOGDIR="$D" MAINREPO="$D/repo"
+  # Drives the DEFAULT rework model (TDD 0043 §1); drop any runner-inherited
+  # THROUGHLINE_REWORK_MODEL override so the default is what gets observed.
+  unset THROUGHLINE_REWORK_MODEL
   TDDS=()
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
   setup_loop_repo "$D/repo" || { bad "setup failed"; exit 0; }
@@ -604,13 +613,16 @@ EOF
   F="$STATE_DIR/0099-fix.json"
   [ "$rc" -eq 0 ] && ok "gate_one returns 0 (converged + flipped)" || bad "gate_one should converge (rc=$rc, st=$st)"
   grep -q '"outcome":"shipped"' "$F" 2>/dev/null && ok "rework_log records a shipped attempt" || bad "rework_log should record shipped (got: $(_read_fragment_raw_array "$F" rework_log))"
-  grep -q '"model":"sonnet"' "$F" 2>/dev/null && ok "rework ran on sonnet" || bad "rework attempt should be model sonnet"
+  grep -q '"model":"opus"' "$F" 2>/dev/null && ok "rework ran on opus (build model, TDD 0043)" || bad "rework attempt should be model opus"
 ) || true
 
 echo "[E2] legacy single-line structural=true carries no reason → routes to rework (TDD 0034)"
 ( D="$ROOT/E2"; mkdir -p "$D/state.d"
   export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
   export INTEGRATION="master" CHANGE="ci" LOGDIR="$D" MAINREPO="$D/repo"
+  # Drives the DEFAULT rework model (TDD 0043 §1); drop any runner-inherited
+  # THROUGHLINE_REWORK_MODEL override so the default is what gets observed.
+  unset THROUGHLINE_REWORK_MODEL
   TDDS=()
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
   setup_loop_repo "$D/repo" || { bad "setup failed"; exit 0; }
@@ -638,7 +650,7 @@ EOF
   F="$STATE_DIR/0099-fix.json"
   [ "$rc" -eq 0 ] && ok "gate_one converges (no-reason structural reworked + flipped)" || bad "no-reason structural should rework + converge (rc=$rc, st=$st)"
   grep -q '"outcome":"shipped"' "$F" 2>/dev/null && ok "rework_log records a shipped attempt" || bad "rework_log should record shipped (got: $(_read_fragment_raw_array "$F" rework_log))"
-  grep -q '"model":"sonnet"' "$F" 2>/dev/null && ok "rework ran on sonnet" || bad "rework attempt should be model sonnet"
+  grep -q '"model":"opus"' "$F" 2>/dev/null && ok "rework ran on opus (build model, TDD 0043)" || bad "rework attempt should be model opus"
   ! grep -q '"halt_cause":"structural-finding"' "$F" 2>/dev/null && ok "did NOT escalate structural-finding (no named reason)" || bad "no-reason structural must not escalate (got halt_cause structural-finding)"
 ) || true
 

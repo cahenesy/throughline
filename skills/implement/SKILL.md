@@ -393,8 +393,11 @@ Bounded rework loop (TDD 0019 / ADR 0007): a review `BLOCK` no longer halts on
 first failure. A halting finding (`blocker`/`major`) triggers a bounded
 automatic rework loop **inside the same `/implement` invocation** — you are kept
 informed but are NOT asked to drive between a finding and convergence. Each
-attempt runs on the rework model (`sonnet` by default — cheaper and less prone
-to opportunistic refactoring than the Opus build), fixes only the cited finding,
+attempt runs on the rework model (the build model, `opus`, by default — so Opus
+authors all code, build AND rework, and Sonnet is reserved for the review gates:
+the reviewer never shares the rework author's model/blind spots — NFR-3
+author↔reviewer diversity, TDD 0043 / ADR 0008; `THROUGHLINE_REWORK_MODEL`
+still overrides), fixes only the cited finding,
 and faces a mechanical pre-pass before it ships: a per-attempt scope cap
 (`max(THROUGHLINE_REWORK_SCOPE_FLOOR=60, THROUGHLINE_REWORK_SCOPE_FACTOR=3 ×
 finding-region)`) and the TDD's `## Touched files` / `## Expected diff size`
@@ -463,7 +466,8 @@ for the set instead.
 - `THROUGHLINE_REQUIRE_RUNTIME_VERIFY=0` disables the runtime-verification gate
   the same way (the documented escape hatch — e.g. a batch of pure refactors
   whose TDDs all declare `SKIP`); leave it on (default) for feature work.
-- Bounded-rework knobs (TDD 0019): `THROUGHLINE_REWORK_MODEL` (default `sonnet`),
+- Bounded-rework knobs (TDD 0019): `THROUGHLINE_REWORK_MODEL` (default `opus`,
+  the build model — TDD 0043 / ADR 0008),
   `THROUGHLINE_REWORK_MAX` (per-gate-step attempt cap, default 3),
   `THROUGHLINE_REWORK_SCOPE_FLOOR` (default 60) and
   `THROUGHLINE_REWORK_SCOPE_FACTOR` (default 3) for the per-attempt scope cap

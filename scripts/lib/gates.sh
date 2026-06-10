@@ -1357,7 +1357,8 @@ _review_one_gated() {  # <tdd> <rbase> <log>
 
 # === Bounded rework loop (TDD 0019 / FR-61, FR-62, FR-65, FR-66, FR-67) ========
 # The leaf functions the gate_one review gate drives when a review pass emits a
-# halting finding. _rework_one performs one bounded fix attempt on Sonnet;
+# halting finding. _rework_one performs one bounded fix attempt on the rework
+# model (the build model, Opus, by default — TDD 0043 / ADR 0008);
 # _rework_pre_pass runs the mechanical FR-66 scope cap + FR-67(a)/(b) structural
 # checks against the rework commit's diff. All bounds are env-overridable (§6)
 # and snapshotted into run.json (_rework_config_json) so any halt is
@@ -1541,9 +1542,10 @@ _rework_pre_pass() {  # <slug> <tdd> <new-head> <cleared-sha> <build-start-sha> 
 }
 
 # _rework_one <tdd> <log> <finding-ref> <finding-text> <cap>
-# Spawn ONE bounded rework attempt on the rework model (Sonnet by default —
-# cheaper and less prone to opportunistic refactoring than Opus; §Approach /
-# NFR-3). Substitutes the finding, the declared touched-file set, and the
+# Spawn ONE bounded rework attempt on the rework model (the build model, Opus,
+# by default — so the Sonnet review gate never re-reviews its own model's fix;
+# NFR-3 author↔reviewer diversity, TDD 0043 / ADR 0008). Substitutes the
+# finding, the declared touched-file set, and the
 # computed scope cap into the rework prompt template, runs `claude -p` to make
 # and commit the fix, records the FR-36 session pointer, and echoes the new HEAD
 # SHA so the caller can run _rework_pre_pass against the commit. cwd is the build
@@ -1552,7 +1554,7 @@ _rework_pre_pass() {  # <slug> <tdd> <new-head> <cleared-sha> <build-start-sha> 
 # behalf — an empty diff is detected by the caller's pre-pass.
 _rework_one() {  # <tdd> <log> <finding-ref> <finding-text> <cap>
   local tdd="$1" log="$2" finding_ref="$3" finding_text="$4" cap="$5"
-  local rm="${THROUGHLINE_REWORK_MODEL:-sonnet}"
+  local rm="${THROUGHLINE_REWORK_MODEL:-opus}"
   # Resolve the template: $RWTMPL on a normal run; else relative to this
   # module (gates.sh lives in scripts/lib/, rework-prompt.md in scripts/) so
   # the SOURCE_ONLY test path resolves it without the implement.sh setup block.
@@ -1943,7 +1945,8 @@ _classify_gate_no_verdict() {  # <slug> <gate> <tail>
 # (FR-61, FR-62, FR-65, FR-66, FR-67). Runs the review gate; on a PASS verdict
 # returns 0 (converged). On a halting finding it either escalates (structural
 # (c)/(a)/(b) or budget) → records the halt + BLOCKERS entry + a blocked terminal
-# state and returns 1, or runs one bounded rework on Sonnet, mechanically
+# state and returns 1, or runs one bounded rework on the rework model,
+# mechanically
 # pre-passes the commit, and re-runs the review against the new diff. A transient
 # pause during review returns 2 (the caller maps it to the paused halt). The user
 # is never asked to drive between a finding and convergence/escalation (FR-61).
@@ -2126,7 +2129,7 @@ _rework_loop() {  # <slug> <tdd> <rbase> <log>
     new_head="$(_rework_one "$tdd" "$log" "$RWK_REF" "$RWK_TEXT" "$cap")"; rwrc=$?
     _fin=$(date +%s)
     spend="$(_extract_token_spend "$(_last_session_path "$_start")")"
-    local model="${THROUGHLINE_REWORK_MODEL:-sonnet}"
+    local model="${THROUGHLINE_REWORK_MODEL:-opus}"
 
     if [ "$rwrc" -ne 0 ]; then
       printf 'error: _rework_loop: _rework_one returned %s for %s at %s:%s (cap=%s); aborting the loop without burning further budget\n' \
