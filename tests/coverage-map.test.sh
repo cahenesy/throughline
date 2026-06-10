@@ -24,6 +24,8 @@
 #   §5 missing block → "coverage map unavailable", never a false all-covered;
 #      append failure warns and continues (report-only, rc 0)
 #   §6 wiring: the consolidated-review clear in _rework_loop calls the writer
+#   §7 _pr_coverage_pointer: best-effort gh pr comment naming the report
+#      section, warn-and-continue on failure, wired at all three create sites
 #
 # Run: bash tests/coverage-map.test.sh
 set -uo pipefail
@@ -344,6 +346,60 @@ echo "[§6] wiring: _rework_loop's clear path calls write_coverage_report"
   awk '/_per_file_coverage_check "\$log" "\$pre_log_size"/{inarm=1} inarm && /write_coverage_report/{found=1} inarm && /return 0/{exit} END{exit !found}' "$G" \
     && ok "writer is called between the coverage-check clear and the return" \
     || bad "write_coverage_report must run on the clear path before return 0"
+) || true
+
+# ===========================================================================
+# §7: _pr_coverage_pointer — after a successful `gh pr create --fill`, post a
+# one-line PR COMMENT pointing the human reviewer at the report's
+# `## Per-requirement coverage` section. Purely additive (the --fill body is
+# untouched); best-effort (a failed gh pr comment warns into the log and
+# returns 0 — the one accepted degradation); shared by all three create sites.
+echo "[§7] _pr_coverage_pointer: PR-comment pointer, best-effort, three call sites"
+( D="$ROOT/s7"; mkdir -p "$D/state.d" "$D/bin"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "INFRA: §7 — source guard missing"; exit 0; }
+  command -v _pr_coverage_pointer >/dev/null 2>&1 || { bad "_pr_coverage_pointer is not defined after sourcing"; exit 0; }
+
+  # Stub gh: record every invocation; exit per $D/gh_rc.
+  cat > "$D/bin/gh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$D/gh.log"
+exit "\$(cat "$D/gh_rc" 2>/dev/null || echo 0)"
+EOF
+  chmod +x "$D/bin/gh"; PATH="$D/bin:$PATH"
+  export REPORT="$D/report.md"
+
+  # Happy path: comments on the PR, body names the report section + path.
+  printf '0\n' > "$D/gh_rc"; : > "$D/gh.log"; : > "$D/ptr.log"
+  _pr_coverage_pointer "https://example.test/pr/7" "$D/ptr.log"; rc=$?
+  [ "$rc" -eq 0 ] && ok "pointer helper returns 0" || bad "expected rc 0 (got $rc)"
+  grep -q '^pr comment https://example.test/pr/7 ' "$D/gh.log" \
+    && ok "posts a gh pr comment on the created PR" || bad "expected a gh pr comment invocation (got: $(cat "$D/gh.log"))"
+  grep -qF '## Per-requirement coverage' "$D/gh.log" \
+    && ok "comment body names the report's coverage section" || bad "comment must name the '## Per-requirement coverage' section"
+  grep -qF "$REPORT" "$D/gh.log" \
+    && ok "comment body carries the run's report.md path" || bad "comment must point at the run report path"
+
+  # Failure path: gh pr comment fails → warn into the log, rc 0 (build/report
+  # flow unaffected; the map still lives in report.md).
+  printf '1\n' > "$D/gh_rc"; : > "$D/ptr.log"
+  _pr_coverage_pointer "https://example.test/pr/7" "$D/ptr.log"; rc=$?
+  [ "$rc" -eq 0 ] && ok "a failed gh pr comment still returns 0 (best-effort)" || bad "gh failure must not propagate (got rc=$rc)"
+  grep -qi 'warning' "$D/ptr.log" \
+    && ok "a failed gh pr comment warns into the gate log (not silent)" || bad "expected a warning in the log (got: $(cat "$D/ptr.log"))"
+
+  # Empty URL (pr create failed upstream): no gh invocation, rc 0.
+  printf '0\n' > "$D/gh_rc"; : > "$D/gh.log"
+  _pr_coverage_pointer "" "$D/ptr.log"; rc=$?
+  [ "$rc" -eq 0 ] && [ ! -s "$D/gh.log" ] \
+    && ok "empty PR url → no gh call, rc 0" || bad "empty url must be a no-op (rc=$rc, gh.log: $(cat "$D/gh.log" 2>/dev/null))"
+
+  # All three PR-creation sites (parallel / combined / sequential) share the
+  # helper — the pointer string stays in sync by construction.
+  n="$(grep -c '_pr_coverage_pointer "\$prurl"' "$IMPL")"
+  [ "$n" = "3" ] && ok "all three gh-pr-create sites invoke the shared pointer helper" \
+    || bad "expected 3 _pr_coverage_pointer call sites in implement.sh (got $n)"
 ) || true
 
 echo
