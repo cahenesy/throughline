@@ -58,13 +58,16 @@ echo "[A2] _rework_config_json honors env overrides"
 ( D="$ROOT/A2"; mkdir -p "$D/state.d"
   export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
   export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
-  export THROUGHLINE_REWORK_MODEL="opus" THROUGHLINE_REWORK_MAX="5"
+  # Override to sonnet — the value that DIFFERS from the new opus default
+  # (TDD 0043), so this still proves the knob overrides the default rather
+  # than coinciding with it.
+  export THROUGHLINE_REWORK_MODEL="sonnet" THROUGHLINE_REWORK_MAX="5"
   export THROUGHLINE_REWORK_SCOPE_FLOOR="100" THROUGHLINE_REWORK_SCOPE_FACTOR="2"
   TDDS=()
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
   out="$(_rework_config_json)"
-  printf '%s' "$out" | grep -q '"model":"opus"' \
-    && ok "model override honored" || bad "model override should be opus (got: $out)"
+  printf '%s' "$out" | grep -q '"model":"sonnet"' \
+    && ok "model override honored" || bad "model override should be sonnet (got: $out)"
   printf '%s' "$out" | grep -q '"max":5' \
     && ok "max override honored" || bad "max override should be 5 (got: $out)"
   printf '%s' "$out" | grep -q '"scope_floor":100' \
