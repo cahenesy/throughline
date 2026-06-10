@@ -1,5 +1,5 @@
 # TDD 0045: Review-gate intent-conformance + policy-shadow lenses
-Status: draft
+Status: implemented
 PRD refs: FR-10, FR-15
 PRD-rev: 0aa1e28
 ADR constraints: 0005, 0006

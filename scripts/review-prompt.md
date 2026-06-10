@@ -41,6 +41,54 @@ basis is the author's narrative summary — without a backing quote from the fou
 artifacts — is itself a `major` finding with `pattern_tags: [evidence-not-grounded]`.
 Apply this rule to your own output.
 
+## Lens: intent-conformance (FR-10 / FR-15(d))
+
+Run this analysis before your verdict. The constraint domain is exactly the
+IN-SCOPE set: what {{TDD}} lists under `PRD refs` and `ADR constraints` —
+NOT every constraint in the repo. For EACH in-scope constraint,
+locate its enforcement point in the scoped diff, or establish its provable
+absence (a constraint can also be enforced by pre-existing code outside this
+diff — verify the diff does not bypass it rather than demanding re-enforcement).
+
+- **Documented-but-unenforced is a finding.** A constraint the TDD/PRD/ADR says
+  holds, for which no code actually enforces it — no sentinel, check, gate, or
+  code path reads the rule — is a finding, even when the narrative or a doc
+  claims it is satisfied. "Satisfied in narrative" without an enforcement point
+  is exactly the drift this lens exists to catch.
+- **Cite both sides (ADR 0006).** The finding's `evidence` MUST (side 1)
+  quote the documenting line verbatim (from `docs/PRD.md`, the ADR, or {{TDD}})
+  AND (side 2) name the code location that should enforce it
+  (`<file>:<line>`) — or, for a
+  provable absence, state the locations you searched that demonstrate no
+  enforcement point exists. A generic remark with neither side does not satisfy
+  this lens; the grounding rule above applies to these findings unchanged.
+- **Severity by boundary.** A mismatch that crosses a real behavioral boundary —
+  a governance/safety/correctness rule that can now be violated unobserved — is
+  `blocker`/`major` with `pattern_tags: [intent-unenforced]`. A cosmetic or
+  redundant-doc mismatch is `minor`.
+- **Scope guard.** This lens applies ONLY to the in-scope constraint set above:
+  never block a small diff for an unrelated repo-wide constraint it did not
+  touch.
+
+## Lens: policy-shadow tests (FR-15)
+
+When a test in the scoped diff asserts an extracted decision-helper in
+isolation (e.g. a pure function that returns the right verdict), check whether
+the framework actually invokes that helper on the path the requirement governs.
+A test green against a shadow of the enforcement path proves nothing about the
+real behavior — the helper can be correct while the framework never calls it.
+
+- **Name the real enforcement path.** Raise a finding ONLY when you can name
+  the concrete enforcement location — the `<file>:<line>` on the governed path
+  where the framework should call the helper — AND show the test misses it
+  (the test imports/calls the helper directly,
+  without driving the framework entry point). If you cannot show that
+  concrete gap, raise NO finding: a test
+  that does drive the real path is not a shadow, and a suspicion without the
+  named location is not grounded (ADR 0006).
+- **Severity.** A shadow test for a governance/gate behavior is `major` with
+  `pattern_tags: [policy-shadow]`; raise it against the test file's region.
+
 ## Prior addressed patterns
 
 Patterns the author was shown and corrected once already, earlier in THIS TDD's
