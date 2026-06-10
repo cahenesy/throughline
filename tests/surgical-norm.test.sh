@@ -18,6 +18,8 @@
 #      assembles; the shared "Surgical changes" token appears in BOTH prompts
 #      (drift guard); control: the "Fix only the cited finding" hard bound is
 #      still present.
+#   §W dogfood: the aggregator's final AND-chain goes non-zero when this eval
+#      fails (TDD 0038 §3 wire-in rule).
 #
 # Run: bash tests/surgical-norm.test.sh
 set -uo pipefail
@@ -97,6 +99,31 @@ EOF
   rhas 'mechanically requires'     "echo: except where the fix mechanically requires it"
   rhas 'no adjacent improvement'   "echo: no adjacent improvement"
   rhas 'Fix only the cited finding.' "control: the existing hard-bound bullet is still present"
+) || true
+
+# ===========================================================================
+# §W: dogfood (TDD 0038 §3) — drive the aggregator's REAL extracted final
+# AND-chain with this eval's accumulator forced to 1; the chain must go
+# non-zero, proving the wire-in propagates a failure of this eval.
+echo "[§W] dogfood: wiring this eval into the aggregator makes its exit go non-zero when the eval fails"
+( AGG="$REPO/tests/implement-gate.test.sh"
+  if [ ! -r "$AGG" ]; then bad "INFRA: §W — aggregator unreadable: $AGG"; exit 0; fi
+  grep -qE 'surgical-norm\.test\.sh' "$AGG" \
+    && ok "the new eval is wired into the aggregator (registration present)" \
+    || bad "the new eval is wired into the aggregator (expected /surgical-norm\\.test\\.sh/ in $AGG)"
+  chain="$(grep -aE '^\[ "\$FAIL" -eq 0 \] &&' "$AGG" | tail -1)"
+  if [ -z "$chain" ]; then bad "INFRA: §W — could not locate the aggregator final AND-chain"; exit 0; fi
+  drive_rc="$(
+    set +u
+    for v in $(printf '%s' "$chain" | grep -aoE '\$[A-Za-z_][A-Za-z0-9_]*' | tr -d '$' | sort -u); do
+      eval "$v=0"
+    done
+    SRG_FAIL=1
+    eval "$chain"; echo $?
+  )"
+  [ "$drive_rc" != "0" ] \
+    && ok "aggregator final AND-chain goes non-zero when the new eval fails (wire-in propagates)" \
+    || bad "aggregator AND-chain must be non-zero with SRG_FAIL=1 (got rc=$drive_rc)"
 ) || true
 
 # --- report ----------------------------------------------------------------
