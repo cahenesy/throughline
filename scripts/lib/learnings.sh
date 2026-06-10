@@ -84,6 +84,20 @@ _split_findings_objects() {
   printf '%s' "$arr" | sed 's/},{"source":/}\n{"source":/g'
 }
 
+# Read one object-per-line out of a step_block_log array literal (TDD 0042 §3).
+# step_block_log entries begin with {"pass_id": (built by gates.sh's
+# _step_block_entry / _step_block_skip_entry), so the inter-object separator is
+# `},{"pass_id":` — the structural-first-key anchor _split_findings_objects uses,
+# adapted to this array's first key (so summary/reason text containing a brace is
+# tolerated).
+_split_step_block_objects() {
+  local arr="${1:-}"
+  [ -z "$arr" ] && return 0
+  arr="${arr#\[}"; arr="${arr%\]}"
+  [ -z "$arr" ] && return 0
+  printf '%s' "$arr" | sed 's/},{"pass_id":/}\n{"pass_id":/g'
+}
+
 # Extract a single string field's value from one finding object, with JSON
 # escapes PRESERVED and an embedded \" handled — the walk respects backslash
 # escapes and stops at the first UNescaped quote. A naive [^"]* match would
@@ -128,6 +142,52 @@ _touched_files_of_tdd() {
 
 # --- §1: recurring-pattern detection ------------------------------------------
 
+# _fold_pattern_obj <obj> <slug> — fold ONE finding/step_block object's non-nit,
+# tagged pattern into the per-class accumulators of the calling detect_build_learnings
+# (the C_* associative arrays + `classes` are visible here via bash dynamic scope,
+# so both the findings corpus pass and the TDD-0042 step_block_log corpus pass fold
+# into the SAME accumulators — one canonical definition of "accumulate a class").
+# A nit/unknown-severity or untagged object is skipped (FR-72 step 2). struct/rework
+# are derived from the object's own fields (a step_block entry has neither, so they
+# read false — matching its telemetry-only shape).
+_fold_pattern_obj() {  # <obj> <slug>
+  local obj="$1" slug="$2"
+  local sev rank; sev="$(_finding_field "$obj" severity)"; rank="$(_sev_rank "$sev")"
+  [ "$rank" -eq 0 ] && return 0   # nit / unknown — dropped (FR-72 step 2)
+  local pass_id region tags summary evidence struct rework tag stepkey
+  pass_id="$(_finding_field "$obj" pass_id)"
+  region="$(_finding_field "$obj" region)"
+  summary="$(_finding_field "$obj" summary)"
+  evidence="$(_finding_field "$obj" evidence)"
+  tags="$(_finding_tags "$obj")"
+  [ -z "$tags" ] && return 0      # an untagged finding cannot form a class
+  struct=0; case "$obj" in *'"structural":true'*) struct=1 ;; esac
+  # Rework iff addressed_by_sha is present AND non-null (TDD 0021 §6 stamps a
+  # SHA string when a finding triggers rework, TDD 0019). An ABSENT field
+  # (a pre-0019 finding / a step_block entry) reads as null → NOT rework.
+  rework=0
+  case "$obj" in
+    *'"addressed_by_sha":null'*) : ;;        # present & null → not rework
+    *'"addressed_by_sha":"'*) rework=1 ;;     # present & non-null SHA → rework
+    *) : ;;                                    # absent → treat as null
+  esac
+  for tag in $tags; do
+    case " $classes " in *" $tag "*) : ;; *) classes="$classes $tag" ;; esac
+    case " ${C_slugs[$tag]:-} " in *" $slug "*) : ;; *) C_slugs[$tag]="${C_slugs[$tag]:-} $slug" ;; esac
+    stepkey="$slug|$pass_id"
+    case " ${C_steps[$tag]:-} " in *" $stepkey "*) : ;; *) C_steps[$tag]="${C_steps[$tag]:-} $stepkey" ;; esac
+    [ "$struct" -eq 1 ] && C_struct[$tag]=1
+    [ "$rework" -eq 1 ] && C_rework[$tag]=1
+    local cmin="${C_sevmin[$tag]:-}" cmax="${C_sevmax[$tag]:-}"
+    { [ -z "$cmin" ] || [ "$rank" -lt "$cmin" ]; } && C_sevmin[$tag]="$rank"
+    { [ -z "$cmax" ] || [ "$rank" -gt "$cmax" ]; } && C_sevmax[$tag]="$rank"
+    [ -z "${C_summary[$tag]:-}" ] && C_summary[$tag]="$summary"
+    [ -z "${C_evidence[$tag]:-}" ] && C_evidence[$tag]="$evidence"
+    local occ="{\"slug\":\"$slug\",\"pass_id\":\"$pass_id\",\"severity\":\"$sev\",\"region\":\"$region\"}"
+    if [ -z "${C_occ[$tag]:-}" ]; then C_occ[$tag]="$occ"; else C_occ[$tag]="${C_occ[$tag]},$occ"; fi
+  done
+}
+
 detect_build_learnings() {  # <state_dir> <logdir> <mainrepo>
   local state_dir="$1" logdir="$2" mainrepo="$3"
   [ -d "$state_dir" ] || return 0
@@ -146,42 +206,35 @@ detect_build_learnings() {  # <state_dir> <logdir> <mainrepo>
     [ -z "$arr" ] && continue
     while IFS= read -r obj; do
       [ -z "$obj" ] && continue
-      local sev rank; sev="$(_finding_field "$obj" severity)"; rank="$(_sev_rank "$sev")"
-      [ "$rank" -eq 0 ] && continue   # nit / unknown — dropped (FR-72 step 2)
-      local pass_id region tags summary evidence struct rework tag stepkey
-      pass_id="$(_finding_field "$obj" pass_id)"
-      region="$(_finding_field "$obj" region)"
-      summary="$(_finding_field "$obj" summary)"
-      evidence="$(_finding_field "$obj" evidence)"
-      tags="$(_finding_tags "$obj")"
-      [ -z "$tags" ] && continue      # an untagged finding cannot form a class
-      struct=0; case "$obj" in *'"structural":true'*) struct=1 ;; esac
-      # Rework iff addressed_by_sha is present AND non-null (TDD 0021 §6 stamps a
-      # SHA string when a finding triggers rework, TDD 0019). An ABSENT field
-      # (a pre-0019 finding shape) reads as null → NOT rework — matching the
-      # §1-step-3 spec "any has addressed_by_sha != null".
-      rework=0
-      case "$obj" in
-        *'"addressed_by_sha":null'*) : ;;        # present & null → not rework
-        *'"addressed_by_sha":"'*) rework=1 ;;     # present & non-null SHA → rework
-        *) : ;;                                    # absent → treat as null
-      esac
-      for tag in $tags; do
-        case " $classes " in *" $tag "*) : ;; *) classes="$classes $tag" ;; esac
-        case " ${C_slugs[$tag]:-} " in *" $slug "*) : ;; *) C_slugs[$tag]="${C_slugs[$tag]:-} $slug" ;; esac
-        stepkey="$slug|$pass_id"
-        case " ${C_steps[$tag]:-} " in *" $stepkey "*) : ;; *) C_steps[$tag]="${C_steps[$tag]:-} $stepkey" ;; esac
-        [ "$struct" -eq 1 ] && C_struct[$tag]=1
-        [ "$rework" -eq 1 ] && C_rework[$tag]=1
-        local cmin="${C_sevmin[$tag]:-}" cmax="${C_sevmax[$tag]:-}"
-        { [ -z "$cmin" ] || [ "$rank" -lt "$cmin" ]; } && C_sevmin[$tag]="$rank"
-        { [ -z "$cmax" ] || [ "$rank" -gt "$cmax" ]; } && C_sevmax[$tag]="$rank"
-        [ -z "${C_summary[$tag]:-}" ] && C_summary[$tag]="$summary"
-        [ -z "${C_evidence[$tag]:-}" ] && C_evidence[$tag]="$evidence"
-        local occ="{\"slug\":\"$slug\",\"pass_id\":\"$pass_id\",\"severity\":\"$sev\",\"region\":\"$region\"}"
-        if [ -z "${C_occ[$tag]:-}" ]; then C_occ[$tag]="$occ"; else C_occ[$tag]="${C_occ[$tag]},$occ"; fi
-      done
+      _fold_pattern_obj "$obj" "$slug"
     done <<< "$(_split_findings_objects "$arr")"
+  done
+
+  # TDD 0042 §3: a SECOND corpus pass over each fragment's step_block_log (the
+  # per-step BLOCK telemetry the findings ledger never captured). Fold each
+  # non-skipped entry into the SAME per-class accumulators via _fold_pattern_obj,
+  # so a per-step class (e.g. failing-test-first-violation) recurring across ≥ MIN
+  # distinct TDDs surfaces as a candidate (FR-72) → reaches /tdd-author (FR-73).
+  # SKIPPED-ENTRY EXCLUSION (design-review finding): unlike findings entries, a
+  # step_block_log entry may carry skipped:true (a justified no-new-behavior skip);
+  # exclude those BEFORE accumulation with an explicit guard on the raw entry JSON,
+  # so a justified skip never inflates a pattern class. The C_slugs distinct-TDD
+  # dedup means a class in BOTH findings and step_block_log for one TDD counts that
+  # TDD once; the ≥2-distinct-TDD threshold is unchanged. An absent/empty
+  # step_block_log returns empty and the fragment is skipped (as findings does).
+  local sbarr
+  for f in "$state_dir"/*.json; do
+    [ -f "$f" ] || continue
+    [ "$(basename "$f")" = "run.json" ] && continue
+    slug="$(sed -n 's/.*"slug":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+    [ -z "$slug" ] && slug="$(basename "$f" .json)"
+    sbarr="$(_read_fragment_step_blocks "$f")"
+    [ -z "$sbarr" ] && continue
+    while IFS= read -r obj; do
+      [ -z "$obj" ] && continue
+      case "$obj" in *'"skipped":true'*) continue ;; esac   # justified skip — not a violation
+      _fold_pattern_obj "$obj" "$slug"
+    done <<< "$(_split_step_block_objects "$sbarr")"
   done
 
   # Select recurring classes and build both outputs.

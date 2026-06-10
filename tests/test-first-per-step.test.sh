@@ -317,6 +317,138 @@ EOF
   [ "$rc" = "0" ] && ok "no model review spawned (tail -1 sentinel, not the stale earlier one)" || bad "prior token must not bypass (revcount=$rc)"
 ) || true
 
+# --- [[0042]] per-step BLOCK learning capture: state.sh persistence (Component 1) ---
+
+echo "[§11] state.sh: step_block_log round-trips, carry-forward preserves it, cleared_step_log stays last (TDD 0042 Component 1)"
+( D="$ROOT/s11"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  F="$D/state.d/0042-x.json"
+  # Fresh fragment (argc 25: no §6/§29 params) -> step_block_log must default to [].
+  _write_tdd_fragment 0042-x 42 docs/tdd/0042-x.md 1 building build 1000 1000 "" "" "" "" "" "" "" "" "" "" "" "" "" "" "" "" ""
+  grep_has '"step_block_log":\[\]' "$F" "fresh fragment defaults step_block_log to []"
+  E='{"pass_id":"step-1","severity":"major","pattern_tags":["failing-test-first-violation"],"summary":"no test(failing): precursor for step 1","skipped":false}'
+  _record_step_block 0042-x "$E" || bad "§11 _record_step_block should succeed"
+  blocks="$(_read_fragment_step_blocks "$F")"
+  case "$blocks" in
+    *'"failing-test-first-violation"'*) ok "_read_fragment_step_blocks returns the appended entry" ;;
+    *) bad "§11 reader should return the appended step_block_log entry (got: $blocks)" ;;
+  esac
+  # Field placement: step_block_log sits immediately before last_cleared_review_sha
+  # (the reader-anchor invariant; keeps cleared_step_log last + findings anchor intact).
+  grep_has '"step_block_log":\[.*\],"last_cleared_review_sha":' "$F" "step_block_log sits immediately before last_cleared_review_sha"
+  before="$blocks"
+  set_tdd_state 0042-x verifying verify >/dev/null 2>&1 || bad "§11 set_tdd_state carry-forward should succeed"
+  after="$(_read_fragment_step_blocks "$F")"
+  [ "$before" = "$after" ] && ok "carry-forward write (argc<=28) preserves step_block_log byte-identically" || bad "§11 carry-forward must preserve step_block_log (before=[$before] after=[$after])"
+  # cleared_step_log greedy-anchor invariant still holds (it remains the LAST field).
+  _record_cleared_step 0042-x 1 basesha headsha "t1" >/dev/null 2>&1 || bad "§11 _record_cleared_step should still succeed"
+  cl="$(_read_fragment_cleared_log "$F")"
+  case "$cl" in *'"step_id":1'*) ok "_read_fragment_cleared_log still parses (cleared_step_log remains last)" ;; *) bad "§11 cleared_step_log anchor broke (got: $cl)" ;; esac
+  # And step_block_log survives the cleared-step write too (another carry-forward writer).
+  case "$(_read_fragment_step_blocks "$F")" in *'"failing-test-first-violation"'*) ok "_record_cleared_step carries step_block_log forward" ;; *) bad "§11 _record_cleared_step dropped step_block_log" ;; esac
+) || true
+
+echo "[§12] state.sh: _record_step_block refuses to overwrite an unparseable step_block_log (fail-loud, FR-74 #1)"
+( D="$ROOT/s12"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  F="$D/state.d/0042-y.json"
+  _write_tdd_fragment 0042-y 42 docs/tdd/0042-y.md 1 building build 1000 1000 "" "" "" "" "" "" "" "" "" "" "" "" "" "" "" "" ""
+  E='{"pass_id":"step-1","severity":"major","pattern_tags":["t"],"summary":"s","skipped":false}'
+  _record_step_block 0042-y "$E" >/dev/null 2>&1 || bad "§12 first append should succeed"
+  # Corrupt the array (drop the closing bracket) so the reader returns a non-[]
+  # value that is NOT ]-terminated; the setter must refuse rather than reset.
+  sed -i 's/"step_block_log":\[\(.*\)\],"last_cleared_review_sha":/"step_block_log":[\1,"last_cleared_review_sha":/' "$F"
+  E2='{"pass_id":"step-2","severity":"major","pattern_tags":["t2"],"summary":"s2","skipped":false}'
+  if _record_step_block 0042-y "$E2" >/dev/null 2>&1; then
+    bad "§12 _record_step_block must FAIL on an unparseable array (must not overwrite forensics)"
+  else
+    ok "_record_step_block returns non-zero on an unparseable step_block_log (fail-loud)"
+  fi
+  grep_absent '"step-2"' "$F" "the unparseable array was NOT overwritten (step-2 not spliced in)"
+) || true
+
+# --- [[0042]] recording at both per-step BLOCK sites (Component 2) -------------
+
+echo "[§13] mechanical test-first BLOCK records a step_block_log failing-test-first-violation entry (TDD 0042 Component 2)"
+( D="$ROOT/s13b"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  setup_step_repo "$D/repo" || { bad "setup failed"; exit 0; }
+  _write_tdd_fragment 0038-fix 38 docs/tdd/0038-fix.md 1 building build 1000 1000 "feat/0038-fix" "" log "" "" "" "" "" "" "" "" "" "" "" ""
+  cat > "$D/repo/ctl/build_plan" <<'EOF'
+IFS= read -r _init || true
+echo "impl" >> src/a.txt
+git add -A >/dev/null 2>&1; git commit -q -m "step(1): work" >/dev/null 2>&1
+echo "STEP_COMMIT: 1 $(git rev-parse HEAD)"
+IFS= read -r _reply || true
+echo "BATCH_RESULT: OK"
+EOF
+  _per_step_review_loop 0038-fix docs/tdd/0038-fix.md "$D/s13b.log" >/dev/null 2>&1
+  F="$D/state.d/0038-fix.json"
+  blk="$(_read_fragment_step_blocks "$F")"
+  case "$blk" in *'"failing-test-first-violation"'*) ok "mechanical BLOCK appended a failing-test-first-violation entry" ;; *) bad "§13 step_block_log should carry the violation tag (got: $blk)" ;; esac
+  case "$blk" in *'"skipped":false'*) ok "mechanical BLOCK entry is skipped:false" ;; *) bad "§13 entry should be skipped:false (got: $blk)" ;; esac
+  case "$blk" in *'"pass_id":"step-1"'*) ok "mechanical BLOCK entry pass_id is step-1" ;; *) bad "§13 entry pass_id should be step-1 (got: $blk)" ;; esac
+) || true
+
+echo "[§14] model per-step BLOCK records harvested pattern_tags + severity major (TDD 0042 Component 2)"
+( D="$ROOT/s14b"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  setup_step_repo "$D/repo" || { bad "setup failed"; exit 0; }
+  _write_tdd_fragment 0038-fix 38 docs/tdd/0038-fix.md 1 building build 1000 1000 "feat/0038-fix" "" log "" "" "" "" "" "" "" "" "" "" "" ""
+  # Review stub emits BLOCK with a harvestable pattern_tags line.
+  cat > "$D/repo/ctl/review.out" <<'EOF'
+pattern_tags: [unchecked-return]
+REVIEW_RESULT: BLOCK the cited finding must be fixed
+EOF
+  cat > "$D/repo/ctl/build_plan" <<'EOF'
+IFS= read -r _init || true
+echo "t" >> src/a.txt
+git add -A >/dev/null 2>&1; git commit -q -m "test(failing): behavior z" >/dev/null 2>&1
+echo "impl" >> src/a.txt
+git add -A >/dev/null 2>&1; git commit -q -m "step(1): work" >/dev/null 2>&1
+echo "STEP_COMMIT: 1 $(git rev-parse HEAD)"
+IFS= read -r _reply || true
+echo "BATCH_RESULT: OK"
+EOF
+  _per_step_review_loop 0038-fix docs/tdd/0038-fix.md "$D/s14b.log" >/dev/null 2>&1
+  F="$D/state.d/0038-fix.json"
+  blk="$(_read_fragment_step_blocks "$F")"
+  case "$blk" in *'"unchecked-return"'*) ok "model BLOCK harvested the review pattern_tag" ;; *) bad "§14 step_block_log should carry the harvested tag (got: $blk)" ;; esac
+  case "$blk" in *'"severity":"major"'*) ok "model BLOCK entry severity is major" ;; *) bad "§14 entry severity should be major (got: $blk)" ;; esac
+  case "$blk" in *'"skipped":false'*) ok "model BLOCK entry skipped:false" ;; *) bad "§14 entry should be skipped:false (got: $blk)" ;; esac
+) || true
+
+echo "[§15] a TEST_FIRST_SKIPPED: step records skipped:true telemetry, not a violation (TDD 0042 Component 2)"
+( D="$ROOT/s15b"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  setup_step_repo "$D/repo" || { bad "setup failed"; exit 0; }
+  _write_tdd_fragment 0038-fix 38 docs/tdd/0038-fix.md 1 building build 1000 1000 "feat/0038-fix" "" log "" "" "" "" "" "" "" "" "" "" "" ""
+  cat > "$D/repo/ctl/build_plan" <<'EOF'
+IFS= read -r _init || true
+echo "impl" >> src/a.txt
+git add -A >/dev/null 2>&1; git commit -q -m "step(1): pure refactor" >/dev/null 2>&1
+echo "STEP_COMMIT: 1 $(git rev-parse HEAD) TEST_FIRST_SKIPPED:no-new-behavior"
+IFS= read -r _reply || true
+echo "BATCH_RESULT: OK"
+EOF
+  _per_step_review_loop 0038-fix docs/tdd/0038-fix.md "$D/s15b.log" >/dev/null 2>&1
+  F="$D/state.d/0038-fix.json"
+  blk="$(_read_fragment_step_blocks "$F")"
+  case "$blk" in *'"skipped":true'*) ok "skip token records a skipped:true entry" ;; *) bad "§15 skip step should record skipped:true (got: $blk)" ;; esac
+  case "$blk" in *'no-new-behavior'*) ok "skip entry carries the skip reason" ;; *) bad "§15 skip entry should carry the reason (got: $blk)" ;; esac
+  grep_absent '"failing-test-first-violation"' "$F" "a declared skip is NOT recorded as a violation"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"

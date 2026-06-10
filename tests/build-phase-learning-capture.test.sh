@@ -658,6 +658,61 @@ echo "[S30] this suite is wired into the implement-gate aggregator (so ci-checks
   grep -qE '\[ "\$BPL_FAIL" -eq 0 \]' "$AGG" 2>/dev/null && ok "a BPL failure fails the aggregator (in the pass-gate chain)" || bad "BPL_FAIL must be in the aggregator's final pass-gate conjunction"
 ) || true
 
+# --- [[0042]] step_block_log corpus pass in detect_build_learnings (Component 3) ---
+
+echo "[S31] step_block_log: a per-step class recurring across two TDDs -> candidate learning (TDD 0042 Component 3)"
+( D="$ROOT/S31"; SD="$D/state.d"; mkdir -p "$SD" "$D/docs/tdd"
+  export STATE_DIR="$SD" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"; TDDS=()
+  . "$STATE_LIB" || { bad "S31 source state.sh"; exit 0; }
+  . "$LEARN_LIB" || { bad "S31 source learnings.sh"; exit 0; }
+  SB1='{"pass_id":"step-1","severity":"major","pattern_tags":["failing-test-first-violation"],"summary":"no precursor","skipped":false}'
+  SB2='{"pass_id":"step-2","severity":"major","pattern_tags":["failing-test-first-violation"],"summary":"no precursor","skipped":false}'
+  # Fragments carrying ONLY step_block_log (findings=[]) — the per-step blind spot.
+  _write_tdd_fragment 0010-a 10 docs/tdd/0010-a.md 1 done flip 1000 1000 "" "" "" "" \
+    "" "" "" "" "" "" "" "" "" "" "" "" "" "[]" 0 '{}' "[$SB1]"
+  _write_tdd_fragment 0011-b 11 docs/tdd/0011-b.md 2 done flip 1000 1000 "" "" "" "" \
+    "" "" "" "" "" "" "" "" "" "" "" "" "" "[]" 0 '{}' "[$SB2]"
+  printf '## Touched files\n- `scripts/lib/gates.sh` — x\n' > "$D/docs/tdd/0010-a.md"
+  printf '## Touched files\n- `scripts/lib/state.sh` — y\n' > "$D/docs/tdd/0011-b.md"
+  detect_build_learnings "$SD" "$D" "$D" || bad "S31 detect should succeed"
+  CL="$D/candidate-learnings.json"
+  [ -f "$CL" ] && ok "candidate-learnings.json written from step_block_log" || bad "should write candidate-learnings.json from step_block_log alone"
+  grep -q '"class":"failing-test-first-violation"' "$CL" 2>/dev/null && ok "per-step class surfaced from step_block_log" || bad "failing-test-first-violation should surface (got: $(cat "$CL" 2>/dev/null))"
+  grep -q '"0010-a"' "$CL" 2>/dev/null && grep -q '"0011-b"' "$CL" 2>/dev/null && ok "distinct_tdds lists both step_block_log TDDs" || bad "both slugs should appear in distinct_tdds"
+) || true
+
+echo "[S32] step_block_log: a single TDD's lone per-step entry stays below threshold -> nothing"
+( D="$ROOT/S32"; SD="$D/state.d"; mkdir -p "$SD" "$D/docs/tdd"
+  export STATE_DIR="$SD" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"; TDDS=()
+  . "$STATE_LIB"; . "$LEARN_LIB"
+  SB1='{"pass_id":"step-1","severity":"major","pattern_tags":["failing-test-first-violation"],"summary":"x","skipped":false}'
+  _write_tdd_fragment 0010-a 10 docs/tdd/0010-a.md 1 done flip 1000 1000 "" "" "" "" \
+    "" "" "" "" "" "" "" "" "" "" "" "" "" "[]" 0 '{}' "[$SB1]"
+  detect_build_learnings "$SD" "$D" "$D" || bad "S32 detect should succeed (no-op)"
+  [ ! -f "$D/candidate-learnings.json" ] && ok "a single per-step occurrence (MIN=2) surfaces nothing" || bad "should NOT surface a single per-step entry (got: $(cat "$D/candidate-learnings.json" 2>/dev/null))"
+) || true
+
+echo "[S33] step_block_log: a skipped:true entry is excluded from mining (a justified skip is not a violation)"
+( D="$ROOT/S33"; SD="$D/state.d"; mkdir -p "$SD" "$D/docs/tdd"
+  export STATE_DIR="$SD" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"; TDDS=()
+  . "$STATE_LIB"; . "$LEARN_LIB"
+  # TDD-A: a REAL violation entry. TDD-B: a SKIPPED entry that (defensively) also
+  # carries severity+tags — it must be excluded BEFORE accumulation, so the class
+  # stays at 1 distinct TDD (below MIN=2) and does NOT surface. Without the explicit
+  # skipped:true guard, the skip would count and push it over threshold.
+  REAL='{"pass_id":"step-1","severity":"major","pattern_tags":["failing-test-first-violation"],"summary":"x","skipped":false}'
+  SKIP='{"pass_id":"step-1","skipped":true,"severity":"major","pattern_tags":["failing-test-first-violation"],"reason":"no-new-behavior"}'
+  _write_tdd_fragment 0010-a 10 docs/tdd/0010-a.md 1 done flip 1000 1000 "" "" "" "" \
+    "" "" "" "" "" "" "" "" "" "" "" "" "" "[]" 0 '{}' "[$REAL]"
+  _write_tdd_fragment 0011-b 11 docs/tdd/0011-b.md 2 done flip 1000 1000 "" "" "" "" \
+    "" "" "" "" "" "" "" "" "" "" "" "" "" "[]" 0 '{}' "[$SKIP]"
+  detect_build_learnings "$SD" "$D" "$D" || bad "S33 detect should succeed"
+  [ ! -f "$D/candidate-learnings.json" ] && ok "skipped:true entry excluded -> class stays below threshold (no surface)" || bad "skipped:true must NOT count toward a class (got: $(cat "$D/candidate-learnings.json" 2>/dev/null))"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"

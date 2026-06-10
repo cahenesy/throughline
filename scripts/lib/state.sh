@@ -117,6 +117,21 @@ _read_fragment_findings() {  # <file>
   [ "$raw" = "[]" ] && return 0
   printf '%s' "$raw"
 }
+# Read the step_block_log array (TDD 0042 / FR-72). Like findings + cleared_step_log
+# it nests objects (each entry's pattern_tags array), so the flat
+# _read_fragment_raw_array regex would truncate it at the first `]`. step_block_log
+# is NOT the last field (last_cleared_review_sha + cleared_step_log follow it), so we
+# anchor the greedy array match on the field that immediately follows —
+# `,"last_cleared_review_sha":`, which appears exactly once — instead of the
+# fragment's closing brace. INVARIANT: step_block_log must remain immediately before
+# last_cleared_review_sha in _write_tdd_fragment's printf. Empty/`[]`/absent → empty
+# (matching the other readers' "no value yet" default).
+_read_fragment_step_blocks() {  # <file>
+  local f="$1" raw
+  raw="$(sed -n 's/.*"step_block_log":\(\[.*\]\),"last_cleared_review_sha":.*/\1/p' "$f" | head -1)"
+  [ "$raw" = "[]" ] && return 0
+  printf '%s' "$raw"
+}
 
 # Escape a string for safe inclusion as a JSON string value. Free-text fields
 # (note/branch/pr_url/log) ride through this; structural fields are integers or
@@ -183,9 +198,20 @@ json_escape() {
 #   self_review_count  an int (param ≥27 wins; else preserved; fresh → 0)
 #   re_review_attempts a complete JSON object literal keyed "<gate>:<step>" → int
 #                      (param ≥28 wins; else preserved; fresh → {})
+# The one param 29 (TDD 0042 / FR-72; ADR 0006) is likewise CUMULATIVE-by-default,
+# joining the §6 preserve-on-absent group above. It is the write-only per-step
+# BLOCK telemetry ledger mined by detect_build_learnings; it must survive every
+# status/halt/rework/cleared-step transition, so a writer that omits it (argc < 29)
+# preserves the on-disk value rather than resetting it. Placed BEFORE
+# last_cleared_review_sha so cleared_step_log remains the LAST field (the
+# _read_fragment_cleared_log greedy-anchor invariant) and findings' anchor
+# (`,"self_review_count":`) is unchanged; _read_fragment_step_blocks anchors on the
+# `,"last_cleared_review_sha":` that immediately follows it.
+#   step_block_log     a complete JSON array literal of per-step BLOCK entries
+#                      (param ≥29 wins; else preserved from disk; fresh/absent → [])
 # Callers that do not need them omit them; the existing twelve-, sixteen-,
 # twenty-, twenty-three-, and twenty-five-param call sites continue to work
-# unchanged (24/25 default to null/[]; 26..28 preserve-or-default).
+# unchanged (24/25 default to null/[]; 26..28 preserve-or-default; 29 preserves).
 _write_tdd_fragment() {
   local slug="$1" n="$2" path="$3" qp="$4" status="$5" stage="$6" sta="$7" upd="$8"
   local branch="$9" pr_url="${10}" log="${11}" note="${12}"
@@ -198,7 +224,7 @@ _write_tdd_fragment() {
   local halt_cause_lit halt_finding_lit halt_actions_lit halt_detail_lit
   local rework_attempts_lit rework_log_lit build_attempt_lit
   local last_cleared_sha_lit cleared_step_log_lit
-  local findings_lit self_review_lit re_review_lit
+  local findings_lit self_review_lit re_review_lit step_block_log_lit
   # TDD 0021 §6: $f is needed up-front so the preserve-on-absent reads (below)
   # can pull the cumulative findings / self_review_count / re_review_attempts
   # from the CURRENT on-disk fragment when the caller omits params 26..28.
@@ -281,6 +307,13 @@ _write_tdd_fragment() {
   elif [ -f "$f" ]; then re_review_lit="$(_read_fragment_raw_object "$f" re_review_attempts)"
   else re_review_lit=""; fi
   [ -z "$re_review_lit" ] && re_review_lit='{}'
+  # TDD 0042 §1: step_block_log. Param ≥29 wins; otherwise PRESERVE the on-disk
+  # value (cumulative-by-default, joining the §6 group above). A fresh fragment
+  # (file absent) or an explicitly-empty value falls back to the empty array [].
+  if [ "$argc" -ge 29 ]; then step_block_log_lit="${29}"
+  elif [ -f "$f" ]; then step_block_log_lit="$(_read_fragment_step_blocks "$f")"
+  else step_block_log_lit=""; fi
+  [ -z "$step_block_log_lit" ] && step_block_log_lit='[]'
   tmp="$f.tmp.$$"
   # TDD 0011 / iter-3 MAJOR-5: detect printf or mv failure. A disk-full
   # or permission failure on `printf > $tmp` under set -uo pipefail (no -e)
@@ -288,7 +321,7 @@ _write_tdd_fragment() {
   # fragment with a corrupted/empty one, and subsequent reads would
   # round-trip empty values back. Bail loudly instead so the run is
   # halted while data is still recoverable.
-  if ! printf '{"n":%d,"slug":"%s","path":"%s","queue_pos":%d,"status":"%s","stage":%s,"started_at":%d,"updated_at":%d,"branch":"%s","pr_url":"%s","log":"%s","note":"%s","paused_cause":%s,"gates_completed":%s,"retries":%s,"branch_head_at_pause":%s,"halt_cause":%s,"halt_triggering_finding_ref":%s,"halt_next_actions":%s,"halt_cause_detail":%s,"rework_attempts":%s,"rework_log":%s,"build_attempt":%s,"findings":%s,"self_review_count":%s,"re_review_attempts":%s,"last_cleared_review_sha":%s,"cleared_step_log":%s}\n' \
+  if ! printf '{"n":%d,"slug":"%s","path":"%s","queue_pos":%d,"status":"%s","stage":%s,"started_at":%d,"updated_at":%d,"branch":"%s","pr_url":"%s","log":"%s","note":"%s","paused_cause":%s,"gates_completed":%s,"retries":%s,"branch_head_at_pause":%s,"halt_cause":%s,"halt_triggering_finding_ref":%s,"halt_next_actions":%s,"halt_cause_detail":%s,"rework_attempts":%s,"rework_log":%s,"build_attempt":%s,"findings":%s,"self_review_count":%s,"re_review_attempts":%s,"step_block_log":%s,"last_cleared_review_sha":%s,"cleared_step_log":%s}\n' \
     "$n" "$(json_escape "$slug")" "$(json_escape "$path")" "$qp" \
     "$(json_escape "$status")" "$stage_lit" \
     "$sta" "$upd" \
@@ -298,6 +331,7 @@ _write_tdd_fragment() {
     "$halt_cause_lit" "$halt_finding_lit" "$halt_actions_lit" "$halt_detail_lit" \
     "$rework_attempts_lit" "$rework_log_lit" "$build_attempt_lit" \
     "$findings_lit" "$self_review_lit" "$re_review_lit" \
+    "$step_block_log_lit" \
     "$last_cleared_sha_lit" "$cleared_step_log_lit" \
     > "$tmp"; then
     echo "error: _write_tdd_fragment printf failed for $slug (disk full? perm?); fragment NOT updated" >&2
@@ -1447,7 +1481,15 @@ _record_cleared_step() {  # <slug> <step-id> <base-sha> <head-sha> <pattern-tags
 # not shadow an intended override) — including last_cleared_review_sha (24) and
 # cleared_step_log (25), which it carries forward unchanged.
 
-# _rewrite_fragment_findings <slug> <findings_lit> <self_review_lit> <re_review_lit>
+# _rewrite_fragment_findings <slug> <findings_lit> <self_review_lit> <re_review_lit> [<step_block_log_lit>]
+# TDD 0042 §1: the OPTIONAL 5th arg threads step_block_log as _write_tdd_fragment
+# param 29. CONDITIONAL-FORWARD (footgun guard): forward it as ${5:+"${5}"} — append
+# the arg ONLY when set AND non-empty, NOT an unconditional "${5:-}". An
+# unconditional append would pass an empty param 29 on every legacy four-arg call
+# (_record_finding / _incr_self_review_count / _re_review_attempt_count), overriding
+# preserve-on-absent and silently resetting step_block_log to [] on each write. The
+# conditional form keeps argc at 28 for legacy callers so the preserve path fires;
+# _record_step_block passes a real 5th arg (argc 29) to override.
 _rewrite_fragment_findings() {
   local slug="$1" findings_lit="$2" srv_lit="$3" rr_lit="$4"
   local f="${STATE_DIR:-}/$slug.json"
@@ -1499,8 +1541,63 @@ _rewrite_fragment_findings() {
     "$halt_cause" "$halt_finding" "$halt_actions_csv" "$halt_detail" \
     "$rework_attempts" "$rework_log" "$build_attempt" \
     "$last_cleared_sha" "$cleared_step_log" \
-    "$findings_lit" "$srv_lit" "$rr_lit"; then
+    "$findings_lit" "$srv_lit" "$rr_lit" ${5:+"${5}"}; then
     echo "error: _rewrite_fragment_findings: could not write $slug fragment" >&2
+    return 1
+  fi
+}
+
+# _record_step_block <slug> <entry_json>  — append one per-step BLOCK telemetry
+# entry (the [[0042]] §Data shape, built by the caller in gates.sh) to the
+# fragment's step_block_log array, atomically. Mirrors _record_finding: read the
+# current findings / self_review_count / re_review_attempts (carried forward
+# unchanged) and step_block_log (via _read_fragment_step_blocks), splice the new
+# entry before the array's closing bracket, and rewrite via
+# _rewrite_fragment_findings with the 5th (step_block_log) arg. Same empty-vs-
+# unparseable fail-loud guard _record_finding uses: refuse to overwrite a present-
+# but-unparseable array (return non-zero, preserve forensics); start fresh ONLY
+# when literally [] or absent. Requires STATE_DIR set and the fragment present;
+# returns non-zero with a diagnostic otherwise (the §2 caller treats that as
+# best-effort and does not fail the per-step loop).
+_record_step_block() {  # <slug> <entry_json>
+  local slug="$1" entry="$2"
+  local f="${STATE_DIR:-}/$slug.json"
+  if [ -z "${STATE_DIR:-}" ] || [ ! -f "$f" ]; then
+    echo "error: _record_step_block: no state fragment for $slug ($f)" >&2
+    return 1
+  fi
+  local existing new
+  existing="$(_read_fragment_step_blocks "$f")"
+  if [ -z "$existing" ]; then
+    # Empty reader result is AMBIGUOUS: genuinely empty ([]/absent) vs a corrupt
+    # array the greedy reader could not parse. Resetting in the latter case would
+    # DISCARD prior telemetry. Disambiguate FAIL-CLOSED (FR-74 #1): read the
+    # fragment ONCE here and match in bash. A `grep … 2>/dev/null || ! grep …`
+    # would let a grep ERROR (exit ≥2 / unreadable file) fall through the `! grep`
+    # as "absent" and silently RESET the array — the exact silent-failure mode the
+    # fail-loud guarantee forbids. A read failure fails loud; only a literal [] or
+    # an absent field starts fresh; a present non-empty field is unparseable → refuse.
+    local raw
+    raw="$(cat "$f")" || { echo "error: _record_step_block: cannot read $f to disambiguate step_block_log; refusing to write" >&2; return 1; }
+    case "$raw" in
+      *'"step_block_log":[]'*) new="[$entry]" ;;            # genuinely empty
+      *'"step_block_log":'*)                                 # present but unparseable
+        echo "error: _record_step_block: step_block_log present but unparseable for $slug; refusing to overwrite and lose prior entries" >&2
+        return 1 ;;
+      *) new="[$entry]" ;;                                   # field absent → fresh
+    esac
+  elif [ "${existing: -1}" != ']' ]; then
+    echo "error: _record_step_block: step_block_log for $slug is malformed (no closing ']'); refusing to write and lose prior entries" >&2
+    return 1
+  else
+    new="${existing%]},$entry]"
+  fi
+  local findings srv rr
+  findings="$(_read_fragment_findings "$f")"; [ -z "$findings" ] && findings='[]'
+  srv="$(sed -n 's/.*"self_review_count":\([0-9]*\).*/\1/p' "$f" | head -1)"; case "$srv" in ''|*[!0-9]*) srv=0 ;; esac
+  rr="$(_read_fragment_raw_object "$f" re_review_attempts)"; [ -z "$rr" ] && rr='{}'
+  if ! _rewrite_fragment_findings "$slug" "$findings" "$srv" "$rr" "$new"; then
+    echo "error: _record_step_block: could not append step_block entry for $slug" >&2
     return 1
   fi
 }
