@@ -317,6 +317,60 @@ EOF
   [ "$rc" = "0" ] && ok "no model review spawned (tail -1 sentinel, not the stale earlier one)" || bad "prior token must not bypass (revcount=$rc)"
 ) || true
 
+# --- [[0042]] per-step BLOCK learning capture: state.sh persistence (Component 1) ---
+
+echo "[§11] state.sh: step_block_log round-trips, carry-forward preserves it, cleared_step_log stays last (TDD 0042 Component 1)"
+( D="$ROOT/s11"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  F="$D/state.d/0042-x.json"
+  # Fresh fragment (argc 25: no §6/§29 params) -> step_block_log must default to [].
+  _write_tdd_fragment 0042-x 42 docs/tdd/0042-x.md 1 building build 1000 1000 "" "" "" "" "" "" "" "" "" "" "" "" "" "" "" "" ""
+  grep_has '"step_block_log":\[\]' "$F" "fresh fragment defaults step_block_log to []"
+  E='{"pass_id":"step-1","severity":"major","pattern_tags":["failing-test-first-violation"],"summary":"no test(failing): precursor for step 1","skipped":false}'
+  _record_step_block 0042-x "$E" || bad "§11 _record_step_block should succeed"
+  blocks="$(_read_fragment_step_blocks "$F")"
+  case "$blocks" in
+    *'"failing-test-first-violation"'*) ok "_read_fragment_step_blocks returns the appended entry" ;;
+    *) bad "§11 reader should return the appended step_block_log entry (got: $blocks)" ;;
+  esac
+  # Field placement: step_block_log sits immediately before last_cleared_review_sha
+  # (the reader-anchor invariant; keeps cleared_step_log last + findings anchor intact).
+  grep_has '"step_block_log":\[.*\],"last_cleared_review_sha":' "$F" "step_block_log sits immediately before last_cleared_review_sha"
+  before="$blocks"
+  set_tdd_state 0042-x verifying verify >/dev/null 2>&1 || bad "§11 set_tdd_state carry-forward should succeed"
+  after="$(_read_fragment_step_blocks "$F")"
+  [ "$before" = "$after" ] && ok "carry-forward write (argc<=28) preserves step_block_log byte-identically" || bad "§11 carry-forward must preserve step_block_log (before=[$before] after=[$after])"
+  # cleared_step_log greedy-anchor invariant still holds (it remains the LAST field).
+  _record_cleared_step 0042-x 1 basesha headsha "t1" >/dev/null 2>&1 || bad "§11 _record_cleared_step should still succeed"
+  cl="$(_read_fragment_cleared_log "$F")"
+  case "$cl" in *'"step_id":1'*) ok "_read_fragment_cleared_log still parses (cleared_step_log remains last)" ;; *) bad "§11 cleared_step_log anchor broke (got: $cl)" ;; esac
+  # And step_block_log survives the cleared-step write too (another carry-forward writer).
+  case "$(_read_fragment_step_blocks "$F")" in *'"failing-test-first-violation"'*) ok "_record_cleared_step carries step_block_log forward" ;; *) bad "§11 _record_cleared_step dropped step_block_log" ;; esac
+) || true
+
+echo "[§12] state.sh: _record_step_block refuses to overwrite an unparseable step_block_log (fail-loud, FR-74 #1)"
+( D="$ROOT/s12"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  F="$D/state.d/0042-y.json"
+  _write_tdd_fragment 0042-y 42 docs/tdd/0042-y.md 1 building build 1000 1000 "" "" "" "" "" "" "" "" "" "" "" "" "" "" "" "" ""
+  E='{"pass_id":"step-1","severity":"major","pattern_tags":["t"],"summary":"s","skipped":false}'
+  _record_step_block 0042-y "$E" >/dev/null 2>&1 || bad "§12 first append should succeed"
+  # Corrupt the array (drop the closing bracket) so the reader returns a non-[]
+  # value that is NOT ]-terminated; the setter must refuse rather than reset.
+  sed -i 's/"step_block_log":\[\(.*\)\],"last_cleared_review_sha":/"step_block_log":[\1,"last_cleared_review_sha":/' "$F"
+  E2='{"pass_id":"step-2","severity":"major","pattern_tags":["t2"],"summary":"s2","skipped":false}'
+  if _record_step_block 0042-y "$E2" >/dev/null 2>&1; then
+    bad "§12 _record_step_block must FAIL on an unparseable array (must not overwrite forensics)"
+  else
+    ok "_record_step_block returns non-zero on an unparseable step_block_log (fail-loud)"
+  fi
+  grep_absent '"step-2"' "$F" "the unparseable array was NOT overwritten (step-2 not spliced in)"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
