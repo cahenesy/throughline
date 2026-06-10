@@ -1,5 +1,5 @@
 # TDD 0046: Surgical-changes build norm
-Status: draft
+Status: implemented
 PRD refs: FR-66, FR-74
 PRD-rev: 0aa1e28
 ADR constraints: 0005, 0007, 0008

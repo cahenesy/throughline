@@ -27,6 +27,17 @@ exceeds the bounds below — so staying in scope is the only way your fix ships.
   cites a test. Editing a test to make the cited bug "pass" is a MAJOR finding,
   not a fix — the test stays red until the code is actually correct.
 
+## Surgical changes (the intent behind the bounds)
+
+The bounds above are the mechanical form of the build's surgical-changes norm
+(the FR-66 cap bounds your diff's size; this states its intent): a rework
+fixes ONLY the cited finding. Do not touch code outside the finding's region
+except where the fix mechanically requires it, and make
+no adjacent improvement along the way — no drive-by refactor, rename,
+reformat, or "while I'm here" cleanup, however tempting an improvement looks
+while you are in the file. The fix is surgical when it is the minimum edit
+that resolves the finding.
+
 ## Grounding (ADR 0006)
 
 Base your fix on the actual code and the finding text, not on any narrative

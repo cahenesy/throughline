@@ -718,4 +718,18 @@ if [ -f "$RLNS" ]; then
   bash "$RLNS" || RLNS_FAIL=1
 fi
 
-[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ] && [ "$SMS_FAIL" -eq 0 ] && [ "$PRM_FAIL" -eq 0 ] && [ "$GRM_FAIL" -eq 0 ] && [ "$BRL_FAIL" -eq 0 ] && [ "$SCB_FAIL" -eq 0 ] && [ "$RR_FAIL" -eq 0 ] && [ "$BCL_FAIL" -eq 0 ] && [ "$BO_FAIL" -eq 0 ] && [ "$IDP_FAIL" -eq 0 ] && [ "$RES_FAIL" -eq 0 ] && [ "$CVR_FAIL" -eq 0 ] && [ "$HRS_FAIL" -eq 0 ] && [ "$SHR_FAIL" -eq 0 ] && [ "$BPL_FAIL" -eq 0 ] && [ "$BDN_FAIL" -eq 0 ] && [ "$IDISC_FAIL" -eq 0 ] && [ "$ERC_FAIL" -eq 0 ] && [ "$SCP_FAIL" -eq 0 ] && [ "$IMR_FAIL" -eq 0 ] && [ "$RVR_FAIL" -eq 0 ] && [ "$WIC_FAIL" -eq 0 ] && [ "$RTH_FAIL" -eq 0 ] && [ "$TFP_FAIL" -eq 0 ] && [ "$TGR_FAIL" -eq 0 ] && [ "$BRC_FAIL" -eq 0 ] && [ "$CMAP_FAIL" -eq 0 ] && [ "$RLNS_FAIL" -eq 0 ]
+# Run the surgical-norm eval (TDD 0046 / FR-66, FR-74; ADR 0005, 0007, 0008)
+# as part of the same suite so the build prompt's surgical-changes norm (with
+# its required-changes carve-out) and the rework prompt's single-finding-scope
+# echo are regression-gated by ci-checks, not orphaned from the aggregator.
+# Per the TDD 0038 §3 wire-in rule this registration is new gating behavior —
+# its failing wire-in test (the eval's §W dogfood) drove the AND-chain term
+# below red→green before this block landed.
+SRG="$(dirname "$0")/surgical-norm.test.sh"
+SRG_FAIL=0
+if [ -f "$SRG" ]; then
+  echo
+  bash "$SRG" || SRG_FAIL=1
+fi
+
+[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ] && [ "$SMS_FAIL" -eq 0 ] && [ "$PRM_FAIL" -eq 0 ] && [ "$GRM_FAIL" -eq 0 ] && [ "$BRL_FAIL" -eq 0 ] && [ "$SCB_FAIL" -eq 0 ] && [ "$RR_FAIL" -eq 0 ] && [ "$BCL_FAIL" -eq 0 ] && [ "$BO_FAIL" -eq 0 ] && [ "$IDP_FAIL" -eq 0 ] && [ "$RES_FAIL" -eq 0 ] && [ "$CVR_FAIL" -eq 0 ] && [ "$HRS_FAIL" -eq 0 ] && [ "$SHR_FAIL" -eq 0 ] && [ "$BPL_FAIL" -eq 0 ] && [ "$BDN_FAIL" -eq 0 ] && [ "$IDISC_FAIL" -eq 0 ] && [ "$ERC_FAIL" -eq 0 ] && [ "$SCP_FAIL" -eq 0 ] && [ "$IMR_FAIL" -eq 0 ] && [ "$RVR_FAIL" -eq 0 ] && [ "$WIC_FAIL" -eq 0 ] && [ "$RTH_FAIL" -eq 0 ] && [ "$TFP_FAIL" -eq 0 ] && [ "$TGR_FAIL" -eq 0 ] && [ "$BRC_FAIL" -eq 0 ] && [ "$CMAP_FAIL" -eq 0 ] && [ "$RLNS_FAIL" -eq 0 ] && [ "$SRG_FAIL" -eq 0 ]
