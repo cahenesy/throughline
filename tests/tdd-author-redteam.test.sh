@@ -16,6 +16,8 @@
 #        self-review checklist gains the matching line; control: tdd-lint.sh's
 #        required-section set is NOT expanded to demand a taxonomy sub-heading
 #        (the taxonomy stays advisory).
+#   §W — dogfood: the aggregator's final AND-chain goes non-zero when this
+#        eval fails (TDD 0038 §3 wire-in rule).
 #
 # L-001/L-002 guards (matched learnings): SKILL.md existence + readability is
 # asserted BEFORE any content grep and fails with an INFRA-prefixed message
@@ -106,6 +108,31 @@ else
     esac
   done
 fi
+
+# ===========================================================================
+# §W: dogfood (TDD 0038 §3) — drive the aggregator's REAL extracted final
+# AND-chain with this eval's accumulator forced to 1; the chain must go
+# non-zero, proving the wire-in propagates a failure of this eval.
+echo "[§W] dogfood: wiring this eval into the aggregator makes its exit go non-zero when the eval fails"
+( AGG="$REPO/tests/implement-gate.test.sh"
+  if [ ! -r "$AGG" ]; then bad "INFRA: §W — aggregator unreadable: $AGG"; exit 0; fi
+  grep -qE 'tdd-author-redteam\.test\.sh' "$AGG" \
+    && ok "the new eval is wired into the aggregator (registration present)" \
+    || bad "the new eval is wired into the aggregator (expected /tdd-author-redteam\\.test\\.sh/ in $AGG)"
+  chain="$(grep -aE '^\[ "\$FAIL" -eq 0 \] &&' "$AGG" | tail -1)"
+  if [ -z "$chain" ]; then bad "INFRA: §W — could not locate the aggregator final AND-chain"; exit 0; fi
+  drive_rc="$(
+    set +u
+    for v in $(printf '%s' "$chain" | grep -aoE '\$[A-Za-z_][A-Za-z0-9_]*' | tr -d '$' | sort -u); do
+      eval "$v=0"
+    done
+    RTM_FAIL=1
+    eval "$chain"; echo $?
+  )"
+  [ "$drive_rc" != "0" ] \
+    && ok "aggregator final AND-chain goes non-zero when the new eval fails (wire-in propagates)" \
+    || bad "aggregator AND-chain must be non-zero with RTM_FAIL=1 (got rc=$drive_rc)"
+) || true
 
 # --- report ----------------------------------------------------------------
 echo
