@@ -1,5 +1,5 @@
 # TDD 0047: tdd-author red-team ranking + pre-mortem taxonomy
-Status: draft
+Status: implemented
 PRD refs: FR-76
 PRD-rev: 0aa1e28
 ADR constraints: 0006

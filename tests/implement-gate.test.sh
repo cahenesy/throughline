@@ -732,4 +732,18 @@ if [ -f "$SRG" ]; then
   bash "$SRG" || SRG_FAIL=1
 fi
 
-[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ] && [ "$SMS_FAIL" -eq 0 ] && [ "$PRM_FAIL" -eq 0 ] && [ "$GRM_FAIL" -eq 0 ] && [ "$BRL_FAIL" -eq 0 ] && [ "$SCB_FAIL" -eq 0 ] && [ "$RR_FAIL" -eq 0 ] && [ "$BCL_FAIL" -eq 0 ] && [ "$BO_FAIL" -eq 0 ] && [ "$IDP_FAIL" -eq 0 ] && [ "$RES_FAIL" -eq 0 ] && [ "$CVR_FAIL" -eq 0 ] && [ "$HRS_FAIL" -eq 0 ] && [ "$SHR_FAIL" -eq 0 ] && [ "$BPL_FAIL" -eq 0 ] && [ "$BDN_FAIL" -eq 0 ] && [ "$IDISC_FAIL" -eq 0 ] && [ "$ERC_FAIL" -eq 0 ] && [ "$SCP_FAIL" -eq 0 ] && [ "$IMR_FAIL" -eq 0 ] && [ "$RVR_FAIL" -eq 0 ] && [ "$WIC_FAIL" -eq 0 ] && [ "$RTH_FAIL" -eq 0 ] && [ "$TFP_FAIL" -eq 0 ] && [ "$TGR_FAIL" -eq 0 ] && [ "$BRC_FAIL" -eq 0 ] && [ "$CMAP_FAIL" -eq 0 ] && [ "$RLNS_FAIL" -eq 0 ] && [ "$SRG_FAIL" -eq 0 ]
+# Run the tdd-author-redteam eval (TDD 0047 / FR-76; ADR 0006) as part of the
+# same suite so the tdd-author skill's red-team assumption-ranking guidance
+# and the pre-mortem failure-mode taxonomy (note + self-review line, with the
+# tdd-lint-unchanged control) are regression-gated by ci-checks, not orphaned
+# from the aggregator. Per the TDD 0038 §3 wire-in rule this registration is
+# new gating behavior — its failing wire-in test (the eval's §W dogfood) drove
+# the AND-chain term below red→green before this block landed.
+RTM="$(dirname "$0")/tdd-author-redteam.test.sh"
+RTM_FAIL=0
+if [ -f "$RTM" ]; then
+  echo
+  bash "$RTM" || RTM_FAIL=1
+fi
+
+[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ] && [ "$SMS_FAIL" -eq 0 ] && [ "$PRM_FAIL" -eq 0 ] && [ "$GRM_FAIL" -eq 0 ] && [ "$BRL_FAIL" -eq 0 ] && [ "$SCB_FAIL" -eq 0 ] && [ "$RR_FAIL" -eq 0 ] && [ "$BCL_FAIL" -eq 0 ] && [ "$BO_FAIL" -eq 0 ] && [ "$IDP_FAIL" -eq 0 ] && [ "$RES_FAIL" -eq 0 ] && [ "$CVR_FAIL" -eq 0 ] && [ "$HRS_FAIL" -eq 0 ] && [ "$SHR_FAIL" -eq 0 ] && [ "$BPL_FAIL" -eq 0 ] && [ "$BDN_FAIL" -eq 0 ] && [ "$IDISC_FAIL" -eq 0 ] && [ "$ERC_FAIL" -eq 0 ] && [ "$SCP_FAIL" -eq 0 ] && [ "$IMR_FAIL" -eq 0 ] && [ "$RVR_FAIL" -eq 0 ] && [ "$WIC_FAIL" -eq 0 ] && [ "$RTH_FAIL" -eq 0 ] && [ "$TFP_FAIL" -eq 0 ] && [ "$TGR_FAIL" -eq 0 ] && [ "$BRC_FAIL" -eq 0 ] && [ "$CMAP_FAIL" -eq 0 ] && [ "$RLNS_FAIL" -eq 0 ] && [ "$SRG_FAIL" -eq 0 ] && [ "$RTM_FAIL" -eq 0 ]
