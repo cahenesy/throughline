@@ -131,16 +131,27 @@ Real risks:
 - **Model emits `pinned` for a non-asserting test.** Mitigated structurally:
   `coverage_map_normalize` downgrades any `pinned` without a citation shape to
   `unverified-gap`; the citation must be a path present in the scoped diff.
-- **Option-shaped citation path bypasses the diff-presence check on GNU grep.**
-  The "citation path must be present in the scoped diff" test uses
-  `grep -qxF "$file"`; a citation whose path begins with `-` (e.g. `--help::x`)
-  is parsed by GNU grep — the CI/production platform — as an option rather than a
-  fixed-string pattern, so the presence test misbehaves and a fabricated `pinned`
-  can survive, defeating FR-78's stated *model-independent* anti-false-green
-  guarantee. Mitigated by terminating option parsing: `grep -qxF -- "$file"` (or
-  `-e "$file"`). This hole surfaces ONLY on GNU grep — a `ugrep` wrapper masks it —
-  so the eval MUST exercise an option-shaped citation explicitly (Verification
-  below), not rely on the host's grep.
+- **Option-shaped model token bypasses a fixed-string membership grep on GNU
+  grep.** TWO checks `grep -qxF` a model-emitted token against a runner-derived
+  list: the diff-presence check (`grep -qxF "$file"` — the citation path vs the
+  scoped-diff file list, ~gates.sh:1900) and the in-scope requirement-domain
+  filter (`grep -qxF "$req"` — the emitted requirement id vs the TDD's
+  traceability ids, ~gates.sh:1981). A token beginning with `-` (e.g. `--help::x`,
+  or a req id like `--x`) is parsed by GNU grep — the CI/production platform — as
+  an OPTION rather than a fixed-string pattern, so the membership test misbehaves
+  and a fabricated `pinned` (or an out-of-domain id) can survive, defeating
+  FR-78's stated *model-independent* anti-false-green guarantee. Mitigated by
+  terminating option parsing at BOTH sites: `grep -qxF -- "$token"` (or
+  `-e "$token"`). This hole surfaces ONLY on GNU grep — a `ugrep` wrapper masks it
+  — so the eval MUST exercise an option-shaped token at both sites explicitly
+  (Verification below), not rely on the host's grep.
+- **Concurrent `write_coverage_report` corrupts the shared `report.md` under
+  `--parallel`.** Each feature's writer does a read-modify-write (idempotent
+  per-slug replace) on the ONE run `report.md`; unserialized concurrent writers
+  interleave and can corrupt it or drop a section. Mitigated by serializing the
+  report write (a lock around the read-modify-write, or an atomic
+  rewrite-and-rename). Sequential/combined modes are unaffected, but the function
+  must be correct for all modes.
 - **Malformed / missing block** (build degraded to single-shot review, or the
   model omitted the fences). `coverage_map_block` returns empty; the report
   section renders "coverage map unavailable for this build" rather than a
@@ -168,8 +179,10 @@ Unspoken risks (elephants):
      IN the fixture diff list), one `pinned` (NO citation), one `pinned` (cited,
      file NOT in the fixture diff list), one `pinned` (cited with an option-shaped
      path such as `--x::name`, NOT in the fixture diff list), one
-     `justified-no-surface`, and one `unverified-gap` line, against a fixture
-     `report.md`, `report` logdir, and a fixture scoped-diff file list.
+     `justified-no-surface`, one `unverified-gap` line, and one `COVERAGE:` line
+     whose requirement id is itself option-shaped (e.g. `--x`, not in the
+     traceability table), against a fixture `report.md`, `report` logdir, and a
+     fixture scoped-diff file list.
   2. Run the extractor+writer (the functions are sourced from `gates.sh`, the
      same way `tests/implement-gate.test.sh` sources the lib under test).
 - **Expected observations (PASS):**
@@ -186,6 +199,10 @@ Unspoken risks (elephants):
     fabricated `pinned` cannot survive on GNU grep. This is the regression guard
     for the `grep -qxF -- "$file"` fix and MUST hold under GNU grep semantics
     (not a `ugrep`-wrapped host).
+  - The **option-shaped requirement id** (`--x`) is treated as a literal id by
+    the domain filter (not a grep option) and is dropped as an unlisted
+    requirement — never silently admitted — the regression guard for the
+    `grep -qxF -- "$req"` fix at the second site (gates.sh:~1981).
   - The `justified-no-surface` row carries its skip reason and is NOT rendered
     as a gap.
   - A second invocation replaces (does not duplicate) the per-slug section.
@@ -237,8 +254,8 @@ grounding); no durable cross-cutting decision is added.
 
 ## Expected diff size
 - scripts/review-prompt.md — 60 lines
-- scripts/lib/gates.sh — 95 lines
+- scripts/lib/gates.sh — 215 lines (three grounded extractors + the report writer; was a ~2.2× underestimate at 95 — reconciled to the real build size, with headroom for the option-terminator rework at two grep sites and the report-write serialization)
 - scripts/implement.sh — 28 lines
-- tests/coverage-map.test.sh — 230 lines
-- tests/implement-gate.test.sh — 10 lines
-Total expected diff: 423 lines across 5 files.
+- tests/coverage-map.test.sh — 460 lines (exception: one cohesive coverage-map eval — extraction + four normalization downgrades + report rendering + idempotent replace + degraded/unavailable paths + a dogfood AND-chain case + the option-shaped regression fixtures, all sharing one harness/fixtures; over the 300-line per-file cap)
+- tests/implement-gate.test.sh — 20 lines
+Total expected diff: ~783 lines across 5 files.
