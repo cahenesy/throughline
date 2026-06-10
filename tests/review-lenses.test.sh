@@ -17,6 +17,11 @@
 #      test misses it; no concrete gap -> NO finding (grounded, ADR 0006);
 #      severity major with pattern_tags [policy-shadow], raised against the
 #      test file's region.
+#   §3 control: the REVIEW_RESULT: verdict contract is byte-identical to the
+#      pinned pre-lens text — the lenses added analyses, they did not alter
+#      the verdict block (ADR 0005: no new gate, authority unchanged).
+#   §W dogfood: wiring this eval into the aggregator makes the aggregator's
+#      final AND-chain go non-zero when this eval fails (TDD 0038 §3 rule)
 #
 # Observation point per the TDD's verification plan: render the prompt the
 # review `claude -p` actually receives via _render_review_prompt (the same path
@@ -139,6 +144,70 @@ echo "[§2] rendered prompt: policy-shadow lens (FR-15)"
   else
     bad "lens must sit between the intent-conformance lens and Prior-addressed-patterns (heading lines: $order)"
   fi
+) || true
+
+# ===========================================================================
+# §3: control — the verdict contract is UNCHANGED. The lenses add finding
+# categories under the existing severity model; they must not touch the
+# `## Verdict` block (ADR 0005: gate authority unchanged, no new gate). Pin
+# the whole rendered verdict block byte-for-byte so any drift — accidental or
+# "helpful" — turns this control red.
+echo "[§3] control: REVIEW_RESULT: verdict contract unchanged by the lenses"
+( OUT="$(render_prompt "$ROOT/s3")"
+  if [ -z "$OUT" ]; then bad "INFRA: §3 — could not render the review prompt"; exit 0; fi
+  verdict="$(printf '%s\n' "$OUT" | sed -n '/^## Verdict$/,$p')"
+  expected='## Verdict
+
+Then decide and end your message with EXACTLY one verdict line:
+- `REVIEW_RESULT: BLOCK <one-line reason>` — if there is any blocker- or
+  major-severity correctness/security finding, OR the change drifts from the TDD
+  or an accepted ADR. This stops the runner from marking the TDD implemented.
+- `REVIEW_RESULT: PASS` — otherwise. Minor/nit findings do not block; list them
+  but pass.
+
+Print the full findings list ABOVE the verdict line. Do not invent issues to
+look thorough — "no material findings" is a valid, expected result.'
+  if [ "$verdict" = "$expected" ]; then
+    ok "rendered ## Verdict block is byte-identical to the pinned pre-lens contract"
+  else
+    bad "verdict block drifted from the pinned contract (got: [$verdict])"
+  fi
+  # The verdict block must also be the LAST section — neither lens may trail it.
+  printf '%s\n' "$OUT" | sed -n '/^## Verdict$/,$p' | grep -qE '^## Lens:' \
+    && bad "a lens section trails the verdict block" \
+    || ok "no lens section trails the verdict block"
+) || true
+
+# ===========================================================================
+# §W: dogfood (TDD 0038 §3 wire-in rule) — registering this eval in the
+# aggregator adds an RLNS_FAIL accumulator to its final AND-chain, so the
+# aggregator now exits non-zero on a new condition. Drive the REAL extracted
+# chain with every accumulator green EXCEPT this eval's, stubbed to fail:
+# before the wire-in the chain never references RLNS_FAIL and evaluates true
+# (RED); after, it includes the term and evaluates false (GREEN).
+echo "[§W] dogfood: wiring this eval into the aggregator makes its exit go non-zero when the eval fails"
+( AGG="$REPO/tests/implement-gate.test.sh"
+  if [ ! -r "$AGG" ]; then bad "INFRA: §W — aggregator unreadable: $AGG"; exit 0; fi
+  # Structural: the new eval is registered (run) in the aggregator. Anchored on
+  # the eval filename so an unwired aggregator is RED. Fail-closed on grep error.
+  grep -qE 'review-lenses\.test\.sh' "$AGG" \
+    && ok "the new eval is wired into the aggregator (registration present)" \
+    || bad "the new eval is wired into the aggregator (expected /review-lenses\\.test\\.sh/ in $AGG)"
+  # Behavioral: extract the aggregator's real final AND-chain verbatim and
+  # evaluate it against stub integers (no recursion into the sub-evals).
+  chain="$(grep -aE '^\[ "\$FAIL" -eq 0 \] &&' "$AGG" | tail -1)"
+  if [ -z "$chain" ]; then bad "INFRA: §W — could not locate the aggregator final AND-chain"; exit 0; fi
+  drive_rc="$(
+    set +u
+    for v in $(printf '%s' "$chain" | grep -aoE '\$[A-Za-z_][A-Za-z0-9_]*' | tr -d '$' | sort -u); do
+      eval "$v=0"
+    done
+    RLNS_FAIL=1
+    eval "$chain"; echo $?
+  )"
+  [ "$drive_rc" != "0" ] \
+    && ok "aggregator final AND-chain goes non-zero when the new eval fails (wire-in propagates)" \
+    || bad "aggregator AND-chain must be non-zero with RLNS_FAIL=1 (got rc=$drive_rc)"
 ) || true
 
 echo
