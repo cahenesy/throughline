@@ -10,6 +10,12 @@
 #        cheapness-to-test, phrase each as a falsifiable "fails if ___"
 #        clause, surface the top-ranked few first; advisory ordering only —
 #        the completion gate is unchanged.
+#   §2 — the pre-mortem failure-mode taxonomy: the template note recommends
+#        Real risks / Overblown risks / Unspoken risks (elephants) within the
+#        existing `## Failure modes & edge cases` section, the step-7a
+#        self-review checklist gains the matching line; control: tdd-lint.sh's
+#        required-section set is NOT expanded to demand a taxonomy sub-heading
+#        (the taxonomy stays advisory).
 #
 # L-001/L-002 guards (matched learnings): SKILL.md existence + readability is
 # asserted BEFORE any content grep and fails with an INFRA-prefixed message
@@ -58,6 +64,48 @@ has 'top-ranked few' \
   "the top-ranked few are surfaced to the user first"
 has 'does not change the completion gate' \
   "ranking is advisory ordering — the completion gate is unchanged"
+
+# ===========================================================================
+# §2: the pre-mortem failure-mode taxonomy — template note + matching step-7a
+# self-review line (FR-76). The taxonomy is advisory structure WITHIN the
+# existing `## Failure modes & edge cases` section, never a lint-required
+# sub-heading.
+echo "[§2] failure-mode taxonomy note + self-review line; tdd-lint set unchanged (FR-76)"
+has 'Real risks' \
+  "taxonomy note names 'Real risks' (genuine, with mitigations)"
+has 'Overblown risks' \
+  "taxonomy note names 'Overblown risks' (named and deflated)"
+has 'Unspoken risks (elephants)' \
+  "taxonomy note names 'Unspoken risks (elephants)' (the failure nobody stated)"
+has 'not a required sub-heading' \
+  "taxonomy is guidance within the section, not a required sub-heading"
+has 'Failure-modes taxonomy' \
+  "step-7a self-review checklist gained the 'Failure-modes taxonomy' item"
+has 'states why none applies' \
+  "self-review line allows the explicit no-unspoken-risk-applies escape"
+
+# Control: tdd-lint.sh's required-section set was NOT expanded — the taxonomy
+# stays advisory. Readability is asserted first (L-002), the positive control
+# proves we read the lint's real required-section logic, and the absence
+# checks use an explicit grep-rc case (exit 1 = correctly absent; exit 0 =
+# wrongly demanded; exit >=2 = read error) — never a bare inverted `! grep`
+# that would false-pass on a missing file (L-001).
+TDD_LINT="$REPO/scripts/lib/tdd-lint.sh"
+if [ ! -f "$TDD_LINT" ] || [ ! -r "$TDD_LINT" ]; then
+  bad "INFRA: tdd-lint.sh not readable at $TDD_LINT (control check could not run)"
+else
+  grep -qF '## Verification plan' "$TDD_LINT" \
+    && ok "control: tdd-lint.sh still carries its required-section checks" \
+    || bad "control: tdd-lint.sh required-section logic not found (wrong file?)"
+  for _lit in 'Real risks' 'Overblown' 'Unspoken'; do
+    grep -qF "$_lit" "$TDD_LINT"; _rc=$?
+    case "$_rc" in
+      1) ok  "control: tdd-lint.sh does not demand '$_lit' (taxonomy stays advisory)" ;;
+      0) bad "control: tdd-lint.sh must NOT be expanded to demand '$_lit'" ;;
+      *) bad "INFRA: control check could not read $TDD_LINT (grep exit $_rc)" ;;
+    esac
+  done
+fi
 
 # --- report ----------------------------------------------------------------
 echo
