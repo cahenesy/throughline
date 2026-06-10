@@ -1571,14 +1571,21 @@ _record_step_block() {  # <slug> <entry_json>
   if [ -z "$existing" ]; then
     # Empty reader result is AMBIGUOUS: genuinely empty ([]/absent) vs a corrupt
     # array the greedy reader could not parse. Resetting in the latter case would
-    # DISCARD prior telemetry. Distinguish by the raw literal: start fresh ONLY
-    # when step_block_log is literally [] or absent; otherwise fail loud (FR-74 #1).
-    if grep -q '"step_block_log":\[\]' "$f" 2>/dev/null || ! grep -q '"step_block_log":' "$f" 2>/dev/null; then
-      new="[$entry]"
-    else
-      echo "error: _record_step_block: step_block_log present but unparseable for $slug; refusing to overwrite and lose prior entries" >&2
-      return 1
-    fi
+    # DISCARD prior telemetry. Disambiguate FAIL-CLOSED (FR-74 #1): read the
+    # fragment ONCE here and match in bash. A `grep … 2>/dev/null || ! grep …`
+    # would let a grep ERROR (exit ≥2 / unreadable file) fall through the `! grep`
+    # as "absent" and silently RESET the array — the exact silent-failure mode the
+    # fail-loud guarantee forbids. A read failure fails loud; only a literal [] or
+    # an absent field starts fresh; a present non-empty field is unparseable → refuse.
+    local raw
+    raw="$(cat "$f")" || { echo "error: _record_step_block: cannot read $f to disambiguate step_block_log; refusing to write" >&2; return 1; }
+    case "$raw" in
+      *'"step_block_log":[]'*) new="[$entry]" ;;            # genuinely empty
+      *'"step_block_log":'*)                                 # present but unparseable
+        echo "error: _record_step_block: step_block_log present but unparseable for $slug; refusing to overwrite and lose prior entries" >&2
+        return 1 ;;
+      *) new="[$entry]" ;;                                   # field absent → fresh
+    esac
   elif [ "${existing: -1}" != ']' ]; then
     echo "error: _record_step_block: step_block_log for $slug is malformed (no closing ']'); refusing to write and lose prior entries" >&2
     return 1
