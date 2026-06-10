@@ -131,6 +131,16 @@ Real risks:
 - **Model emits `pinned` for a non-asserting test.** Mitigated structurally:
   `coverage_map_normalize` downgrades any `pinned` without a citation shape to
   `unverified-gap`; the citation must be a path present in the scoped diff.
+- **Option-shaped citation path bypasses the diff-presence check on GNU grep.**
+  The "citation path must be present in the scoped diff" test uses
+  `grep -qxF "$file"`; a citation whose path begins with `-` (e.g. `--help::x`)
+  is parsed by GNU grep — the CI/production platform — as an option rather than a
+  fixed-string pattern, so the presence test misbehaves and a fabricated `pinned`
+  can survive, defeating FR-78's stated *model-independent* anti-false-green
+  guarantee. Mitigated by terminating option parsing: `grep -qxF -- "$file"` (or
+  `-e "$file"`). This hole surfaces ONLY on GNU grep — a `ugrep` wrapper masks it —
+  so the eval MUST exercise an option-shaped citation explicitly (Verification
+  below), not rely on the host's grep.
 - **Malformed / missing block** (build degraded to single-shot review, or the
   model omitted the fences). `coverage_map_block` returns empty; the report
   section renders "coverage map unavailable for this build" rather than a
@@ -156,9 +166,10 @@ Unspoken risks (elephants):
   1. Feed `coverage_map_block` + `write_coverage_report` a fixture review log
      containing a `COVERAGE_MAP_BEGIN..END` block with one `pinned` (cited, file
      IN the fixture diff list), one `pinned` (NO citation), one `pinned` (cited,
-     file NOT in the fixture diff list), one `justified-no-surface`, and one
-     `unverified-gap` line, against a fixture `report.md`, `report` logdir, and
-     a fixture scoped-diff file list.
+     file NOT in the fixture diff list), one `pinned` (cited with an option-shaped
+     path such as `--x::name`, NOT in the fixture diff list), one
+     `justified-no-surface`, and one `unverified-gap` line, against a fixture
+     `report.md`, `report` logdir, and a fixture scoped-diff file list.
   2. Run the extractor+writer (the functions are sourced from `gates.sh`, the
      same way `tests/implement-gate.test.sh` sources the lib under test).
 - **Expected observations (PASS):**
@@ -169,6 +180,12 @@ Unspoken risks (elephants):
     `pinned-without-citation`; the cited-but-not-in-diff `pinned` row appears as
     `unverified-gap` note `pinned-citation-not-in-diff` (both anti-false-green
     downgrades, model-independent).
+  - The **option-shaped-path** `pinned` row (`--x::name`) ALSO downgrades to
+    `unverified-gap` (`pinned-citation-not-in-diff`) — i.e. the diff-presence
+    `grep` treats the leading-dash path as a literal pattern, not an option, so a
+    fabricated `pinned` cannot survive on GNU grep. This is the regression guard
+    for the `grep -qxF -- "$file"` fix and MUST hold under GNU grep semantics
+    (not a `ugrep`-wrapped host).
   - The `justified-no-surface` row carries its skip reason and is NOT rendered
     as a gap.
   - A second invocation replaces (does not duplicate) the per-slug section.
@@ -212,11 +229,11 @@ is consistent with ADR 0005 (gate-scope authority) and ADR 0006 (artifact
 grounding); no durable cross-cutting decision is added.
 
 ## Touched files
-- scripts/review-prompt.md — emit the `COVERAGE_MAP` block (status enum + cited-test rule, advisory)
-- scripts/lib/gates.sh — `coverage_map_block`/`coverage_map_normalize`/`write_coverage_report`; call after final review
-- scripts/implement.sh — one-line PR-body pointer at the three `gh pr create` sites
-- tests/coverage-map.test.sh — eval for extraction, normalization downgrade, report rendering
-- tests/implement-gate.test.sh — register the new eval
+- `scripts/review-prompt.md` — emit the `COVERAGE_MAP` block (status enum + cited-test rule, advisory)
+- `scripts/lib/gates.sh` — `coverage_map_block`/`coverage_map_normalize`/`write_coverage_report`; call after final review
+- `scripts/implement.sh` — one-line PR-body pointer at the three `gh pr create` sites
+- `tests/coverage-map.test.sh` — eval for extraction, normalization downgrade, report rendering
+- `tests/implement-gate.test.sh` — register the new eval
 
 ## Expected diff size
 - scripts/review-prompt.md — 60 lines

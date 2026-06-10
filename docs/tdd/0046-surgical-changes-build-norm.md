@@ -120,10 +120,10 @@ None. Complements ADR 0008 (does not reverse it); the wander mitigation is a
 prompt elaboration of decisions already recorded in ADR 0007/0008.
 
 ## Touched files
-- scripts/build-prompt.md — add the surgical-changes norm bullet with the required-change carve-out
-- scripts/rework-prompt.md — echo the single-finding-scope form on the rework path
-- tests/surgical-norm.test.sh — assert the norm + carve-out in both prompts; mandated doc-update bullet intact
-- tests/implement-gate.test.sh — register the new eval
+- `scripts/build-prompt.md` — add the surgical-changes norm bullet with the required-change carve-out
+- `scripts/rework-prompt.md` — echo the single-finding-scope form on the rework path
+- `tests/surgical-norm.test.sh` — assert the norm + carve-out in both prompts; mandated doc-update bullet intact
+- `tests/implement-gate.test.sh` — register the new eval
 
 ## Expected diff size
 - scripts/build-prompt.md — 35 lines

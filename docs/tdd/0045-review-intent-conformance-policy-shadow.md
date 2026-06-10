@@ -144,9 +144,9 @@ None. Extends ADR 0006 grounding to two new lens categories; consistent with it,
 no reversal, no new cross-cutting decision.
 
 ## Touched files
-- scripts/review-prompt.md — add intent-conformance + policy-shadow lenses (grounded, scoped, severity-by-boundary)
-- tests/review-lenses.test.sh — assert both lenses present in the rendered prompt; verdict contract unchanged
-- tests/implement-gate.test.sh — register the new eval
+- `scripts/review-prompt.md` — add intent-conformance + policy-shadow lenses (grounded, scoped, severity-by-boundary)
+- `tests/review-lenses.test.sh` — assert both lenses present in the rendered prompt; verdict contract unchanged
+- `tests/implement-gate.test.sh` — register the new eval
 
 ## Expected diff size
 - scripts/review-prompt.md — 72 lines
