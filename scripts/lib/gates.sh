@@ -761,6 +761,42 @@ _coproc_write() {  # <fd> <text>
   return "$_rc"
 }
 
+# --- [[0042]] per-step BLOCK learning capture: entry builders (Component 2) ----
+# Both per-step BLOCK recording sites construct a step_block_log entry JSON and
+# hand it to state.sh's _record_step_block. The entry shape is owned here (the
+# caller's job, per TDD 0042 §1); persistence is owned by state.sh. json_escape
+# (state.sh, sourced before gates.sh) escapes every string field.
+
+# _step_block_entry <pass_id> <severity> <tags_csv> <summary> — a non-skip entry
+# ({pass_id, severity, pattern_tags[], summary, skipped:false}). <tags_csv> is a
+# comma-separated tag list (or empty → []) — a fixed single tag at the mechanical
+# site, the _extract_pattern_tags harvest at the model site.
+_step_block_entry() {  # <pass_id> <severity> <tags_csv> <summary>
+  local pass_id="$1" severity="$2" tags_csv="${3:-}" summary="${4:-}"
+  local tags_lit t first=1
+  if [ -z "$tags_csv" ]; then
+    tags_lit='[]'
+  else
+    tags_lit='['
+    local IFS=','
+    for t in $tags_csv; do
+      [ -n "$t" ] || continue
+      if [ "$first" -eq 1 ]; then tags_lit+="\"$(json_escape "$t")\""; first=0
+      else tags_lit+=",\"$(json_escape "$t")\""; fi
+    done
+    tags_lit+=']'
+  fi
+  printf '{"pass_id":"%s","severity":"%s","pattern_tags":%s,"summary":"%s","skipped":false}' \
+    "$(json_escape "$pass_id")" "$(json_escape "$severity")" "$tags_lit" "$(json_escape "$summary")"
+}
+
+# _step_block_skip_entry <pass_id> <reason> — a skip-telemetry entry
+# ({pass_id, skipped:true, reason}); the miner excludes skipped:true entries.
+_step_block_skip_entry() {  # <pass_id> <reason>
+  printf '{"pass_id":"%s","skipped":true,"reason":"%s"}' \
+    "$(json_escape "$1")" "$(json_escape "${2:-}")"
+}
+
 # _run_per_step_review <slug> <tdd> <step-id> <sha> <build-start-sha> <main-log>
 # Run ONE scoped review pass for a step commit. Diff range = the TDD's
 # last_cleared_review_sha (or the build-start SHA if none cleared yet) to <sha>
@@ -797,7 +833,22 @@ _run_per_step_review() {  # <slug> <tdd> <step-id> <sha> <build-start-sha> <main
       printf 'STEP_REVIEW: PASS\n'
       ;;
     *BLOCK*)
-      printf 'STEP_REVIEW: BLOCK %s\n' "$(printf '%s' "$rs" | sed 's/REVIEW_RESULT: BLOCK *//')"
+      local reason; reason="$(printf '%s' "$rs" | sed 's/REVIEW_RESULT: BLOCK *//')"
+      # [[0042]] Component 2: record the model per-step BLOCK as step_block_log
+      # telemetry — pattern_tags harvested from the review log (the SAME harvest the
+      # PASS branch uses), a fixed severity:"major" (a per-step BLOCK is by
+      # definition halting; the review log carries only the top-level verdict, not a
+      # per-finding severity, so none is invented), skipped:false, summary the one-
+      # line BLOCK reason. Best-effort + STATE_DIR-guarded (the THROUGHLINE_SOURCE_ONLY
+      # path skips it); recording never changes the verdict written below.
+      if [ -n "${STATE_DIR:-}" ]; then
+        local _btags _bentry
+        _btags="$(_extract_pattern_tags "$rlog")"
+        _bentry="$(_step_block_entry "step-$step_id" major "$_btags" "$reason")"
+        _record_step_block "$slug" "$_bentry" \
+          || echo "warning: _run_per_step_review: _record_step_block (model) failed for $slug step $step_id" >> "$rlog"
+      fi
+      printf 'STEP_REVIEW: BLOCK %s\n' "$reason"
       ;;
     *)
       printf 'STEP_REVIEW: BLOCK per-step review produced no REVIEW_RESULT line\n'
@@ -1047,12 +1098,22 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
                 build_active_seconds=$((build_active_seconds + $(date +%s) - interval_start))
                 verdict="STEP_REVIEW: BLOCK test-first: step $step_id commits implementation in $tf_base..$sha with no preceding test(failing): commit (FR-15a). Add the failing test as a separate test(failing): <behavior> commit, then re-emit STEP_COMMIT: $step_id <new-sha> for the same step. If this step is genuinely no-new-behavior, re-emit as STEP_COMMIT: $step_id $sha TEST_FIRST_SKIPPED:<reason>."
                 printf '%s\n' "$verdict" >> "$log"
+                # [[0042]] Component 2: record this deterministic per-step BLOCK as
+                # step_block_log telemetry (a fixed failing-test-first-violation tag;
+                # the violation must be captured at BLOCK time so it is mineable even
+                # if the step never clears). Best-effort + STATE_DIR-guarded (the
+                # THROUGHLINE_SOURCE_ONLY path skips it); the verdict written above is
+                # unchanged — this only persists telemetry after the write.
+                if [ -n "${STATE_DIR:-}" ]; then
+                  local _mech_entry
+                  _mech_entry="$(_step_block_entry "step-$step_id" major "failing-test-first-violation" "no test(failing): precursor for step $step_id")"
+                  _record_step_block "$slug" "$_mech_entry" \
+                    || printf 'warning: _per_step_review_loop: _record_step_block (mechanical) failed for %s step %s\n' "$slug" "$step_id" >> "$log"
+                fi
                 # Deterministic no-model BLOCK: write the verdict to the build's
                 # stdin via the SIGPIPE-safe _coproc_write path (same as the
                 # review-verdict write, TDD 0030 §1); a dead coproc breaks to the
                 # post-loop classifier identically. NO review claude -p is spawned.
-                # (Recording-site marker for [[0042]]: this writes the verdict only
-                # and records nothing.)
                 if ! _coproc_write "${build_in}" "$(_user_turn_json "$verdict")"; then
                   printf 'THROUGHLINE_COPROC_DEAD: build coprocess exited before test-first BLOCK delivery (step %s); cleared work is preserved (transient)\n' "$step_id" >> "$log"
                   break
@@ -1065,6 +1126,16 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
               if [ "$tf_skip" = 1 ]; then
                 tf_reason="$(printf '%s' "$text" | grep -aoE 'TEST_FIRST_SKIPPED:[^[:space:]]+' | tail -1)"
                 printf 'THROUGHLINE_TEST_FIRST_SKIP: step %s %s\n' "$step_id" "${tf_reason:-TEST_FIRST_SKIPPED:}" >> "$log"
+                # [[0042]] Component 2: record the declared skip as step_block_log
+                # telemetry (skipped:true; the miner excludes it — a justified
+                # no-new-behavior skip is not a violation). Best-effort + STATE_DIR-
+                # guarded; the model review still runs to judge the skip claim.
+                if [ -n "${STATE_DIR:-}" ]; then
+                  local _skip_entry
+                  _skip_entry="$(_step_block_skip_entry "step-$step_id" "${tf_reason:-TEST_FIRST_SKIPPED:}")"
+                  _record_step_block "$slug" "$_skip_entry" \
+                    || printf 'warning: _per_step_review_loop: _record_step_block (skip) failed for %s step %s\n' "$slug" "$step_id" >> "$log"
+                fi
               fi
               # TDD 0030 §5: PAUSE the active clock — commit the streaming interval
               # up to this sentinel read, then run the review off the clock.
