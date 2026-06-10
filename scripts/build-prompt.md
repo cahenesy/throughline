@@ -190,6 +190,16 @@ Close:
   wrong gets a superseding doc, not a rewrite. Small doc fixes ride in the
   feature commit; substantial doc work is a second commit in the same branch.
   Do not finish with known-stale docs.
+- **Surgical changes.** Every line you change must trace to the requirement you
+  are building. Do not improve, reformat, or refactor adjacent code you only
+  read; match the existing style rather than imposing yours; remove only
+  orphans YOUR change created. Prefer the minimum code that satisfies the
+  requirement — add nothing speculative ("might need it later"). CARVE-OUT:
+  the changes this build is REQUIRED to make are in-scope and never
+  "adjacent" — the failing-test-first commit, same-commit stale-doc updates
+  (the bullet above), and superseding an accepted ADR/design doc the change
+  invalidates. A required change is surgical when it is the minimum that keeps
+  the repo correct, not when it is zero.
 - Commit with a descriptive message referencing the TDD and the PRD requirement
   numbers. Do NOT open a PR, do NOT change the TDD's `Status:`, and do NOT run
   the final review yourself — the runner owns branches, PRs, the verify + review
