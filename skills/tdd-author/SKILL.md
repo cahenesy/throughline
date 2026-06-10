@@ -217,6 +217,17 @@ collaborative scribe. Apply this discipline throughout that interview:
   disposition in the answer field (`resolved: <how>` or `waived: <rationale>`); the
   latest entry per header is authoritative. (Only persist when persistence is
   available; in degraded mode keep the list in-conversation.)
+- **Red-team ranking.** After surfacing assumptions, rank the tracked OPEN
+  ASSUMPTIONS list by **impact × likelihood × cheapness-to-test**, and phrase
+  each ranked assumption as a falsifiable "fails if ___" clause — a concrete
+  failure condition, not a score (numbers without judgment are ranking
+  theater). Surface the top-ranked few to the user first, so the riskiest,
+  cheapest-to-check assumptions get confronted early rather than whichever
+  surfaced last. The ranking is advisory ordering of the interrogation only:
+  it does not change the completion gate (every tracked assumption still ends
+  `resolved:`/`waived:` per the Completion-gate rule below) and adds no new
+  persisted field — the "fails if ___" phrasing rides in the existing
+  `tl_draft_append_elicit … "assumption: <one-line>"` challenge text.
 - **Resume.** On a resumed session, call `tl_draft_read` and parse its JSON output:
   scan the `interview` array for entries whose `header` field begins with
   `assumption:`; group by header; the latest entry per header is its current state.
