@@ -328,6 +328,30 @@ EOF
   [ "$n" = "1" ] && ok "second invocation replaces the per-slug section (1 heading)" || bad "expected 1 section heading after re-run (got $n)"
   n="$(grep -cF '| FR-1 | pinned |' "$R")"
   [ "$n" = "1" ] && ok "no duplicated table rows after re-run" || bad "expected 1 FR-1 row after re-run (got $n)"
+
+  # --parallel serialization (TDD failure mode "concurrent write_coverage_report
+  # corrupts the shared report.md"): N concurrent writers — one per slug, as the
+  # --parallel feature subshells call it — must each land exactly one intact
+  # section; the unserialized strip-mv/append RMW silently dropped sections.
+  # Round 1 seeds the per-slug sections; round 2 forces every concurrent
+  # writer down the strip+mv replace path at once — the RMW race that
+  # clobbered a concurrent writer's already-appended section.
+  for round in 1 2; do
+    pids=()
+    for i in 1 2 3 4 5 6; do
+      write_coverage_report "$LOGDIR" "010$i-fixture" "$RLOG" "$BASE_SHA" "HEAD" 2>/dev/null & pids+=($!)
+    done
+    for p in "${pids[@]}"; do wait "$p"; done
+  done
+  miss=0
+  for i in 1 2 3 4 5 6; do
+    n="$(grep -cF "## Per-requirement coverage (010$i-fixture," "$R")"
+    [ "$n" = "1" ] || { miss=1; bad "concurrent writers: expected exactly 1 section for 010$i-fixture (got $n — dropped or duplicated under --parallel)"; }
+  done
+  [ "$miss" -eq 0 ] && ok "6 concurrent writers each landed exactly one intact per-slug section (serialized RMW)"
+  n="$(grep -cF '## Per-requirement coverage (0099-fixture,' "$R")"
+  [ "$n" = "1" ] && ok "pre-existing per-slug section survives concurrent writers" || bad "0099-fixture section clobbered by concurrent writers (got $n)"
+  [ -d "$R.cov.lock" ] && bad "report lock dir leaked after all writers exited" || ok "report lock released after the writers exit"
 ) || true
 
 # ===========================================================================

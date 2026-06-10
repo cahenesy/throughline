@@ -1987,11 +1987,28 @@ write_coverage_report() {  # <logdir> <slug> <review-log> <scope-base> <scope-he
       table_rows="${table_rows}| $req | $status | $evidence |"$'\n'
     done <<< "$rows"
   fi
+  # Serialize the strip+append read-modify-write across --parallel feature
+  # subshells (each calls this writer against the ONE run report.md; an
+  # unserialized interleave drops or staleifies a concurrent writer's section).
+  # mkdir is the atomic-mutex primitive portable to macOS (no flock(1) there).
+  # Bounded wait; on timeout (stale lock from a killed writer) warn and write
+  # unserialized — report-only, degrade loudly rather than block (NFR-4).
+  local lockdir="$report.cov.lock" tries=0
+  until mkdir "$lockdir" 2>/dev/null; do
+    if [ "$tries" -ge 100 ]; then
+      echo "warning: write_coverage_report: could not acquire $lockdir after ~10s (stale lock?); writing unserialized" >&2
+      lockdir=""
+      break
+    fi
+    tries=$((tries+1)); sleep 0.1
+  done
   # Idempotent per-slug replace: strip any prior section for this slug (from
   # its heading up to, not including, the next `## ` heading) before appending.
-  # Temp + mv mirrors detect_build_learnings' atomic-write pattern.
+  # Temp + mv mirrors detect_build_learnings' atomic-write pattern. BASHPID
+  # (not $$, the parent PID shared by every --parallel subshell) keeps the
+  # temp unique per writer even on the unserialized lock-timeout path.
   if [ -f "$report" ] && grep -qF "## Per-requirement coverage ($slug," "$report" 2>/dev/null; then
-    local tmp="$report.cov.tmp.$$"
+    local tmp="$report.cov.tmp.${BASHPID:-$$}"
     if awk -v hdr="## Per-requirement coverage ($slug," '
          {
            if (index($0, hdr) == 1) { skip = 1; next }
@@ -2023,6 +2040,7 @@ write_coverage_report() {  # <logdir> <slug> <review-log> <scope-base> <scope-he
     echo "Legend: this map is REPORTED for the human PR review (FR-78). An \`unverified-gap\` is a finding for the human reviewer, not an automatic block — the FR-15 four gates remain the sole automatic flip authority (ADR 0005)."
   } >> "$report" 2>/dev/null \
     || echo "warning: write_coverage_report: could not append the coverage section to $report (report-only; the build is unaffected)" >&2
+  [ -n "$lockdir" ] && rmdir "$lockdir" 2>/dev/null
   return 0
 }
 
