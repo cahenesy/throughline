@@ -705,14 +705,12 @@ if [ -f "$CMAP" ]; then
 fi
 
 # Run the review-lenses eval (TDD 0045 / FR-10, FR-15(d), FR-15; ADR 0005, 0006)
-# as part of the same suite so the review prompt's intent-conformance lens
-# (in-scope constraint domain, documented-but-unenforced rule, both-sides
-# citation, boundary severity, scope guard), the policy-shadow lens
-# (name-the-real-path requirement, no-finding-without-a-concrete-gap rule), and
-# the pinned verdict-contract control are regression-gated by ci-checks, not
-# orphaned from the aggregator. Per the TDD 0038 §3 wire-in rule this
-# registration is new gating behavior — its failing wire-in test (the eval's
-# §W dogfood) drove the AND-chain term below red→green before this block landed.
+# as part of the same suite so the review prompt's intent-conformance +
+# policy-shadow lenses and the pinned verdict-contract control are
+# regression-gated by ci-checks, not orphaned from the aggregator. Per the
+# TDD 0038 §3 wire-in rule this registration is new gating behavior — its
+# failing wire-in test (the eval's §W dogfood) drove the AND-chain term below
+# red→green before this block landed.
 RLNS="$(dirname "$0")/review-lenses.test.sh"
 RLNS_FAIL=0
 if [ -f "$RLNS" ]; then
