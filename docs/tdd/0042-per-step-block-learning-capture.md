@@ -305,15 +305,17 @@ introduces no new cross-cutting decision.
 - `scripts/lib/learnings.sh` — `step_block_log` corpus pass in `detect_build_learnings`.
 - `tests/build-phase-learning-capture.test.sh` — miner `step_block_log` mining cases.
 - `tests/test-first-per-step.test.sh` — recording-path cases (STATE_DIR set: mechanical/model BLOCK records; skip telemetry; carry-forward preserve).
+- `skills/implement/SKILL.md` — required same-commit doc-sync: the implement behavior spec's mining-scope description, updated in lockstep with the §6 `step_block_log` corpus pass (no behavior of its own added).
 
-Total: 5 files touched.
+Total: 6 files touched.
 
 ## Expected diff size
 
-- `scripts/lib/state.sh` — ~48 lines added/changed (reader + carry-forward param/literal/printf field + header doc + `_rewrite_fragment_findings` 5th arg + `_record_step_block`).
-- `scripts/lib/gates.sh` — ~26 lines added (entry construction + two STATE_DIR-guarded `_record_step_block` calls).
-- `scripts/lib/learnings.sh` — ~30 lines added (reader call + corpus pass folding into the per-class accumulators).
-- `tests/build-phase-learning-capture.test.sh` — ~32 lines added (miner mining cases: recurrence → candidate, single → none).
-- `tests/test-first-per-step.test.sh` — ~40 lines added (recording-path + carry-forward-preserve cases with fail-closed guards).
+- `scripts/lib/state.sh` — ~110 lines added/changed (reader + carry-forward param/literal/printf field + header doc + `_rewrite_fragment_findings` 5th arg + `_record_step_block`).
+- `scripts/lib/gates.sh` — ~80 lines added (entry construction + the STATE_DIR-guarded `_record_step_block` calls at the per-step BLOCK + skip sites).
+- `scripts/lib/learnings.sh` — ~125 lines added (reader call + `step_block_log` corpus pass folding into the per-class accumulators + the split helpers it needs).
+- `skills/implement/SKILL.md` — ~8 lines (doc-sync of the mining-scope description; no new behavior).
+- `tests/build-phase-learning-capture.test.sh` — ~95 lines added (miner `step_block_log` mining cases + headroom for the per-step review rework to ship a genuine `test(failing):`-first restructure of the step-4 cases).
+- `tests/test-first-per-step.test.sh` — ~135 lines added (recording-path + carry-forward-preserve cases with fail-closed guards).
 
-Total expected diff: ~176 lines across 5 files. No exceptions needed (each file is under the 300-line per-file bound).
+Total expected diff: ~553 lines across 6 files. No per-file exception needed (each file is under the 300-line per-file bound). Estimates reconciled to the actual build diff: the original authoring underestimated systematically (the ~1.5–2× bias that TDD 0041's K-tolerance + padding heuristic address, neither built at this TDD's authoring time).
