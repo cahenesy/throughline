@@ -1897,7 +1897,7 @@ coverage_map_normalize() {  # <scoped-diff-files>  (block lines on stdin)
         esac
         if [ -z "$file" ]; then
           status="unverified-gap"; evidence="pinned-without-citation: ${evidence:-<no evidence>}"
-        elif ! printf '%s\n' "$diff_files" | grep -qxF "$file"; then
+        elif ! printf '%s\n' "$diff_files" | grep -qxF -- "$file"; then
           status="unverified-gap"; evidence="pinned-citation-not-in-diff: $evidence"
         fi
         ;;
@@ -1978,7 +1978,7 @@ write_coverage_report() {  # <logdir> <slug> <review-log> <scope-base> <scope-he
   if [ -n "$rows" ]; then
     while IFS=$'\t' read -r req status evidence; do
       [ -n "$req" ] || continue
-      if [ -n "$inscope" ] && ! printf '%s\n' "$inscope" | grep -qxF "$req"; then
+      if [ -n "$inscope" ] && ! printf '%s\n' "$inscope" | grep -qxF -- "$req"; then
         dropped_notes="${dropped_notes}- unlisted requirement $req ignored (not a row of the TDD's \`## Requirement traceability\` table)"$'\n'
         continue
       fi
