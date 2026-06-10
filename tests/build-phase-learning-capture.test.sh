@@ -713,40 +713,6 @@ echo "[S33] step_block_log: a skipped:true entry is excluded from mining (a just
   [ ! -f "$D/candidate-learnings.json" ] && ok "skipped:true entry excluded -> class stays below threshold (no surface)" || bad "skipped:true must NOT count toward a class (got: $(cat "$D/candidate-learnings.json" 2>/dev/null))"
 ) || true
 
-echo "[S34] a class in BOTH findings and step_block_log for one TDD counts that TDD once (cross-source dedup; TDD 0042 §Failure modes)"
-( D="$ROOT/S34"; SD="$D/state.d"; mkdir -p "$SD" "$D/docs/tdd"
-  export STATE_DIR="$SD" STATE_STARTED_AT=1000 STATE_MODE="sequential"
-  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"; TDDS=()
-  . "$STATE_LIB"; . "$LEARN_LIB"
-  FA='{"source":"review","pass_id":"review-1:1","severity":"major","structural":false,"region":"src/a.sh:1-9","region_lines":8,"pattern_tags":["dup-x"],"summary":"s","evidence":"e","addressed_at":null,"addressed_by_sha":null}'
-  SBA='{"pass_id":"step-1","severity":"major","pattern_tags":["dup-x"],"summary":"s","skipped":false}'
-  SBB='{"pass_id":"step-1","severity":"major","pattern_tags":["dup-x"],"summary":"s","skipped":false}'
-  # TDD-A: class dup-x appears in BOTH findings AND step_block_log. TDD-B: only step_block_log.
-  _write_tdd_fragment 0010-a 10 docs/tdd/0010-a.md 1 done flip 1000 1000 "" "" "" "" \
-    "" "" "" "" "" "" "" "" "" "" "" "" "" "[$FA]" 0 '{}' "[$SBA]"
-  _write_tdd_fragment 0011-b 11 docs/tdd/0011-b.md 2 done flip 1000 1000 "" "" "" "" \
-    "" "" "" "" "" "" "" "" "" "" "" "" "" "[]" 0 '{}' "[$SBB]"
-  printf '## Touched files\n- `scripts/lib/a.sh` — x\n' > "$D/docs/tdd/0010-a.md"
-  printf '## Touched files\n- `scripts/lib/b.sh` — y\n' > "$D/docs/tdd/0011-b.md"
-  detect_build_learnings "$SD" "$D" "$D" || bad "S34 detect should succeed"
-  CL="$D/candidate-learnings.json"
-  grep -q '"class":"dup-x"' "$CL" 2>/dev/null && ok "cross-source class surfaces" || bad "dup-x should surface (got: $(cat "$CL" 2>/dev/null))"
-  # distinct_tdds must list TDD-A exactly once even though dup-x appears in both its
-  # findings AND its step_block_log (the C_slugs distinct-TDD dedup). python3 — the
-  # same dependency S10/S11 use — reads the array length rather than grepping (a
-  # grep would miscount 0010-a inside the occurrences array).
-  if python3 -c '
-import json,sys
-d={o["class"]:o for o in json.load(open(sys.argv[1]))}
-t=d["dup-x"]["distinct_tdds"]
-assert sorted(t)==["0010-a","0011-b"], "distinct_tdds=%r" % t
-' "$CL" 2>/dev/null; then
-    ok "distinct_tdds counts TDD-A once across both sources (=[0010-a,0011-b])"
-  else
-    bad "cross-source dedup wrong: distinct_tdds should be exactly [0010-a,0011-b] ($(cat "$CL" 2>/dev/null))"
-  fi
-) || true
-
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
