@@ -421,6 +421,13 @@ Supersedes: <NNNN, only when this TDD replaces a previously-implemented one>
 ## Expected diff size         (REQUIRED: per-file lines added/removed estimate; declare exceptions inline)
 ```
 
+> `## Failure modes & edge cases` — recommended structure: **Real risks**
+> (genuine, with mitigations) / **Overblown risks** (named and deflated) /
+> **Unspoken risks (elephants)** (the failure nobody stated). Plain labels in
+> the TDD; the "elephant" metaphor is noted once here, not repeated per TDD.
+> This is guidance within the section, not a required sub-heading — the
+> `tdd-lint` required-section set is unchanged.
+
 ## 6. ADR evaluation
 Evaluate the whole set you just wrote against the existing ADRs and present
 recommendations for approval — analyze, don't merely ask:
@@ -446,6 +453,9 @@ obvious stuff so the independent gate spends its judgment on substance:
 - **Verification plan** — every TDD has a concrete `## Verification plan` (or a
   justified `SKIP`)? No "verify it works"/"tests will pass" placeholders; observable
   surface, observation point(s), and expected observations all named.
+- **Failure-modes taxonomy** — each TDD's failure-modes section separates real
+  from overblown risks and names at least one unspoken (elephant) risk, or
+  states why none applies.
 - **Interface-name consistency** — the same concept named the same way across all
   the TDDs in the set (a type/function called `X` in one TDD and `X'` in another is
   a bug). Reconcile names.
