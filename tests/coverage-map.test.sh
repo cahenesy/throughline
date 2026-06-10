@@ -18,9 +18,11 @@
 #   §2 coverage_map_block: strict between-fences extraction, last block wins,
 #      missing block / missing log → empty + rc 0 (non-fatal)
 #   §3 coverage_map_normalize: status validation + BOTH model-independent
-#      pinned downgrades (no-citation shape, citation-not-in-diff)
+#      pinned downgrades (no-citation shape, citation-not-in-diff) + the
+#      option-shaped citation-path regression fixtures (grep `--` terminator)
 #   §4 write_coverage_report: rendered table with the downgrades observable,
-#      unlisted-id drop, advisory legend, idempotent per-slug replace
+#      unlisted-id drop (incl. option-shaped req ids), advisory legend,
+#      idempotent per-slug replace
 #   §5 missing block → "coverage map unavailable", never a false all-covered;
 #      append failure warns and continues (report-only, rc 0)
 #   §6 wiring: the consolidated-review clear in _rework_loop calls the writer
@@ -167,6 +169,8 @@ tests/a.test.sh'
     'COVERAGE: FR-7 totally-bogus-status whatever' \
     'COVERAGE: FR-8 pinned tests/a.test.sh:42' \
     'COVERAGE: FR-9 pinned tests/elsewhere.test.sh:42' \
+    'COVERAGE: FR-10 pinned --x::case_y' \
+    'COVERAGE: FR-11 pinned --regexp=tests/a.test.sh::case_z' \
     | norm)"; rc=$?
   [ "$rc" -eq 0 ] && ok "rc 0 on a mixed block" || bad "expected rc 0 (got $rc)"
 
@@ -185,6 +189,19 @@ tests/a.test.sh'
   printf '%s\n' "$out" | row FR-9 | grep -q "^unverified-gap	pinned-citation-not-in-diff" \
     && ok "cited-but-not-in-diff pinned (file:line) downgrades (pinned-citation-not-in-diff)" \
     || bad "FR-9 must downgrade pinned-citation-not-in-diff (got: $(printf '%s\n' "$out" | row FR-9))"
+  # Option-shaped citation paths — the regression fixtures for the `--`
+  # terminator in the diff-presence check (`grep -qxF -- "$file"`). FR-10 is
+  # the TDD-named `--x::name` shape. FR-11 is the false-green attack the
+  # terminator exists to stop: WITHOUT `--`, GNU grep parses
+  # `--regexp=tests/a.test.sh` as a pattern OPTION that MATCHES the diff list,
+  # so this fabricated pinned would survive — this assertion goes RED if the
+  # terminator is ever dropped (must hold under GNU grep semantics).
+  printf '%s\n' "$out" | row FR-10 | grep -q "^unverified-gap	pinned-citation-not-in-diff" \
+    && ok "option-shaped citation path (--x::name) is a literal, downgrades (pinned-citation-not-in-diff)" \
+    || bad "FR-10 (--x::name) must downgrade pinned-citation-not-in-diff (got: $(printf '%s\n' "$out" | row FR-10))"
+  printf '%s\n' "$out" | row FR-11 | grep -q "^unverified-gap	pinned-citation-not-in-diff" \
+    && ok "option-shaped --regexp= citation cannot match the diff list as a grep option (fabricated pinned cannot survive)" \
+    || bad "FR-11 (--regexp=…::name) must downgrade pinned-citation-not-in-diff (got: $(printf '%s\n' "$out" | row FR-11))"
   [ "$(printf '%s\n' "$out" | row FR-4)" = "$(printf 'justified-no-surface\tinternal refactor; no observable surface (recorded SKIP)')" ] \
     && ok "justified-no-surface passes through carrying its skip reason" \
     || bad "FR-4 must pass through (got: $(printf '%s\n' "$out" | row FR-4))"
@@ -257,6 +274,8 @@ COVERAGE: FR-3 pinned tests/elsewhere.test.sh::case_x
 COVERAGE: FR-4 justified-no-surface prompt-only change; no observable surface (recorded SKIP)
 COVERAGE: FR-5 unverified-gap halt path has no asserting test
 COVERAGE: FR-99 pinned tests/a.test.sh::case_a
+COVERAGE: --x pinned tests/a.test.sh::case_a
+COVERAGE: --regexp=FR-1 pinned tests/a.test.sh::case_a
 COVERAGE_MAP_END
 REVIEW_RESULT: PASS
 EOF
@@ -281,6 +300,22 @@ EOF
     && ok "unlisted requirement dropped with a note" || bad "unlisted-id note missing"
   grep -qF '| FR-99 |' "$R" \
     && bad "unlisted requirement must NOT get a table row" || ok "no table row for the unlisted requirement"
+  # Option-shaped requirement ids — the regression fixtures for the `--`
+  # terminator in the in-scope domain filter (`grep -qxF -- "$req"`). `--x` is
+  # the TDD-named shape. `--regexp=FR-1` is the false-green attack: WITHOUT
+  # `--`, GNU grep parses it as a pattern OPTION matching the in-scope id FR-1,
+  # silently admitting an out-of-domain id as a table row — these assertions go
+  # RED if the terminator is ever dropped (must hold under GNU grep semantics).
+  grep -qF 'unlisted requirement --x ignored' "$R" \
+    && ok "option-shaped req id (--x) is a literal, dropped as unlisted with a note" \
+    || bad "unlisted-id note for --x missing"
+  grep -qF '| --x |' "$R" \
+    && bad "option-shaped req id --x must NOT get a table row" || ok "no table row for the option-shaped req id --x"
+  grep -qF 'unlisted requirement --regexp=FR-1 ignored' "$R" \
+    && ok "option-shaped --regexp= req id cannot match the in-scope list as a grep option, dropped with a note" \
+    || bad "unlisted-id note for --regexp=FR-1 missing"
+  grep -qF '| --regexp=FR-1 |' "$R" \
+    && bad "--regexp=FR-1 must NOT be admitted as an in-scope table row" || ok "no table row for the --regexp= req id"
   grep -qF 'not an automatic block' "$R" \
     && ok "advisory legend present (gap = human-review finding)" || bad "advisory legend missing"
   grep -qF 'pre-existing run content' "$R" \
