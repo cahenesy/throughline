@@ -1379,9 +1379,17 @@ _rework_scope_cap() {  # <region-lines>
 }
 
 # _rework_touched_files <tdd>  — echo the declared touched-file set (one path
-# per line) parsed from the TDD's `## Touched files` section (TDD 0014). Each
-# entry is the first backtick-delimited token on a `- ` bullet. Fence-aware so a
-# code block inside the section is ignored. Mirrors tdd-lint.sh's parser.
+# per line) parsed from the TDD's `## Touched files` section (TDD 0014). The path
+# is extracted with the SAME em-dash-split + backtick-strip + trim logic as the
+# sibling _rework_file_declared_bound (TDD 0048 / FR-67(a)): the path is whatever
+# precedes the em-dash (`—`, U+2014, which separates path from purpose), or — when
+# a bullet has no em-dash — its first whitespace-delimited token; backticks are
+# stripped so a bare or backticked path both parse, and a bullet that yields no
+# path is dropped (not emitted as a blank that would pollute the membership set).
+# This makes the parser identical to its sibling so a bare path whose DESCRIPTION
+# uses backticks yields the path, not the first description backtick token (the
+# TDD 0044 false structural-finding(a)). Fence-aware so a code block inside the
+# section is ignored. Mirrors tdd-lint.sh's _tl_extract_touched_paths.
 _rework_touched_files() {  # <tdd>
   local f="$1"
   [ -f "$f" ] || return 0
@@ -1391,7 +1399,13 @@ _rework_touched_files() {  # <tdd>
     !in_fence && /^## Touched files[[:space:]]*$/ { in_sec=1; next }
     !in_fence && /^## / { in_sec=0; next }
     in_sec && !in_fence && /^- / {
-      if (match($0, /`[^`]+`/)) print substr($0, RSTART+1, RLENGTH-2)
+      rest = substr($0, 3)                       # drop "- "
+      em = index(rest, "—")                      # em-dash separates path from purpose
+      if (em > 0) { file = substr(rest, 1, em - 1) }
+      else        { file = rest; sub(/[[:space:]].*/, "", file) }  # no em-dash: first token
+      gsub(/`/, "", file)                        # strip backticks if the path was quoted
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", file)
+      if (file != "") print file                 # skip a bullet with no extractable path
     }
   ' "$f"
 }
