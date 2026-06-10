@@ -158,8 +158,9 @@ The non-paused interactive flow continues at "Prepare" below.
 
 ## Detect pending candidate learnings (TDD 0022 / FR-72)
 
-After a run completes, the runner mines the per-TDD findings for *recurring*
-categorical patterns (a finding class that recurred across more than one TDD or
+After a run completes, the runner mines the per-TDD findings — and the per-step
+`STEP_REVIEW: BLOCK` telemetry (`step_block_log`, TDD 0042) — for *recurring*
+categorical patterns (a class that recurred across more than one TDD or
 build step) and, when it finds any, writes `<logdir>/candidate-learnings.json`
 plus a `## Candidate learnings (pending review)` section in the run's
 `report.md`. The accept/discard prompt is forbidden in the headless runner, so it
