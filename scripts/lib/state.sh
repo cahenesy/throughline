@@ -351,10 +351,11 @@ _write_tdd_fragment() {
 # the run-state record alone (ADR 0006). Self-contained (reads env with
 # defaults) so it is correct regardless of caller scope — including the
 # THROUGHLINE_SOURCE_ONLY test path that never runs the implement.sh setup
-# block. The model default `sonnet` resolves to the same alias
-# THROUGHLINE_REVIEW_MODEL resolves to (TDD 0013); only the alias is snapshotted.
+# block. The model default `opus` is the build model (TDD 0043 / ADR 0008 —
+# author↔reviewer diversity), distinct from the THROUGHLINE_REVIEW_MODEL
+# alias; only the alias is snapshotted.
 _rework_config_json() {
-  local model="${THROUGHLINE_REWORK_MODEL:-sonnet}"
+  local model="${THROUGHLINE_REWORK_MODEL:-opus}"
   local max="${THROUGHLINE_REWORK_MAX:-3}"
   local floor="${THROUGHLINE_REWORK_SCOPE_FLOOR:-60}"
   local factor="${THROUGHLINE_REWORK_SCOPE_FACTOR:-3}"
