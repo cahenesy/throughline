@@ -254,8 +254,8 @@ grounding); no durable cross-cutting decision is added.
 
 ## Expected diff size
 - scripts/review-prompt.md — 60 lines
-- scripts/lib/gates.sh — 215 lines (three grounded extractors + the report writer; was a ~2.2× underestimate at 95 — reconciled to the real build size, with headroom for the option-terminator rework at two grep sites and the report-write serialization)
+- scripts/lib/gates.sh — 235 lines (three grounded extractors + the report writer + the option-terminator fix at two grep sites + the report-write serialization; reconciled to the OBSERVED post-rework size ~230 measured on run 20260610-093522, with a small margin — the earlier 95 was a ~2.2× underestimate and the interim 215 sat just under the observed size)
 - scripts/implement.sh — 28 lines
 - tests/coverage-map.test.sh — 460 lines (exception: one cohesive coverage-map eval — extraction + four normalization downgrades + report rendering + idempotent replace + degraded/unavailable paths + a dogfood AND-chain case + the option-shaped regression fixtures, all sharing one harness/fixtures; over the 300-line per-file cap)
 - tests/implement-gate.test.sh — 20 lines
-Total expected diff: ~783 lines across 5 files.
+Total expected diff: ~803 lines across 5 files.
