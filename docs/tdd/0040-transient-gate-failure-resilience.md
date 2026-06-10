@@ -1,6 +1,6 @@
 # TDD 0040: Transient gate-failure resilience — ci-checks retry-once + no-verdict is couldn't-observe, not failed
 
-Status: draft
+Status: implemented
 PRD refs: FR-15 (gap-closure); FR-57 (gap-closure); NFR-4
 PRD-rev: d289607
 ADR constraints: 0004, 0005, 0006, 0007
