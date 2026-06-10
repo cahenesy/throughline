@@ -1,0 +1,413 @@
+#!/usr/bin/env bash
+# bounded-rework-convergence.test.sh — eval for TDD 0041 (bounded-rework
+# convergence: tolerate estimate error, don't burn budget on scope-rejected
+# attempts, sweep binding-rule violations).
+# PRD refs: FR-65, FR-66, FR-67 (incl. (b)-tolerance gap-closure), FR-58, FR-59,
+# FR-53; ADR 0005, 0006, 0007.
+#
+# The contract under test (function-level; the runtime-verify gate re-drives the
+# same observable surface against a real /implement run):
+#   - Component 1: a scope-rejected rework attempt (rework-scope-exceeded /
+#     structural-finding(b)) does NOT consume the convergence budget — the
+#     iteration's rework_attempts increment is rolled back (floored at 0) before
+#     the BLOCK, via the new _decrement_rework_attempt state mutator. A genuine
+#     design escalation (c) and a shipped-but-still-flawed attempt are unaffected.
+#   - Component 2: scripts/review-prompt.md carries the binding-rule-sweep rule.
+#   - Component 3 (no-op post-condition): the rework scope cap reads the swept
+#     finding's SUMMED region_lines (RWK_REGION → _rework_scope_cap), so a
+#     whole-class fix is not itself scope-rejected for touching all its sites.
+#   - Component 4: the _rework_pre_pass FR-67(b) per-file check escalates only at
+#     actual > declared × K (K = THROUGHLINE_STRUCTURAL_DIFF_TOLERANCE, default
+#     1.6, guarded + floored at 1.0), with the factor in the PRECHECK_FAIL line.
+#   - Component 5: skills/tdd-author/SKILL.md carries the estimate-padding
+#     heuristic in the `## Expected diff size` block.
+#
+# Mechanical-check robustness (binding — L-001/L-002): absence assertions
+# distinguish grep exit 1 vs ≥2 and fail on unreadable; every target file is
+# asserted readable before content checks; the counter seeds + verdict stubs are
+# explicit compact single-line JSON fixtures; no real review subprocess is spawned.
+#
+# Run: bash tests/bounded-rework-convergence.test.sh
+set -uo pipefail
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+IMPL="$REPO/scripts/implement.sh"
+RESULTS="$(mktemp)"; export RESULTS
+ok()   { printf 'ok\n'   >>"$RESULTS"; printf '  ok   — %s\n' "$1"; }
+bad()  { printf 'fail\n' >>"$RESULTS"; printf '  FAIL — %s\n' "$1"; }
+
+ROOT="$(mktemp -d)"; trap 'rm -rf "$ROOT"' EXIT
+
+# setup_loop_repo <dir> — git repo + scope-declaring TDD + a state fragment + a
+# stub `claude` that acts as the review gate (cats $CTL/review.out) and the
+# rework model (runs $CTL/do_rework). Gates 1-3 are marked done via
+# RESUME_GATES_DONE_* so gate_one runs ONLY the review gate + its rework loop.
+# Mirrors tests/bounded-rework-loop.test.sh's harness. Leaves PWD in the repo.
+setup_loop_repo() {  # <dir>  (caller exports STATE_DIR etc. + sources $IMPL first)
+  local d="$1"; mkdir -p "$d/ctl" "$d/bin"
+  cd "$d" || return 1
+  git init -q -b master; git config user.email t@t.t; git config user.name t
+  mkdir -p src docs/tdd
+  # ctl/ + bin/ are test scaffolding, not part of the build — keep them out of
+  # git so a rework's `git add -A` never sweeps them into the commit.
+  printf 'ctl/\nbin/\n' > .gitignore
+  printf 'orig\n' > src/a.txt
+  cat > docs/tdd/0099-fix.md <<'EOF'
+# TDD 0099: fixture
+Status: draft
+PRD refs: 1
+
+## Touched files
+- `src/a.txt` — the in-scope file
+
+## Expected diff size
+- `src/a.txt` — ~50 lines added
+EOF
+  git add -A; git commit -qm "build start" >/dev/null
+  cat > "$d/bin/claude" <<EOF
+#!/usr/bin/env bash
+prompt=""
+while [ \$# -gt 0 ]; do case "\$1" in -p) prompt="\$2"; shift 2;; *) shift;; esac; done
+if printf '%s' "\$prompt" | grep -q 'BOUNDED rework pass'; then
+  bash "$d/ctl/do_rework"; exit 0
+fi
+if printf '%s' "\$prompt" | grep -q 'INDEPENDENT review gate'; then
+  cat "$d/ctl/review.out" 2>/dev/null || echo "REVIEW_RESULT: PASS"; exit 0
+fi
+echo "BATCH_RESULT: OK"; exit 0
+EOF
+  chmod +x "$d/bin/claude"
+  export PATH="$d/bin:$PATH"
+  export RTMPL="$REPO/scripts/review-prompt.md" RWTMPL="$REPO/scripts/rework-prompt.md"
+  export REVIEW_MODEL="" REBUILD=0 BASE=master
+  export THROUGHLINE_GATE_RETRIES=1 THROUGHLINE_GATE_BACKOFF_BASE=0
+  export THROUGHLINE_REQUIRE_TEST_FIRST=0 THROUGHLINE_REQUIRE_RUNTIME_VERIFY=0
+  RESUME_GATES_DONE_0099_fix="build,test-first,verify,verify-runtime"
+  export RESUME_GATES_DONE_0099_fix
+  _write_tdd_fragment 0099-fix 99 docs/tdd/0099-fix.md 1 reviewing review \
+    1000 1000 "feat/0099-fix" "" "log" "" "" "build,test-first,verify,verify-runtime" "" "" "" "" "" "" ""
+}
+
+# ============================================================================
+# Component 1 — convergence-budget honesty (rollback on scope rejection)
+# ============================================================================
+
+echo "[D1] _decrement_rework_attempt decrements the per-(gate,step) counter"
+( D="$ROOT/D1"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  _write_tdd_fragment 0007-x 7 docs/tdd/0007-x.md 1 reviewing review \
+    1000 1000 "feat/0007-x" "" "log" "" "" "" "" "" \
+    "" "" "" "" '{"review:1":2}' "" "" ""
+  _decrement_rework_attempt 0007-x review:1
+  F="$D/state.d/0007-x.json"
+  grep -q '"review:1":1' "$F" 2>/dev/null \
+    && ok "2 → 1 after one decrement" || bad "review:1 should decrement 2→1 (got: $(_read_fragment_raw_object "$F" rework_attempts))"
+) || true
+
+echo "[D5] _decrement_rework_attempt floors at 0 (no underflow)"
+( D="$ROOT/D5"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  _write_tdd_fragment 0007-x 7 docs/tdd/0007-x.md 1 reviewing review \
+    1000 1000 "feat/0007-x" "" "log" "" "" "" "" "" \
+    "" "" "" "" '{"review:1":0}' "" "" ""
+  _decrement_rework_attempt 0007-x review:1
+  F="$D/state.d/0007-x.json"
+  grep -q '"review:1":0' "$F" 2>/dev/null \
+    && ok "0 stays 0 (floored, never negative)" || bad "review:1 should stay 0 (got: $(_read_fragment_raw_object "$F" rework_attempts))"
+  grep -q '"review:1":-' "$F" 2>/dev/null \
+    && bad "counter went negative" || ok "counter never negative"
+) || true
+
+echo "[V1] scope-rejected structural-finding(b) attempt is NOT counted (rolled back)"
+( D="$ROOT/V1"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D" MAINREPO="$D/repo"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  setup_loop_repo "$D/repo" || { bad "setup failed"; exit 0; }
+  BS="$(git rev-parse HEAD)"
+  printf 'build-output\n' >> src/a.txt; git add -A; git commit -qm "build: output past build-start" >/dev/null
+  # region_lines=40 → scope cap 120; per-file declared 50 → ×1.6 = 80. A 90-line
+  # rework on src/a.txt fires (b) (90 > 80) but NOT the scope cap (≤ 120), so the
+  # (b) escalation path — the one Component 1 rolls back — is isolated.
+  printf 'REVIEW_FINDING: severity=major structural=false region_lines=40 ref=review-1:1 | over-bound rework\nREVIEW_RESULT: BLOCK over-bound\n' > "$D/repo/ctl/review.out"
+  cat > "$D/repo/ctl/do_rework" <<'EOF'
+seq 1 90 > src/a.txt
+git add -A >/dev/null 2>&1; git commit -q -m "rework: overshoots per-file bound" >/dev/null 2>&1
+EOF
+  st="$(gate_one docs/tdd/0099-fix.md "$BS" "$D/v1.log")"; rc=$?
+  F="$STATE_DIR/0099-fix.json"
+  [ "$rc" -ne 0 ] && ok "gate_one blocks on (b)" || bad "(b) over-bound should block (rc=$rc, st=$st)"
+  grep -q '"halt_cause":"structural-finding"' "$F" 2>/dev/null \
+    && ok "halt_cause=structural-finding" || bad "halt_cause should be structural-finding"
+  grep -q '"review:1":0' "$F" 2>/dev/null \
+    && ok "rework_attempts review:1 rolled back to 0 (not counted)" \
+    || bad "scope-rejected (b) attempt must NOT be counted — review:1 should be 0 (got: $(_read_fragment_raw_object "$F" rework_attempts))"
+  grep -q 'not counted (scope-rejected' "$D/v1.log" 2>/dev/null \
+    && ok "not-counted telemetry note present" || bad "a 'not counted (scope-rejected)' note should be logged"
+) || true
+
+echo "[V2] rework-scope-exceeded attempt is NOT counted (rolled back)"
+( D="$ROOT/V2"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D" MAINREPO="$D/repo"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  setup_loop_repo "$D/repo" || { bad "setup failed"; exit 0; }
+  BS="$(git rev-parse HEAD)"
+  printf 'build-output\n' >> src/a.txt; git add -A; git commit -qm "build: output past build-start" >/dev/null
+  # region_lines=8 → scope cap 60; a 200-line rework overruns the cap (FR-66).
+  printf 'REVIEW_FINDING: severity=major structural=false region_lines=8 ref=review-1:1 | small bug\nREVIEW_RESULT: BLOCK bug\n' > "$D/repo/ctl/review.out"
+  cat > "$D/repo/ctl/do_rework" <<'EOF'
+seq 1 200 > src/a.txt
+git add -A >/dev/null 2>&1; git commit -q -m "rework: oversized" >/dev/null 2>&1
+EOF
+  st="$(gate_one docs/tdd/0099-fix.md "$BS" "$D/v2.log")"; rc=$?
+  F="$STATE_DIR/0099-fix.json"
+  [ "$rc" -ne 0 ] && ok "gate_one blocks on scope-exceeded" || bad "oversized rework should block (rc=$rc, st=$st)"
+  grep -q '"halt_cause":"rework-scope-exceeded"' "$F" 2>/dev/null \
+    && ok "halt_cause=rework-scope-exceeded" || bad "halt_cause should be rework-scope-exceeded"
+  grep -q '"review:1":0' "$F" 2>/dev/null \
+    && ok "rework_attempts review:1 rolled back to 0 (not counted)" \
+    || bad "scope-exceeded attempt must NOT be counted — review:1 should be 0 (got: $(_read_fragment_raw_object "$F" rework_attempts))"
+) || true
+
+echo "[V3] shipped-but-still-flawed attempt IS counted (budget bounds genuine attempts)"
+( D="$ROOT/V3"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D" MAINREPO="$D/repo"
+  export THROUGHLINE_REWORK_MAX=1
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  setup_loop_repo "$D/repo" || { bad "setup failed"; exit 0; }
+  BS="$(git rev-parse HEAD)"
+  printf 'build-output\n' >> src/a.txt; git add -A; git commit -qm "build: output past build-start" >/dev/null
+  # review ALWAYS blocks; the rework ships a small in-scope commit that does not
+  # resolve the finding → it survives the pre-pass (shipped) → next pass blocks →
+  # budget (max=1) exhausted. The one shipped attempt MUST stay counted.
+  printf 'REVIEW_FINDING: severity=major structural=false region_lines=8 ref=review-1:1 | persistent bug\nREVIEW_RESULT: BLOCK persistent\n' > "$D/repo/ctl/review.out"
+  cat > "$D/repo/ctl/do_rework" <<'EOF'
+echo "tweak $(wc -l < src/a.txt)" >> src/a.txt
+git add -A >/dev/null 2>&1; git commit -q -m "rework: small in-scope tweak" >/dev/null 2>&1
+EOF
+  st="$(gate_one docs/tdd/0099-fix.md "$BS" "$D/v3.log")"; rc=$?
+  F="$STATE_DIR/0099-fix.json"
+  [ "$rc" -ne 0 ] && ok "gate_one blocks (budget exhausted after the shipped attempt)" || bad "should exhaust budget (rc=$rc, st=$st)"
+  grep -q '"outcome":"shipped"' "$F" 2>/dev/null \
+    && ok "rework_log records a shipped attempt" || bad "rework_log should record a shipped attempt"
+  grep -q '"review:1":1' "$F" 2>/dev/null \
+    && ok "rework_attempts review:1 == 1 (shipped attempt counted)" \
+    || bad "a shipped-but-flawed attempt MUST be counted — review:1 should be 1 (got: $(_read_fragment_raw_object "$F" rework_attempts))"
+) || true
+
+echo "[V4] structural-finding(c) does NOT roll back the counter (rollback scoped to (b)/scope)"
+( D="$ROOT/V4"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D" MAINREPO="$D/repo"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  setup_loop_repo "$D/repo" || { bad "setup failed"; exit 0; }
+  BS="$(git rev-parse HEAD)"
+  printf 'build-output\n' >> src/a.txt; git add -A; git commit -qm "build: output past build-start" >/dev/null
+  # Seed a prior carried-over count of 1 (rework_attempts is param 21, so six
+  # empty positional args 15-20 pad up to it); a genuine (c) escalation
+  # (structural=true WITH a named reason) fires BEFORE any increment and is NOT a
+  # scope rejection, so the rollback must NOT touch the counter — it stays 1.
+  _write_tdd_fragment 0099-fix 99 docs/tdd/0099-fix.md 1 reviewing review \
+    1000 1000 "feat/0099-fix" "" "log" "" "" "build,test-first,verify,verify-runtime" "" "" "" "" "" "" '{"review:1":1}' "" ""
+  printf 'FINDING_BEGIN\nseverity: major\nstructural: true\nstructural_reason: requires reworking the module decomposition across files\nregion: src/a.txt:1-8\nregion_lines: 8\npattern_tags: [cross-module]\nsummary: cross-module refactor needed\nevidence: n/a\nFINDING_END\nREVIEW_RESULT: BLOCK structural\n' > "$D/repo/ctl/review.out"
+  st="$(gate_one docs/tdd/0099-fix.md "$BS" "$D/v4.log")"; rc=$?
+  F="$STATE_DIR/0099-fix.json"
+  [ "$rc" -ne 0 ] && ok "gate_one blocks on (c)" || bad "named structural should (c)-escalate (rc=$rc, st=$st)"
+  grep -q '"halt_cause":"structural-finding"' "$F" 2>/dev/null \
+    && ok "halt_cause=structural-finding (c)" || bad "halt_cause should be structural-finding"
+  grep -q '"review:1":1' "$F" 2>/dev/null \
+    && ok "rework_attempts review:1 unchanged at 1 (c not rolled back)" \
+    || bad "(c) must NOT roll back the counter — review:1 should stay 1 (got: $(_read_fragment_raw_object "$F" rework_attempts))"
+) || true
+
+# ============================================================================
+# Component 3 — sweep-aware scope read (post-condition guarantee, no code change)
+# ============================================================================
+echo "[S7] rework scope cap reads the swept finding's SUMMED region_lines"
+( D="$ROOT/S7"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  # A swept finding: the primary `region` spans only 8 lines, but `region_lines`
+  # is the SUM across all enumerated sites (60). The cap MUST be derived from the
+  # summed region_lines (→ max(60, 3×60)=180), NOT from the primary region's
+  # 8-line range (→ 60) — else a whole-class fix would be scope-rejected for
+  # touching all its sites. This pins Component 3's post-condition so a future
+  # refactor that re-derives the span from `region` is caught.
+  L="$D/review.log"
+  printf 'FINDING_BEGIN\nseverity: major\nstructural: false\nstructural_reason: none\nregion: src/a.txt:1-8\nregion_lines: 60\npattern_tags: [binding-rule-sweep]\nsummary: binding rule violated at 3 sites\nevidence: site quotes\nFINDING_END\nREVIEW_RESULT: BLOCK sweep\n' > "$L"
+  _rework_extract_finding "$L"
+  [ "${RWK_REGION:-}" = "60" ] \
+    && ok "RWK_REGION = summed region_lines (60), not the 8-line primary region" \
+    || bad "RWK_REGION should read the summed region_lines 60 (got '${RWK_REGION:-}')"
+  cap="$(_rework_scope_cap "${RWK_REGION:-0}")"
+  [ "$cap" = "180" ] \
+    && ok "scope cap = max(60, 3×60) = 180 covers the full swept span" \
+    || bad "scope cap should be 180 for the summed span (got '$cap')"
+) || true
+
+# ============================================================================
+# Component 2 — binding-rule-sweep instruction in review-prompt.md
+# ============================================================================
+# Mechanical presence check. Each assertion distinguishes grep exit 0 (present),
+# 1 (absent → bad), and ≥2 (error → fail closed), and fails on an unreadable file
+# (binding L-001/L-002).
+_chk_present() {  # <file> <grep-flags> <pattern> <desc>
+  local f="$1" flags="$2" pat="$3" desc="$4" rc
+  if [ ! -r "$f" ]; then bad "$desc (file unreadable: $f)"; return; fi
+  # $flags is a single combined short-flag token (e.g. "-qiF"); grep parses it as
+  # -q -i -F, so it is correctly passed quoted (no word-split needed).
+  grep "$flags" -- "$pat" "$f" >/dev/null 2>&1; rc=$?
+  if   [ "$rc" -eq 0 ]; then ok  "$desc"
+  elif [ "$rc" -eq 1 ]; then bad "$desc (absent)"
+  else bad "$desc (grep error rc=$rc)"; fi
+}
+
+echo "[S6] review-prompt.md carries the binding-rule-sweep instruction (Component 2)"
+( F="$REPO/scripts/review-prompt.md"
+  _chk_present "$F" "-qF" "binding-rule-sweep"          "carries the binding-rule-sweep pattern tag"
+  _chk_present "$F" "-qiF" "more than one region"       "enumerates ALL sites when a rule is violated in more than one region"
+  _chk_present "$F" "-qiF" "sum of the enumerated"      "requires region_lines = SUM of the enumerated spans"
+  _chk_present "$F" "-qiF" "region_lines\` to the sum"  "names region_lines as the summed span"
+  _chk_present "$F" "-qiF" "must not split"             "instructs: do NOT split one binding rule across findings/passes"
+  _chk_present "$F" "-qiF" "review passes"              "the no-split clause covers multiple review passes"
+) || true
+
+# ============================================================================
+# Component 4 — estimate-error tolerance (K) on the runtime per-file (b) check
+# ============================================================================
+# mk_pp_repo — git repo declaring src/a.txt at ~50 lines (no exception), for
+# driving _rework_pre_pass's FR-67(b) per-file check directly. Leaves PWD in the
+# repo with HEAD at the build-start commit.
+mk_pp_repo() {
+  git init -q -b master; git config user.email t@t.t; git config user.name t
+  printf 'base\n' > base.txt; git add -A; git commit -qm base >/dev/null
+  mkdir -p docs/tdd src
+  cat > docs/tdd/0099-fix.md <<'EOF'
+# TDD 0099: fixture
+Status: draft
+
+## Touched files
+- `src/a.txt` (post) — the in-scope file
+
+## Expected diff size
+- `src/a.txt` — ~50 lines added
+EOF
+  git add -A; git commit -qm "build start: declare scope" >/dev/null
+}
+
+echo "[K8] within-tolerance overrun (1.4× ≤ K=1.6) PASSES the pre-pass"
+( D="$ROOT/K8"; mkdir -p "$D/state.d"; cd "$D" || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  mk_pp_repo; BS="$(git rev-parse HEAD)"
+  # declared 50, actual 70 (1.4×). region 40 → scope cap 120 so the FR-66 cap does
+  # NOT fire, isolating the (b) per-file check. K=1.6 default → 70 ≤ 80 → no (b).
+  seq 1 70 > src/a.txt; git add -A; git commit -qm "rework: 70 lines (within tolerance)" >/dev/null
+  NH="$(git rev-parse HEAD)"
+  out="$(_rework_pre_pass 0099-fix docs/tdd/0099-fix.md "$NH" "$BS" "$BS" 40)"; rc=$?
+  [ "$rc" -eq 0 ] && ok "pre-pass clears a 1.4× overrun" || bad "1.4× overrun should pass under K=1.6 (rc=$rc, out=$out)"
+  printf '%s\n' "$out" | grep -q 'structural-finding(b)' \
+    && bad "must NOT emit structural-finding(b) within tolerance (got: $out)" \
+    || ok "no structural-finding(b) within tolerance"
+) || true
+
+echo "[K9] beyond-tolerance overrun (1.8× > K=1.6) ESCALATES with the factor in the diagnostic"
+( D="$ROOT/K9"; mkdir -p "$D/state.d"; cd "$D" || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  mk_pp_repo; BS="$(git rev-parse HEAD)"
+  # declared 50, actual 90 (1.8× > 1.6). region 40 → cap 120 (scope clear) → (b) fires.
+  seq 1 90 > src/a.txt; git add -A; git commit -qm "rework: 90 lines (beyond tolerance)" >/dev/null
+  NH="$(git rev-parse HEAD)"
+  out="$(_rework_pre_pass 0099-fix docs/tdd/0099-fix.md "$NH" "$BS" "$BS" 40)"; rc=$?
+  [ "$rc" -ne 0 ] && ok "pre-pass escalates a 1.8× overrun" || bad "1.8× overrun should still escalate (rc=$rc, out=$out)"
+  printf '%s\n' "$out" | grep -qF 'PRECHECK_FAIL: structural-finding(b) src/a.txt 90 > 50 (tolerance ×1.6)' \
+    && ok "diagnostic names the tolerance factor (90 > 50 (tolerance ×1.6))" \
+    || bad "diagnostic should read 'structural-finding(b) src/a.txt 90 > 50 (tolerance ×1.6)' (got: $out)"
+) || true
+
+echo "[K10] knob override honored + malformed knob falls back to 1.6 (never reads as 0)"
+( D="$ROOT/K10"; mkdir -p "$D/state.d"; cd "$D" || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  mk_pp_repo; BS="$(git rev-parse HEAD)"
+  seq 1 90 > src/a.txt; git add -A; git commit -qm "rework: 90 lines" >/dev/null
+  NH="$(git rev-parse HEAD)"
+  # Override K=2.0: 90 ≤ 50×2.0=100 → PASSES.
+  out="$(THROUGHLINE_STRUCTURAL_DIFF_TOLERANCE=2.0 _rework_pre_pass 0099-fix docs/tdd/0099-fix.md "$NH" "$BS" "$BS" 40)"; rc=$?
+  [ "$rc" -eq 0 ] && ok "K=2.0 override lets a 1.8× overrun pass" || bad "K=2.0 should pass 90 vs 50 (rc=$rc, out=$out)"
+  # Malformed K=abc → fall back to 1.6 default (NOT 0, which would escalate every file): 90 > 80 → (b).
+  out2="$(THROUGHLINE_STRUCTURAL_DIFF_TOLERANCE=abc _rework_pre_pass 0099-fix docs/tdd/0099-fix.md "$NH" "$BS" "$BS" 40)"; rc2=$?
+  [ "$rc2" -ne 0 ] && ok "malformed K falls back to 1.6 (90 escalates)" || bad "malformed K must default to 1.6 not 0 (rc=$rc2, out=$out2)"
+  printf '%s\n' "$out2" | grep -qF '(tolerance ×abc)' \
+    && bad "malformed knob must not echo abc as the tolerance — should fall back to 1.6 (got: $out2)" \
+    || ok "diagnostic reports the 1.6 fallback, not the malformed value"
+) || true
+
+# ============================================================================
+# Component 5 — authoring-side estimate-padding heuristic in tdd-author SKILL.md
+# ============================================================================
+echo "[S11] tdd-author SKILL.md carries the estimate-padding heuristic (Component 5)"
+( F="$REPO/skills/tdd-author/SKILL.md"
+  _chk_present "$F" "-qiF" "test/eval"        "names the test/eval estimate class"
+  _chk_present "$F" "-qF"  "1.6×"             "test/eval padding multiplier ≈ 1.6×"
+  _chk_present "$F" "-qiF" "shell-library"    "names the shell-library / script estimate class"
+  _chk_present "$F" "-qF"  "1.4×"             "shell-library padding multiplier ≈ 1.4×"
+  _chk_present "$F" "-qiF" "Expected diff size" "the heuristic lives in the ## Expected diff size block"
+) || true
+
+# ============================================================================
+# Dogfood — wire this eval into the aggregator (TDD 0038 §3 wire-in rule)
+# ============================================================================
+# Wiring this eval into the aggregator is NEW gating behavior — the registration
+# must make the aggregator's overall exit go non-zero when THIS eval fails.
+# Structural: the eval is referenced in tests/implement-gate.test.sh. Behavioral:
+# the aggregator's real final AND-chain (extracted verbatim, driven against stub
+# integers — no recursion) evaluates false when BRC_FAIL=1. Before the wire-in the
+# chain never references BRC_FAIL, so it is true (RED); after, it includes
+# [ "$BRC_FAIL" -eq 0 ] (GREEN).
+echo "[W] the eval is wired into the aggregator and propagates failure (TDD 0038 §3)"
+( AGG="$REPO/tests/implement-gate.test.sh"
+  [ -r "$AGG" ] || { bad "INFRA: §W — aggregator unreadable: $AGG"; exit 0; }
+  grep -qE 'bounded-rework-convergence\.test\.sh' "$AGG" \
+    && ok "the eval is registered in the aggregator" || bad "implement-gate.test.sh should register bounded-rework-convergence.test.sh"
+  chain="$(grep -aE '^\[ "\$FAIL" -eq 0 \] &&' "$AGG" | tail -1)"
+  [ -n "$chain" ] || { bad "INFRA: §W — could not locate the aggregator final AND-chain"; exit 0; }
+  drive_rc="$(
+    set +u
+    for v in $(printf '%s' "$chain" | grep -aoE '\$[A-Za-z_][A-Za-z0-9_]*' | tr -d '$' | sort -u); do
+      eval "$v=0"
+    done
+    BRC_FAIL=1
+    eval "$chain"; echo $?
+  )"
+  [ "$drive_rc" != "0" ] \
+    && ok "aggregator final AND-chain goes non-zero when this eval fails (wire-in propagates)" \
+    || bad "aggregator AND-chain must be non-zero with BRC_FAIL=1 (got rc=$drive_rc)"
+) || true
+
+echo
+PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
+FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
+rm -f "$RESULTS"
+echo "=== bounded-rework-convergence eval: $PASS passed, $FAIL failed ==="
+[ "$FAIL" -eq 0 ]

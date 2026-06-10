@@ -1182,6 +1182,48 @@ _rework_attempt_count() {  # <slug> <gate> <step>
   printf '%s' "$new"
 }
 
+# _decrement_rework_attempt <slug> <gate:step>  — roll back ONE increment of the
+# per-(gate,step) rework_attempts counter, floored at 0, as a single atomic
+# compact-JSON read-modify-write (the same _rewrite_fragment_rework round-trip
+# _rework_attempt_count uses). TDD 0041 §1 / FR-65: called on the scope-rejection
+# escalation paths in _rework_loop (rework-scope-exceeded / structural-finding(b))
+# where the attempt was hard-reset off the branch and so never shipped — it must
+# NOT consume the convergence budget, which counts only shipped-but-still-flawed
+# attempts. <gate:step> is the already-combined key (e.g. "review:1"); it is
+# well-formed (gate ∈ {review,…}, step numeric) by the caller, so the literal sed
+# match mirrors _rework_attempt_count's. A decrement when the key is absent or
+# already 0 is a no-op (max(0, cur-1), never negative). Returns non-zero on a
+# persist failure so the caller can log + degrade safely (the BLOCK stands
+# regardless).
+_decrement_rework_attempt() {  # <slug> <gate:step>
+  local slug="$1" key="$2"
+  local f="${STATE_DIR:-}/$slug.json"
+  if [ -z "${STATE_DIR:-}" ] || [ ! -f "$f" ]; then
+    echo "error: _decrement_rework_attempt: no state fragment for $slug ($f)" >&2
+    return 1
+  fi
+  local obj cur new new_obj
+  obj="$(_read_fragment_raw_object "$f" rework_attempts)"
+  [ -z "$obj" ] && obj='{}'
+  cur="$(printf '%s' "$obj" | sed -n "s/.*\"$key\":\\([0-9]*\\).*/\\1/p" | head -1)"
+  [ -z "$cur" ] && cur=0
+  if [ "$cur" -le 0 ] 2>/dev/null; then new=0; else new=$((cur - 1)); fi
+  if [ "$obj" = '{}' ]; then
+    new_obj="{\"$key\":$new}"
+  elif printf '%s' "$obj" | grep -q "\"$key\":[0-9]"; then
+    new_obj="$(printf '%s' "$obj" | sed "s/\"$key\":[0-9]*/\"$key\":$new/")"
+  else
+    new_obj="${obj%\}},\"$key\":$new}"
+  fi
+  local rl ba
+  rl="$(_read_fragment_raw_array "$f" rework_log)"
+  ba="$(_read_fragment_raw_object "$f" build_attempt)"
+  if ! _rewrite_fragment_rework "$slug" "$new_obj" "$rl" "$ba"; then
+    echo "error: _decrement_rework_attempt: could not persist counter for $slug ($key)" >&2
+    return 1
+  fi
+}
+
 # _record_rework_attempt <slug> <attempt> <gate> <step> <model> <token_spend>
 #                        <started_at> <finished_at> <finding_ref> <outcome>
 # Append one telemetry object to rework_log (FR-68). <token_spend> is an int or

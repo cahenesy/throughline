@@ -362,10 +362,12 @@ echo "[C6] _rework_pre_pass rejects an over-bound file as structural(b)"
   TDDS=()
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
   mk_rework_repo; BS="$(git rev-parse HEAD)"
-  # src/a.txt declared at 50 lines, no exception. Add 80 lines cumulatively
+  # src/a.txt declared at 50 lines, no exception. Add 90 lines cumulatively
   # since build start; region 40 → cap 120 so the scope cap does NOT fire,
-  # isolating the (b) per-file-bound check.
-  mkdir -p src; seq 1 80 > src/a.txt
+  # isolating the (b) per-file-bound check. 90 > 50 × 1.6 = 80, so the (b)
+  # escalation still fires under TDD 0041's K-tolerance (the old 80-line fixture
+  # sat exactly on the new 50×1.6 boundary and `actual > num×K` is strict).
+  mkdir -p src; seq 1 90 > src/a.txt
   git add -A; git commit -qm "rework: overshoots per-file bound" >/dev/null
   NH="$(git rev-parse HEAD)"
   out="$(_rework_pre_pass 0099-fix docs/tdd/0099-fix.md "$NH" "$BS" "$BS" 40)"; rc=$?
