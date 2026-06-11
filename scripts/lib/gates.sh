@@ -77,10 +77,33 @@ _claude_call() {  # <log> <args...>
   return "$rc"
 }
 
+# _gate_effort <build|rework|review|verify> <model> — the runner's HARDCODED
+# per-gate effort level, passed as `--effort` on every gate subprocess so gate
+# depth is part of the runner's contract (pinned by plugin version), not
+# inherited invisibly from the operator's local effortLevel setting. Mapping:
+# build/rework are long-horizon agentic CONSTRUCTION and review is the quality
+# gate → `xhigh` on the frontier tiers (fable/opus — the documented best tier
+# for coding/agentic work); runtime-verify is OBSERVATION against a written
+# plan, not construction → `high`. Sonnet's supported ceiling for these flags
+# is `high` (it has no xhigh tier), so it caps there for every gate. An empty
+# or unrecognized model emits NOTHING — the subprocess keeps its host default;
+# never guess a tier that could fail the spawn (NFR-4: a bad flag must not
+# masquerade as a gate failure). Deliberately not configurable.
+_gate_effort() {  # <build|rework|review|verify> <model>
+  local gate="${1:-}" model="${2:-}"
+  case "$model" in
+    *fable*|*opus*)
+      case "$gate" in verify) echo "high" ;; *) echo "xhigh" ;; esac ;;
+    *sonnet*) echo "high" ;;
+    *) echo "" ;;
+  esac
+}
+
 # --- per-TDD primitives (cwd = the repo or worktree they run in) ---------------
 build_one() {  # <tdd> <log>
   local tdd="$1" log="$2" prompt; prompt="$(sed "s#{{TDD}}#${tdd}#g" "$TMPL")"
   local args=(-p "$prompt" --permission-mode auto); [ -n "$MODEL" ] && args+=(--model "$MODEL")
+  local _eff; _eff="$(_gate_effort build "${MODEL:-}")"; [ -n "$_eff" ] && args+=(--effort "$_eff")
   local start _rc; start=$(date +%s); _rc=0
   _claude_call "$log" "${args[@]}"; _rc=$?   # TDD 0027 §1: under the gate watchdog
   record_session_pointer "$log" "$start"
@@ -456,6 +479,7 @@ review_one() {  # <tdd> <base-ref> <log>
     return 1
   fi
   local args=(-p "$prompt" --permission-mode auto); [ -n "$REVIEW_MODEL" ] && args+=(--model "$REVIEW_MODEL")
+  local _eff; _eff="$(_gate_effort review "${REVIEW_MODEL:-}")"; [ -n "$_eff" ] && args+=(--effort "$_eff")
   local start _rc; start=$(date +%s); _rc=0
   _claude_call "$log" "${args[@]}"; _rc=$?   # TDD 0027 §1: under the gate watchdog
   record_session_pointer "$log" "$start"
@@ -552,6 +576,7 @@ verify_runtime_one() {  # <tdd> <base-ref> <log>
   printf 'runtime-verify model=%s (plan=%s)%s\n' "$vm" "$cls" "$note" >> "$log"
   local args=(-p "$prompt" --permission-mode auto)
   [ -n "$vm" ] && args+=(--model "$vm")
+  local _eff; _eff="$(_gate_effort verify "${vm:-}")"; [ -n "$_eff" ] && args+=(--effort "$_eff")
   local start _rc; start=$(date +%s); _rc=0
   _claude_call "$log" "${args[@]}"; _rc=$?   # TDD 0027 §1: under the gate watchdog
   record_session_pointer "$log" "$start"
@@ -852,6 +877,7 @@ _run_per_step_review() {  # <slug> <tdd> <step-id> <sha> <build-start-sha> <main
     return 0
   fi
   local args=(-p "$prompt" --permission-mode auto); [ -n "${REVIEW_MODEL:-}" ] && args+=(--model "$REVIEW_MODEL")
+  local _eff; _eff="$(_gate_effort review "${REVIEW_MODEL:-}")"; [ -n "$_eff" ] && args+=(--effort "$_eff")
   start=$(date +%s)
   printf '=== per-step review: step %s scope %s..%s ===\n' "$step_id" "$base" "$sha" >> "$rlog"
   _claude_call "$rlog" "${args[@]}"   # TDD 0027 §1: under the gate watchdog
@@ -1017,6 +1043,7 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
   # unaffected.
   local -a ccmd=(claude -p "$prompt" --input-format stream-json --output-format stream-json --verbose --permission-mode auto --disallowed-tools AskUserQuestion)
   [ -n "$model" ] && ccmd+=(--model "$model")
+  local _eff; _eff="$(_gate_effort build "${model:-}")"; [ -n "$_eff" ] && ccmd+=(--effort "$_eff")
   coproc BUILD { "${ccmd[@]}" 2>>"$errlog"; }
   local bpid="$BUILD_PID" build_in build_out
   exec {build_in}>&"${BUILD[1]}"
@@ -1654,6 +1681,7 @@ _rework_one() {  # <tdd> <log> <finding-ref> <finding-text> <cap>
   prompt="${prompt//\{\{FINDING\}\}/[$finding_ref] $finding_text}"
   local args=(-p "$prompt" --permission-mode auto)
   [ -n "$rm" ] && args+=(--model "$rm")
+  local _eff; _eff="$(_gate_effort rework "${rm:-}")"; [ -n "$_eff" ] && args+=(--effort "$_eff")
   local start _rc; start=$(date +%s); _rc=0
   # Capture claude's exit code BEFORE record_session_pointer + git rev-parse
   # consume it. Pre-fix this function ended with `git rev-parse HEAD` (always
