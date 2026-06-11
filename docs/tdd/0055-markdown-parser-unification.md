@@ -78,6 +78,20 @@ which captures `set_list="$(_rework_touched_files "$tdd")"; rc=$?` and, on rc 2,
 takes a **parse-error** path (a distinct diagnostic / blocked cause), NEVER the
 empty-set → `structural-finding(a)` path. Verification §4 asserts the rc reaches
 `_rework_pre_pass` and routes away from structural-finding(a).
+
+**The parse-error path is a FIRST-CLASS dispatch arm, not a fall-through**
+(pinned 2026-06-11 after the review:1 finding "parsefail PRECHECK_FAIL type has
+no dispatch arm"): the `PRECHECK_FAIL: parse-failed …` emission from
+`_rework_pre_pass` gets its OWN arm in the escalation dispatch — its operator
+guidance is "the touched-files declaration could not be PARSED (awk failed);
+inspect the parse environment / the TDD's `## Touched files` section", NOT the
+structural-finding "revise the TDD's declared scope via /tdd-author" guidance,
+and never the generic `structural-finding (?)` fall-through. The parse-failed
+diagnostic must also state that BOTH FR-67(a) membership AND FR-67(b) per-file
+bounds were skipped for the attempt (a parse failure suspends the whole declared-
+scope evaluation, not just (a)). Additionally, `gates.sh` sources `md.sh`
+DIRECTLY (its own sibling-source block), not transitively via `touched-files.sh`
+— every md.sh consumer owns its source line (the 0050 consumer-sources-it rule).
 **Migrations (each becomes a thin caller of md.sh):**
 - `touched-files.sh:tl_extract_touched_paths` → `md_bullet_path "$f" "Touched files" "$mode"`.
   Name/signature/output unchanged; the 0049 3-way agreement cross-check still passes.
@@ -255,13 +269,19 @@ None. A shared pure-bash markdown helper is a localized choice; ADR 0006 governs
 - `.claude-plugin/plugin.json` — version bump (build-applied housekeeping).
 
 ## Expected diff size
-- `scripts/lib/md.sh` — 95 lines (new: guard + `md_bullet_path_of_line` + 2 rc-checked awk functions + comments; ×1.4 shell-lib).
-- `scripts/lib/touched-files.sh` — 20 lines (body → delegate + rc-propagating split-declare; ×1.4).
-- `scripts/lib/plan-classifier.sh` — 20 lines (section scan → delegate; ×1.4).
-- `scripts/lib/tdd-lint.sh` — 85 lines (2 traceability scans + count fence walk → md_section_body; A23 re-anchor; A4 sentinel; per-line path via md_bullet_path_of_line; ×1.4).
-- `scripts/lib/gates.sh` — 40 lines (coverage section delegate + Expected-diff per-line path delegate + membership rc propagation; ×1.4).
-- `tests/md-parser.test.sh` — 170 lines (section/bullet/fence ```+~~~/rc-propagation/anchor/exit-code + per-line cases; ×1.6 test).
-- `tests/bounded-tdd-scope.test.sh` — 45 lines (3-way agreement through delegate + count/extract anchor + ~~~ case; ×1.6 test).
+(Reconciled 2026-06-11 to the OBSERVED build sizes after the review:1
+structural-finding(b) halt — the original first-instinct estimates ran 2–3× low
+across the board (the systematic under-count), and the bounded rework's in-scope
+fix to the `parsefail` dispatch arm was rejected against the stale gates.sh
+bound. Numbers below = observed build diff + rework headroom, per the 0044
+reconciliation precedent.)
+- `scripts/lib/md.sh` — 130 lines (observed 107: guard + `md_bullet_path_of_line` + 2 rc-checked awk functions + comments).
+- `scripts/lib/touched-files.sh` — 75 lines (observed 61: body → delegate + rc-propagating split-declare).
+- `scripts/lib/plan-classifier.sh` — 60 lines (observed 50: section scan → delegate).
+- `scripts/lib/tdd-lint.sh` — 185 lines (observed 164: 2 traceability scans + count fence walk → md_section_body; A23 re-anchor; A4 sentinel; per-line path via md_bullet_path_of_line).
+- `scripts/lib/gates.sh` — 150 lines (observed 120 + headroom for the parsefail dispatch-arm rework: coverage section delegate + Expected-diff per-line path delegate + membership rc propagation + the parse-error halt arm).
+- `tests/md-parser.test.sh` — 430 lines (exception: a single cohesive eval over the 300-line per-file cap — the section/bullet/fence/rc-propagation/anchor/exit-code cases share one harness and splitting would fragment the shared fixture setup; observed build size 415).
+- `tests/bounded-tdd-scope.test.sh` — 45 lines (3-way agreement through delegate + count/extract anchor + ~~~ case).
 - `tests/implement-gate.test.sh` — 15 lines (register).
 - `.claude-plugin/plugin.json` — 2 lines (version bump).
-Total expected diff: ~492 lines across 9 files. The 9th file is the trivial build-applied version bump; it pushes the touched-file COUNT to 9 > the default `THROUGHLINE_TDD_MAX_TOUCHED`=8, so this TDD builds with `THROUGHLINE_TDD_MAX_TOUCHED=9`. No per-file diff exception needed (each well under 300).
+Total expected diff: ~1090 lines across 9 files. One inline exception declared on `tests/md-parser.test.sh` (over the 300 per-file cap). The 9th file is the trivial build-applied version bump; it pushes the touched-file COUNT to 9 > the default `THROUGHLINE_TDD_MAX_TOUCHED`=8 (design-time `--bounds` only — the build does not re-check the count).
