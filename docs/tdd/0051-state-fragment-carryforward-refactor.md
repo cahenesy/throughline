@@ -5,6 +5,20 @@ PRD-rev: 0aa1e28
 ADR constraints: 0006
 
 ## Approach
+> **STATUS (2026-06-11): DEFERRED out of the 0050–0055 hardening push.** This is
+> the biggest/riskiest pending TDD (a 320-line rewrite of the core run-state I/O
+> every gate depends on) and its bugs are forensic-cosmetic, so it is held for a
+> later dedicated, heavily-verified effort rather than built in the current
+> small-and-safe sequence. **The A10/A5 PRIMARY-reader fix was extracted into
+> [[0050]]** (the `tl_json_field` quote-aware reader, repointing
+> `_read_fragment_field`), so the highest-traffic documented corruption path is
+> fixed without this refactor. When 0051 is eventually built, its remaining job is
+> the maintainability refactor (reuse #3/#2: the read-all/write-all pair retiring
+> the 29-param writer) PLUS routing the RESIDUAL inline `[^"]*` readers
+> (state.sh:701, 782, … and resume.sh) through the same `tl_json_field` reader 0050
+> introduced. Re-scope/re-author at that time; the text below is the original
+> full-refactor design.
+
 The per-TDD run-state fragment (`state.d/<slug>.json`) is mutated by **nine
 functions** that each open-code the same block: read EVERY carry-forward field
 into locals, override the 1–3 they own, then call `_write_tdd_fragment` threading
@@ -212,10 +226,12 @@ cross-cutting decision. ADR 0006 governs and is respected.
 - `scripts/lib/resume.sh` — migrate the carry-forward mutator (32-87) to the pair; drop its `[^"]*` readers (A5).
 - `scripts/lib/pause-retry.sh` — migrate the mutator (95-141) to the pair.
 - `tests/refactor-state-io.test.sh` — carry-forward round-trip + quote-safety + counter regressions.
+- `.claude-plugin/plugin.json` — version bump (build-applied housekeeping).
 
 ## Expected diff size
 - `scripts/lib/state.sh` — 320 lines (exception: cohesive single-file refactor of the fragment-mutator family — `_json_field` + read-all/write-all + 7 mutator migrations + counter helpers; splitting leaves callers half-migrated against a changed writer).
 - `scripts/lib/resume.sh` — 60 lines (mutator migration + reader replacement; ×1.4).
 - `scripts/lib/pause-retry.sh` — 45 lines (mutator migration; ×1.4).
 - `tests/refactor-state-io.test.sh` — 150 lines (round-trip all-fields + quote cases + counters; ×1.6 test).
-Total expected diff: ~575 lines across 4 files. One inline exception declared on `scripts/lib/state.sh` (cohesive refactor over the 300-line per-file cap); all other files well under cap.
+- `.claude-plugin/plugin.json` — 2 lines (version bump).
+Total expected diff: ~577 lines across 5 files. One inline exception declared on `scripts/lib/state.sh` (cohesive refactor over the 300-line per-file cap); all other files well under cap (the `.claude-plugin/plugin.json` bump is a trivial build-applied 1-line change).

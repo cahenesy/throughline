@@ -169,6 +169,7 @@ None — localized hardening across the runner surface.
 - `scripts/lib/learnings.sh` — numeric-guard the `L-` id numbering scan (A2).
 - `tests/watcher-inactivity-completion.test.sh` — A9 stale-latest + control regressions.
 - `tests/detached-run-recovery.test.sh` — A25 reused-PID + control regressions.
+- `.claude-plugin/plugin.json` — version bump (build-applied housekeeping).
 
 ## Expected diff size
 - `scripts/implement-watch.sh` — 30 lines (WATCH_START gate + unknown emit; ×1.4 shell-script).
@@ -177,4 +178,5 @@ None — localized hardening across the runner surface.
 - `scripts/lib/learnings.sh` — 12 lines (numeric guard; ×1.4).
 - `tests/watcher-inactivity-completion.test.sh` — 90 lines (A9 + control; ×1.6 test).
 - `tests/detached-run-recovery.test.sh` — 90 lines (A25 + controls; ×1.6 test).
-Total expected diff: ~280 lines across 6 files. No per-file exception needed.
+- `.claude-plugin/plugin.json` — 2 lines (version bump).
+Total expected diff: ~282 lines across 7 files. No per-file exception needed.
