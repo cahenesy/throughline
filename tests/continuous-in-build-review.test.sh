@@ -797,6 +797,42 @@ EOF
     || bad "build should be killed at the active cap, not hang"
 ) || true
 
+# --- TDD 0053 / A16: a terminal BATCH_RESULT carried in a TOOL-USE block yields
+# empty assistant text (the sentinel sits in the model's tool-call JSON, not its
+# spoken content). The stdin-close lifecycle must still run — the verdict is
+# parsed from the mirrored raw log regardless — so a finished build does not hang
+# to the inter-event timeout → a spurious transient pause (NFR-4, FR-57). The bug
+# only manifests when _extract_event_text can parse JSON (jq present); without jq
+# the raw line is returned and the normal BATCH_RESULT arm already fires.
+echo "[G2] A16: an empty-text (tool-use-carried) BATCH_RESULT closes the build instead of hanging"
+( D="$ROOT/G2"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  export THROUGHLINE_BUILD_INTER_EVENT_TIMEOUT=8
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  if ! command -v jq >/dev/null 2>&1; then ok "A16 hang-repro needs jq to empty the text (skipped without jq)"; exit 0; fi
+  setup_step_repo "$D/repo" || { bad "setup failed"; exit 0; }
+  _write_tdd_fragment 0020-fix 20 docs/tdd/0020-fix.md 1 building build 1000 1000 "feat/0020-fix" "" log "" "" "" "" "" "" "" "" "" "" "" ""
+  cat > "$D/repo/ctl/build_plan" <<'EOF'
+IFS= read -r _init || true
+# BATCH_RESULT carried INSIDE a tool_use block: _extract_event_text yields empty
+# assistant text, but the raw event line still contains "BATCH_RESULT: ". Pre-fix
+# the empty-text inner case fell through with no stdin-close lifecycle, so the
+# build hung on the next stdin read until the inter-event watchdog killed it.
+echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"BATCH_RESULT: OK"}}]}}'
+IFS= read -r _next || true   # blocks for the next user turn; the loop's stdin close → EOF → returns → build exits
+EOF
+  t0=$(date +%s)
+  _per_step_review_loop 0020-fix docs/tdd/0020-fix.md "$D/g2.log"; rc=$?
+  t1=$(date +%s)
+  [ "$rc" -eq 0 ] && ok "build exits cleanly via stdin EOF (rc=0), not a transient kill" \
+    || bad "empty-text BATCH_RESULT must close the build, not hang to a transient kill (rc=$rc)"
+  [ $((t1 - t0)) -lt 6 ] && ok "completed promptly (did not hang to the inter-event timeout)" \
+    || bad "build hung instead of closing on the empty-text BATCH_RESULT (took $((t1 - t0))s)"
+  grep -q 'BATCH_RESULT' "$D/g2.log" 2>/dev/null && ok "the BATCH_RESULT event was mirrored to the log" \
+    || bad "the BATCH_RESULT event should be mirrored to the log"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
