@@ -351,7 +351,7 @@ EOF
   [ "$miss" -eq 0 ] && ok "6 concurrent writers each landed exactly one intact per-slug section (serialized RMW)"
   n="$(grep -cF '## Per-requirement coverage (0099-fixture,' "$R")"
   [ "$n" = "1" ] && ok "pre-existing per-slug section survives concurrent writers" || bad "0099-fixture section clobbered by concurrent writers (got $n)"
-  [ -d "$R.cov.lock" ] && bad "report lock dir leaked after all writers exited" || ok "report lock released after the writers exit"
+  [ -e "$R.cov.lock" ] && bad "report lock leaked after all writers exited" || ok "report lock released after the writers exit"
 ) || true
 
 # ===========================================================================
