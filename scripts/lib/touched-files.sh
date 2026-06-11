@@ -31,12 +31,19 @@ _TL_TOUCHED_FILES_SOURCED=1
 # Algorithm (annotation-robust). Within each bullet, the path lives in the
 # segment LEFT of the em-dash (`—`, U+2014, which separates path from purpose),
 # or the whole bullet when there is no em-dash:
-#   - if that segment contains a backtick-delimited token, the path is the FIRST
-#     such token (the quoted path) — this is what makes an annotated bullet like
-#     `` `path` (post) — purpose `` yield `path`, not `path (post)`;
-#   - otherwise the path is the segment's FIRST whitespace-delimited token —
-#     this is what keeps the 0044 case (bare path, backticked DESCRIPTION right
-#     of the em-dash) yielding the path, not the description backtick.
+#   - if the segment (after trimming leading whitespace) STARTS with a backtick,
+#     the path is that leading backtick-delimited token (the quoted path) — this
+#     is what makes an annotated bullet like `` `path` (post) — purpose `` yield
+#     `path`, not `path (post)`;
+#   - otherwise the path is the segment's FIRST whitespace-delimited token (with
+#     any stray backticks stripped, matching the predecessor) — this keeps the
+#     0044 case (bare path, backticked DESCRIPTION) yielding the path, not the
+#     description backtick, INCLUDING the no-em-dash bullet where the description
+#     backtick sits in the same segment as the bare path.
+# The start-anchored backtick check (not "contains a backtick anywhere") is what
+# makes this subsume EVERY form the em-dash-split predecessor handled: a no-em-
+# dash bullet whose trailing words contain a backtick still yields its first
+# token, exactly as the predecessor's first-whitespace-token branch did.
 # A bullet that yields no path is dropped (paths mode) or reported (malformed).
 tl_extract_touched_paths() {  # <tdd-file> [mode]
   local f="$1" mode="${2:-paths}"
@@ -51,12 +58,13 @@ tl_extract_touched_paths() {  # <tdd-file> [mode]
       em = index(rest, "—")                      # em-dash separates path from purpose
       if (em > 0) { seg = substr(rest, 1, em - 1) }
       else        { seg = rest }                 # no em-dash: whole bullet is the segment
-      if (match(seg, /`[^`]+`/)) {
-        file = substr(seg, RSTART + 1, RLENGTH - 2)   # first backticked token within the segment
+      sub(/^[[:space:]]+/, "", seg)              # trim leading ws so "starts with" is real
+      if (substr(seg, 1, 1) == "`" && match(seg, /`[^`]+`/)) {
+        file = substr(seg, RSTART + 1, RLENGTH - 2)   # leading quoted-path token
       } else {
         file = seg
-        sub(/^[[:space:]]+/, "", file)           # trim leading ws so the first token is real
         sub(/[[:space:]].*/, "", file)           # first whitespace-delimited token
+        gsub(/`/, "", file)                       # strip stray backticks (predecessor parity)
       }
       gsub(/^[[:space:]]+|[[:space:]]+$/, "", file)
       if (MODE == "malformed") { if (file == "") print substr($0, 1, 60) }
