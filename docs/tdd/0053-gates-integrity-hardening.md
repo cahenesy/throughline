@@ -176,9 +176,11 @@ None — localized correctness fixes. ADR 0006 governs and is respected.
 - `scripts/lib/gates.sh` — A1 fresh-verdict convergence + git-diff-rc-aware coverage; A15 active-time commit; A16 empty-text BATCH_RESULT lifecycle; A17 structured file-count; A18 `--`-safe membership greps; A19 consistent pre-pass routing.
 - `tests/bounded-rework-loop.test.sh` — A1 (both directions) + A19 regressions.
 - `tests/continuous-in-build-review.test.sh` — A15 + A16 lifecycle regressions.
+- `.claude-plugin/plugin.json` — version bump (build-applied housekeeping).
 
 ## Expected diff size
 - `scripts/lib/gates.sh` — 70 lines (six localized fixes; ×1.4 shell-lib).
 - `tests/bounded-rework-loop.test.sh` — 130 lines (A1 three-case + A19; ×1.6 test).
 - `tests/continuous-in-build-review.test.sh` — 90 lines (A15 + A16 lifecycle cases; ×1.6 test).
-Total expected diff: ~290 lines across 3 files. No per-file exception needed.
+- `.claude-plugin/plugin.json` — 2 lines (version bump).
+Total expected diff: ~292 lines across 4 files. No per-file exception needed.

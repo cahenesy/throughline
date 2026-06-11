@@ -212,10 +212,12 @@ cross-cutting decision. ADR 0006 governs and is respected.
 - `scripts/lib/resume.sh` — migrate the carry-forward mutator (32-87) to the pair; drop its `[^"]*` readers (A5).
 - `scripts/lib/pause-retry.sh` — migrate the mutator (95-141) to the pair.
 - `tests/refactor-state-io.test.sh` — carry-forward round-trip + quote-safety + counter regressions.
+- `.claude-plugin/plugin.json` — version bump (build-applied housekeeping).
 
 ## Expected diff size
 - `scripts/lib/state.sh` — 320 lines (exception: cohesive single-file refactor of the fragment-mutator family — `_json_field` + read-all/write-all + 7 mutator migrations + counter helpers; splitting leaves callers half-migrated against a changed writer).
 - `scripts/lib/resume.sh` — 60 lines (mutator migration + reader replacement; ×1.4).
 - `scripts/lib/pause-retry.sh` — 45 lines (mutator migration; ×1.4).
 - `tests/refactor-state-io.test.sh` — 150 lines (round-trip all-fields + quote cases + counters; ×1.6 test).
-Total expected diff: ~575 lines across 4 files. One inline exception declared on `scripts/lib/state.sh` (cohesive refactor over the 300-line per-file cap); all other files well under cap.
+- `.claude-plugin/plugin.json` — 2 lines (version bump).
+Total expected diff: ~577 lines across 5 files. One inline exception declared on `scripts/lib/state.sh` (cohesive refactor over the 300-line per-file cap); all other files well under cap (the `.claude-plugin/plugin.json` bump is a trivial build-applied 1-line change).
