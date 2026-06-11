@@ -2048,11 +2048,18 @@ write_coverage_report() {  # <logdir> <slug> <review-log> <scope-base> <scope-he
   # Serialize the strip+append read-modify-write across --parallel feature
   # subshells (each calls this writer against the ONE run report.md; an
   # unserialized interleave drops or staleifies a concurrent writer's section).
-  # mkdir is the atomic-mutex primitive portable to macOS (no flock(1) there).
-  # Bounded wait; on timeout (stale lock from a killed writer) warn and write
-  # unserialized — report-only, degrade loudly rather than block (NFR-4).
+  # The atomic-mutex primitive is bash's own noclobber create — `( set -C;
+  # : > lock )` is open(2) with O_CREAT|O_EXCL executed INSIDE bash, so no
+  # external binary is trusted, and it stays macOS-portable (no flock(1)
+  # there). Deliberately NOT mkdir(1): uutils coreutils (0.8.0; the Rust
+  # rewrite that newer Ubuntu ships as /usr/bin/mkdir) swallows the loser's
+  # EEXIST when two processes race the same path — BOTH exit 0 and both
+  # "hold" the lock (measured 45-64% double-grant under µs contention; the
+  # kernel mkdir(2) itself is atomic — the binary lies). Bounded wait; on
+  # timeout (stale lock from a killed writer) warn and write unserialized —
+  # report-only, degrade loudly rather than block (NFR-4).
   local lockdir="$report.cov.lock" tries=0
-  until mkdir "$lockdir" 2>/dev/null; do
+  until ( set -C; : > "$lockdir" ) 2>/dev/null; do
     if [ "$tries" -ge 100 ]; then
       echo "warning: write_coverage_report: could not acquire $lockdir after ~10s (stale lock?); writing unserialized" >&2
       lockdir=""
@@ -2098,7 +2105,7 @@ write_coverage_report() {  # <logdir> <slug> <review-log> <scope-base> <scope-he
     echo "Legend: this map is REPORTED for the human PR review (FR-78). An \`unverified-gap\` is a finding for the human reviewer, not an automatic block — the FR-15 four gates remain the sole automatic flip authority (ADR 0005)."
   } >> "$report" 2>/dev/null \
     || echo "warning: write_coverage_report: could not append the coverage section to $report (report-only; the build is unaffected)" >&2
-  [ -n "$lockdir" ] && rmdir "$lockdir" 2>/dev/null
+  [ -n "$lockdir" ] && rm -f "$lockdir" 2>/dev/null
   return 0
 }
 
