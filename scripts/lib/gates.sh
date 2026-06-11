@@ -1197,6 +1197,14 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
                 if [ "$_protocol_errors" -le 2 ]; then
                   verdict='STEP_REVIEW: BLOCK protocol-error: STEP_COMMIT must be exactly "STEP_COMMIT: <integer-step-index> <full-commit-sha>". <integer-step-index> is the 1-based ordinal of the Sequencing item (a TDD label like "5b" maps to its ordinal position). Re-emit the sentinel for the SAME completed work in that exact format — do not redo the work.'
                   printf '%s\n' "$verdict" >> "$log"
+                  # TDD 0053 A15: COMMIT the elapsed streaming interval into
+                  # build_active_seconds BEFORE resetting interval_start — the
+                  # SAME accounting the review-verdict and test-first BLOCK paths
+                  # already do. Pre-fix this path reset the clock WITHOUT crediting
+                  # the interval it just measured, so the active-time watchdog
+                  # under-counted and a build looping on protocol errors could run
+                  # past its active-seconds budget (FR-57).
+                  build_active_seconds=$((build_active_seconds + $(date +%s) - interval_start))
                   # Same SIGPIPE-safe write as the review-verdict path: a coproc
                   # that died mid-correction breaks to the post-loop classifier.
                   _coproc_write "${build_in}" "$(_user_turn_json "$verdict")" || break
