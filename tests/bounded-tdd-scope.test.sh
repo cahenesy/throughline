@@ -481,6 +481,43 @@ echo "[fr55-no-impl-check] the build side carries no scope-bound logic"
     || ok "build-prompt.md adds no scope check"
 )
 
+# --- TDD 0049 / FR-53,54,67(a): annotation-robust single-source extractor ----
+TF="$REPO/scripts/lib/touched-files.sh"
+
+# A fixture whose `## Touched files` bullets cover every extraction form
+# (Verification §1): backticked, bare, annotated, bare+annotated, the 0044
+# bare-path-with-backticked-description case, no-em-dash, and a no-path stray.
+make_extract_forms() {  # <path>
+  cat > "$1" <<'EOF'
+# TDD 9010: extraction-form fixture
+Status: draft
+
+## Touched files
+- `src/backticked.txt` — purpose
+- src/bare.txt — purpose
+- `src/annot.txt` (post) — the in-scope file
+- src/bareannot.txt (new) — purpose
+- scripts/lib/gates.sh — `coverage_map_block` description backtick
+- src/noemdash.txt trailing words
+- — a stray note with no path
+EOF
+}
+
+echo "[extract-forms] tl_extract_touched_paths returns the real path for every annotated/bare/backticked form"
+(
+  source "$TF" 2>/dev/null || { bad "could not source touched-files.sh"; exit 0; }
+  TMP="$(mktemp -d)"; f="$TMP/forms.md"; make_extract_forms "$f"
+  got="$(tl_extract_touched_paths "$f")"
+  want="$(printf 'src/backticked.txt\nsrc/bare.txt\nsrc/annot.txt\nsrc/bareannot.txt\nscripts/lib/gates.sh\nsrc/noemdash.txt')"
+  [ "$got" = "$want" ] \
+    && ok "paths mode yields the bare path from each form (annotated → src/annot.txt, not 'src/annot.txt (post)')" \
+    || bad "extraction mismatch: got=[$got] want=[$want]"
+  mal="$(tl_extract_touched_paths "$f" malformed)"
+  { printf '%s\n' "$mal" | grep -q 'stray' && [ "$(printf '%s\n' "$mal" | grep -c .)" = "1" ]; } \
+    && ok "malformed mode reports exactly the one no-path bullet" \
+    || bad "malformed mode wrong: [$mal]"
+)
+
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
 rm -f "$RESULTS"
