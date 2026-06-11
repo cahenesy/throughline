@@ -351,6 +351,61 @@ echo "[minor1-tilde-fence] a ~~~-fenced bullet in ## Touched files is excluded b
     || ok "count excludes the ~~~-fenced bullet (no overflow at MAX=1)"
 )
 
+# ============================================================================
+# gates.sh — L-005 end-to-end rc propagation (TDD 0055 step 5): a parse failure
+# in the `## Touched files` set must reach _rework_pre_pass and route to a
+# parse-error path, NEVER a false structural-finding(a). Control: a genuinely
+# empty (cleanly-parsed) set still yields the normal empty-set behavior — so
+# rc=2 (parse fail) and rc=0+empty (no bullets) are distinguishable.
+# ============================================================================
+IMPL="$REPO/scripts/implement.sh"
+echo "[l005-rc-propagation] a touched-files parse failure routes _rework_pre_pass to a parse-error path, not structural-finding(a) (L-005, Verification §4)"
+(
+  D="$(mktemp -d)"; trap 'rm -rf "$D"' EXIT; cd "$D" 2>/dev/null || { bad "INFRA: cd failed"; exit 0; }
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"; mkdir -p "$STATE_DIR"; TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" 2>/dev/null || { bad "INFRA: could not source implement.sh"; exit 0; }
+  git init -q -b master; git config user.email t@t.t; git config user.name t
+  printf 'base\n' > base.txt; git add -A; git commit -qm base >/dev/null
+  mkdir -p docs/tdd
+  cat > docs/tdd/0099-l005.md <<'EOF'
+# TDD 0099: l005 fixture
+Status: draft
+
+## Touched files
+- src/a.txt — the in-scope file
+EOF
+  git add -A; git commit -qm "build start" >/dev/null; BS="$(git rev-parse HEAD)"
+  mkdir -p src; printf 'l1\nl2\n' > src/a.txt
+  git add -A; git commit -qm "edit src/a.txt" >/dev/null; NH="$(git rev-parse HEAD)"
+
+  # (1) Parse failure: stub awk so md_bullet_path → _rework_touched_files returns 2.
+  out_fail="$( awk() { return 3; }; _rework_pre_pass 0099-l005 docs/tdd/0099-l005.md "$NH" "$BS" "$BS" 8 2>/dev/null )"; rc_fail=$?
+  printf '%s\n' "$out_fail" | grep -q 'structural-finding(a)' \
+    && bad "a touched-files parse failure was wrongly reported as structural-finding(a) (L-005)" \
+    || ok "no false structural-finding(a) on a parse failure"
+  printf '%s\n' "$out_fail" | grep -qiE 'parse' \
+    && ok "a distinct parse-error cause is emitted (rc=$rc_fail)" \
+    || bad "expected a distinct parse-error diagnostic (got: [$out_fail], rc=$rc_fail)"
+  [ "$rc_fail" -ne 0 ] && ok "non-zero rc on the parse-error path" || bad "expected non-zero rc on parse failure (got $rc_fail)"
+
+  # (2) Control: a cleanly-parsed but EMPTY ## Touched files → normal empty-set
+  # behavior (structural-finding(a) for the changed file), NOT the parse-error path.
+  cat > docs/tdd/0099-empty.md <<'EOF'
+# TDD 0099: empty touched-files
+Status: draft
+
+## Touched files
+EOF
+  out_empty="$(_rework_pre_pass 0099-empty docs/tdd/0099-empty.md "$NH" "$BS" "$BS" 8 2>/dev/null)"
+  printf '%s\n' "$out_empty" | grep -q 'structural-finding(a) src/a.txt' \
+    && ok "an empty (cleanly-parsed) touched-files still yields structural-finding(a) (control: distinguishable from parse fail)" \
+    || bad "control: expected structural-finding(a) on the empty set (got: [$out_empty])"
+  printf '%s\n' "$out_empty" | grep -qi 'parse' \
+    && bad "control: a clean empty set must NOT take the parse-error path" \
+    || ok "the empty-set control does not emit a parse-error"
+)
+
 # --- report ----------------------------------------------------------------
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
