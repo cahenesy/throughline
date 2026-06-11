@@ -519,6 +519,36 @@ echo "[extract-forms] tl_extract_touched_paths returns the real path for every a
     || bad "malformed mode wrong: [$mal]"
 )
 
+echo "[gates-annotated-membership] an in-scope edit to a file declared with the annotated form does NOT trip structural-finding(a) through gates.sh (Verification §3)"
+(
+  D="$(mktemp -d)"; cd "$D" 2>/dev/null || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"; mkdir -p "$STATE_DIR"; TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" 2>/dev/null || { bad "could not source implement.sh"; exit 0; }
+  git init -q -b master; git config user.email t@t.t; git config user.name t
+  printf 'base\n' > base.txt; git add -A; git commit -qm base >/dev/null
+  mkdir -p docs/tdd
+  cat > docs/tdd/0099-annot.md <<'EOF'
+# TDD 0099: annotated-path fixture
+Status: draft
+
+## Touched files
+- `src/a.txt` (post) — the in-scope file
+
+## Expected diff size
+- src/a.txt — 50 lines
+EOF
+  git add -A; git commit -qm "build start" >/dev/null; BS="$(git rev-parse HEAD)"
+  mkdir -p src; printf 'l1\nl2\nl3\n' > src/a.txt
+  git add -A; git commit -qm "rework: in-scope edit" >/dev/null; NH="$(git rev-parse HEAD)"
+  out="$(_rework_pre_pass 0099-annot docs/tdd/0099-annot.md "$NH" "$BS" "$BS" 8)"; rc=$?
+  [ "$rc" -eq 0 ] && ok "pre-pass clears the annotated-path in-scope edit (rc 0)" \
+    || bad "annotated-path in-scope edit should clear (rc=$rc, out=$out)"
+  printf '%s\n' "$out" | grep -q 'structural-finding(a)' \
+    && bad "annotated form wrongly tripped structural-finding(a): $out" \
+    || ok "no false structural-finding(a) for the annotated declaration"
+)
+
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
 rm -f "$RESULTS"
