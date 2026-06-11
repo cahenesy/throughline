@@ -1030,6 +1030,11 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
   # pause/resume spawns a fresh coprocess + fresh counters — the budget is "2
   # corrections per build attempt", not per TDD lifetime). No fragment-schema change.
   local _protocol_errors=0 _protocol_fatal=0
+  # TDD 0053 A16: latch the stdin-close lifecycle so it runs at most once. Both
+  # the normal text-path BATCH_RESULT arm and the empty-text (tool-use-carried)
+  # path check this before closing, so a second BATCH_RESULT event cannot
+  # double-close (and possibly mis-close a reused number for) the {build_in} fd.
+  local _build_stdin_closed=0
   interval_start=$(date +%s)   # the spawn → first-STEP_COMMIT interval begins now
   while :; do
     # Capture read's OWN status directly — NOT via `if ! read; then read_rc=$?`,
@@ -1223,7 +1228,18 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
               # No real attempt (template echo / prose) → ignore, exactly as before.
             fi
             ;;
-          *"BATCH_RESULT: "*)
+          *)
+            # BATCH_RESULT lifecycle. The outer case already confirmed the RAW
+            # event carries a sentinel; this arm fires when the extracted text is
+            # NOT a STEP_COMMIT — i.e. either the text carries the BATCH_RESULT
+            # (normal path) OR the text is empty because the sentinel rode in a
+            # tool-use block (TDD 0053 A16: _extract_event_text yields no spoken
+            # content). In BOTH cases, if the raw event is a BATCH_RESULT sentinel,
+            # run the stdin-close lifecycle — the verdict is parsed from the
+            # mirrored raw log regardless of where the sentinel sat, so a tool-use
+            # -carried BATCH_RESULT must NOT fall through and hang the finished
+            # build to the inter-event watchdog (143 → transient → spurious pause).
+            #
             # TDD 0025 §1 — stream-json input-mode lifecycle. `claude -p
             # --input-format stream-json` does NOT self-terminate on `end_turn`;
             # it blocks reading stdin for the next user-turn JSON until EOF.
@@ -1233,13 +1249,22 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
             # the other holding the pipe open, so the build keeps blocking and
             # the inter-event watchdog kills it (143 → transient → pause).
             # Continue (no `break`) — the read loop drains any tail events
-            # until the build's stdout closes naturally.
-            # TDD 0030 §5: commit the final active interval and STOP the clock —
-            # the build is done; remaining drain time is free.
-            build_active_seconds=$((build_active_seconds + $(date +%s) - interval_start))
-            clock_active=0
-            exec {build_in}>&- 2>/dev/null || true
-            exec {BUILD[1]}>&- 2>/dev/null || true
+            # until the build's stdout closes naturally. Guarded by
+            # _build_stdin_closed (TDD 0053 A16) so a later BATCH_RESULT cannot
+            # double-close the {build_in} fd.
+            case "$evt" in
+              *"BATCH_RESULT: "*)
+                if [ "$_build_stdin_closed" -eq 0 ]; then
+                  # TDD 0030 §5: commit the final active interval and STOP the
+                  # clock — the build is done; remaining drain time is free.
+                  build_active_seconds=$((build_active_seconds + $(date +%s) - interval_start))
+                  clock_active=0
+                  exec {build_in}>&- 2>/dev/null || true
+                  exec {BUILD[1]}>&- 2>/dev/null || true
+                  _build_stdin_closed=1
+                fi
+                ;;
+            esac
             ;;
         esac
         ;;
