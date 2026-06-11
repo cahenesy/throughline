@@ -20,6 +20,22 @@
 # $STATE_DIR, …), which the runner sets before these functions are called.
 # Shared scope is deliberate for this dogfood slice, matching lib/state.sh.
 
+# Source the single source of truth for `## Touched files` parsing (TDD 0049 /
+# FR-53, FR-54, FR-67(a)) by its SIBLING path, resolved from THIS file's own
+# location so it works whether gates.sh is sourced by absolute path or run
+# standalone. FATAL-on-missing (never silently leave _rework_touched_files
+# undefined) per ADR 0006 spirit. The `return 1 2>/dev/null || exit 1` idiom is
+# correct in both sourced and executed contexts. `_tf_lib` is scratch and is
+# unset after use; the lib's own `_TL_TOUCHED_FILES_SOURCED` include guard makes
+# a double-source (gates.sh AND learnings.sh under one implement.sh) a no-op.
+_tf_lib="${BASH_SOURCE[0]%/*}/touched-files.sh"
+# shellcheck source=scripts/lib/touched-files.sh
+{ [ -r "$_tf_lib" ] && . "$_tf_lib"; } || {
+  echo "FATAL: cannot source $_tf_lib (partial install or perms)" >&2
+  return 1 2>/dev/null || exit 1
+}
+unset _tf_lib
+
 # _claude_call <log> <args...> — run a single-shot `claude` call under the child
 # watchdog (TDD 0027 §1 / FR-42). On timeout, GNU `timeout` SIGTERMs the child
 # and ITSELF exits 124 — a code _classify_cause's signal arm does NOT handle (it
@@ -1378,36 +1394,15 @@ _rework_scope_cap() {  # <region-lines>
   if [ "$scaled" -gt "$floor" ]; then printf '%s' "$scaled"; else printf '%s' "$floor"; fi
 }
 
-# _rework_touched_files <tdd>  — echo the declared touched-file set (one path
-# per line) parsed from the TDD's `## Touched files` section (TDD 0014). The path
-# is extracted with the SAME em-dash-split + backtick-strip + trim logic as the
-# sibling _rework_file_declared_bound (TDD 0048 / FR-67(a)): the path is whatever
-# precedes the em-dash (`—`, U+2014, which separates path from purpose), or — when
-# a bullet has no em-dash — its first whitespace-delimited token; backticks are
-# stripped so a bare or backticked path both parse, and a bullet that yields no
-# path is dropped (not emitted as a blank that would pollute the membership set).
-# This makes the parser identical to its sibling so a bare path whose DESCRIPTION
-# uses backticks yields the path, not the first description backtick token (the
-# TDD 0044 false structural-finding(a)). Fence-aware so a code block inside the
-# section is ignored. Mirrors tdd-lint.sh's _tl_extract_touched_paths.
+# _rework_touched_files <tdd>  — echo the declared touched-file set (one path per
+# line) parsed from the TDD's `## Touched files` section (TDD 0014). Thin
+# delegating wrapper over the single source of truth in lib/touched-files.sh
+# (TDD 0049 / FR-53, FR-67(a)): one annotation-robust extractor backs this
+# build-time FR-67(a) membership reader, tdd-lint.sh's design-time reader, and
+# learnings.sh's aggregation reader, so they cannot drift. Name + signature kept
+# so every existing caller is untouched.
 _rework_touched_files() {  # <tdd>
-  local f="$1"
-  [ -f "$f" ] || return 0
-  awk '
-    BEGIN { in_fence=0; in_sec=0 }
-    /^[[:space:]]*```/ { in_fence = !in_fence; next }
-    !in_fence && /^## Touched files[[:space:]]*$/ { in_sec=1; next }
-    !in_fence && /^## / { in_sec=0; next }
-    in_sec && !in_fence && /^- / {
-      rest = substr($0, 3)                       # drop "- "
-      em = index(rest, "—")                      # em-dash separates path from purpose
-      if (em > 0) { file = substr(rest, 1, em - 1) }
-      else        { file = rest; sub(/[[:space:]].*/, "", file) }  # no em-dash: first token
-      gsub(/`/, "", file)                        # strip backticks if the path was quoted
-      gsub(/^[[:space:]]+|[[:space:]]+$/, "", file)
-      if (file != "") print file                 # skip a bullet with no extractable path
-    }
-  ' "$f"
+  tl_extract_touched_paths "$1"
 }
 
 # _rework_file_declared_bound <tdd> <file>  — echo "<lines> <exception?>" for
