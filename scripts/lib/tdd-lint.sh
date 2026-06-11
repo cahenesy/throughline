@@ -37,6 +37,19 @@ _tf_lib="${BASH_SOURCE[0]%/*}/touched-files.sh"
 }
 unset _tf_lib
 
+# Also source the unified markdown parser directly (TDD 0055): tdd-lint calls
+# md_section_body (the fence-aware section walk) and md_bullet_path_of_line (the
+# shared per-bullet path op) itself, so it must not rely on transitive sourcing
+# through touched-files.sh. Same FATAL-on-missing idiom; md.sh's include guard
+# makes the (already-loaded-via-touched-files) repeat source a no-op.
+_md_lib="${BASH_SOURCE[0]%/*}/md.sh"
+# shellcheck source=scripts/lib/md.sh
+{ [ -r "$_md_lib" ] && . "$_md_lib"; } || {
+  echo "FATAL: cannot source $_md_lib (partial install or perms)" >&2
+  return 1 2>/dev/null || exit 1
+}
+unset _md_lib
+
 # Emit a finding line on stdout. Internal helper; callers pass severity/code/msg.
 _tl_emit() {  # <file> <line> <severity> <code> <msg>
   printf '%s:%s %s %s: %s\n' "$1" "$2" "$3" "$4" "$5"
@@ -106,25 +119,23 @@ tl_lint_structural() {  # <tdd-path>
       "missing '## Requirement traceability' section"
     rc=2
   else
-    # BL-2 + MAJ-4 (review pass 2): capture awk's rc directly (command
-    # substitution would otherwise mask a crash as "no rows" — a
-    # false-positive blocker that hides the real error). Also track
-    # fenced-code state so a fenced-only |-table inside the section does
-    # NOT satisfy has_rows (the traceability rows must be real markdown
-    # structure, not example literals inside a code fence).
-    local has_rows awk_rc
-    has_rows="$(awk '
-      BEGIN { in_sec=0; in_fence=0 }
-      /^[[:space:]]*```/ { in_fence = !in_fence; next }
-      !in_fence && /^## Requirement traceability$/ { in_sec=1; next }
-      !in_fence && /^## / { in_sec=0; next }
-      in_sec && !in_fence && (/^\|/ || /^- FR-/ || /^- NFR-/) { print "yes"; exit }
-    ' "$f")"
+    # TDD 0055: the fence-aware section walk is shared via md.sh (md_section_body
+    # honors ``` AND ~~~ and is rc-checked), so a fenced-only |-table inside the
+    # section still does NOT satisfy has_rows (the traceability rows must be real
+    # markdown structure, not example literals inside a code fence). A non-zero rc
+    # is a real crash (return 2 + diagnostic), never masked as "no rows" — a
+    # false-positive blocker that hides the real error.
+    local body has_rows awk_rc
+    body="$(md_section_body "$f" "Requirement traceability")"
     awk_rc=$?
     if [ "$awk_rc" -ne 0 ]; then
       echo "tdd-lint: structural: traceability has_rows awk failed (exit $awk_rc) on $f" >&2
       return 2
     fi
+    # `|| true`: grep rc 1 (no matching row) is the legitimate "no rows" result,
+    # not an error — md_section_body's rc was already checked above, so the body
+    # is valid and grep cannot fail for any other reason here.
+    has_rows="$(printf '%s\n' "$body" | grep -m1 -E '^\||^- FR-|^- NFR-' || true)"
     if [ -z "$has_rows" ]; then
       _tl_emit "$f" 0 blocker "section.traceability" \
         "'## Requirement traceability' section contains no table-row or '- FR-/NFR-' definition-list entry"
@@ -296,20 +307,12 @@ tl_lint_traced() {  # <tdd-path>
   # output to the trivial tail (grep/sort) — which never reaches the
   # primary failure modes for this lint (grep rc=1 = no matches = valid
   # empty result; sort is read-only on a small stdin buffer).
-  # MAJ-1 (review pass 5): fence-aware body extraction. The previous form
-  # let an FR ID inside a ``` fenced code block in the traceability section
-  # silently satisfy the trace — a real untraced requirement hidden behind
-  # a code-block illustration. This is the same convention `has_rows`
-  # (BL-2/MAJ-4 fix), `section.empty`, and `tl_lint_placeholders` already
-  # use; tl_lint_traced now matches.
+  # TDD 0055: fence-aware body extraction shared via md.sh (md_section_body, ```
+  # AND ~~~). An FR ID inside a fenced code block in the traceability section must
+  # NOT silently satisfy the trace — a real untraced requirement hidden behind a
+  # code-block illustration. A non-zero rc is a real crash (return 2 + diagnostic).
   local awk_out awk_rc
-  awk_out="$(awk '
-    BEGIN { in_sec=0; in_fence=0 }
-    /^[[:space:]]*```/ { in_fence = !in_fence; next }
-    !in_fence && /^## Requirement traceability$/ { in_sec=1; next }
-    !in_fence && /^## / { in_sec=0; next }
-    in_sec && !in_fence { print }
-  ' "$f")"
+  awk_out="$(md_section_body "$f" "Requirement traceability")"
   awk_rc=$?
   if [ "$awk_rc" -ne 0 ]; then
     echo "tdd-lint: traced: ids_in_table awk failed (exit $awk_rc) on $f" >&2
@@ -498,25 +501,28 @@ check_touched_file_count() {  # <tdd-path>
   local max="${THROUGHLINE_TDD_MAX_TOUCHED:-8}"
   _tl_bound_active "$max" || return 0   # non-positive / non-int → skip
 
-  local out awk_rc
-  out="$(awk '
-    BEGIN { in_fence=0; in_sec=0; found=0; n=0 }
-    /^[[:space:]]*```/ { in_fence = !in_fence; next }
-    !in_fence && /^## Touched files[[:space:]]*$/ { in_sec=1; found=1; next }
-    !in_fence && /^## / { in_sec=0; next }
-    in_sec && !in_fence && /^- [^[:space:]]/ { n++ }
-    END { printf "%d %d\n", found, n }
-  ' "$f")"
+  # Missing-section is a caller-side heading check (the section is REQUIRED),
+  # matching tl_lint_structural's heading greps. A missing section is itself a
+  # PRECHECK_FAIL.
+  if ! grep -qE '^## Touched files[[:space:]]*$' "$f"; then
+    _tl_precheck_fail "missing-section ## Touched files"
+    return 1
+  fi
+  # TDD 0055: the fence walk is shared via md.sh (md_section_body, ``` AND ~~~ —
+  # closes the residual count-vs-extract ~~~ divergence, MINOR-1); a non-zero rc
+  # is a real crash (return 2 + diagnostic), never a silent zero count. The bullet
+  # anchor is `/^- /` — the SINGLE canonical anchor md_bullet_path uses (A23), so
+  # count and extraction agree on what a bullet is (a `-  x` two-space bullet is
+  # counted by both).
+  local body awk_rc
+  body="$(md_section_body "$f" "Touched files")"
   awk_rc=$?
   if [ "$awk_rc" -ne 0 ]; then
     echo "tdd-lint: touched-files: awk failed (exit $awk_rc) on $f" >&2
     return 2
   fi
-  local found="${out%% *}" n="${out##* }"
-  if [ "$found" -eq 0 ]; then
-    _tl_precheck_fail "missing-section ## Touched files"
-    return 1
-  fi
+  local n
+  n="$(printf '%s\n' "$body" | grep -cE '^- ')"
   local rc=0
   # TDD 0048 (FR-53/FR-54): flag any bullet the parser cannot turn into a path, so
   # an unparseable touched-files section is refused here rather than at build time.
@@ -551,47 +557,47 @@ check_per_file_diff_bound() {  # <tdd-path>
   local max="${THROUGHLINE_TDD_MAX_FILE_DIFF:-300}"
   _tl_bound_active "$max" || return 0   # non-positive / non-int → skip
 
-  # The em-dash (—) is the file/estimate separator in the declared section; the
-  # awk index() below is byte-based so it works regardless of locale.
-  local out awk_rc
-  out="$(awk -v MAX="$max" '
-    BEGIN { in_fence=0; in_sec=0; found=0; fail=0 }
-    /^[[:space:]]*```/ { in_fence = !in_fence; next }
-    !in_fence && /^## Expected diff size[[:space:]]*$/ { in_sec=1; found=1; next }
-    !in_fence && /^## / { in_sec=0; next }
-    in_sec && !in_fence && /^- [^[:space:]]/ {
-      rest = substr($0, 3)                       # strip the leading "- "
-      em = index(rest, "—")
-      if (em > 0) { file = substr(rest, 1, em - 1) }
-      else        { file = rest; sub(/[[:space:]].*/, "", file) }
-      gsub(/`/, "", file)
-      gsub(/^[[:space:]]+|[[:space:]]+$/, "", file)
-      if (match(rest, /[0-9]+[[:space:]]*lines?/)) {
-        num = substr(rest, RSTART, RLENGTH)
-        sub(/[^0-9].*/, "", num)
-        n = num + 0
-        if (n > MAX && index(rest, "(exception:") == 0) {
-          printf "PRECHECK_FAIL: per-file-diff %s %d > %d (no exception)\n", file, n, MAX
-          fail = 1
-        }
-      } else {
-        printf "PRECHECK_FAIL: expected-diff-malformed %s\n", $0
-        fail = 1
-      }
-    }
-    END {
-      if (!found) { printf "PRECHECK_FAIL: missing-section ## Expected diff size\n"; exit 2 }
-      exit (fail ? 1 : 0)
-    }
-  ' "$f")"
+  # A4: the missing-section signal is a caller-side heading check, decoupled from
+  # the awk exit space ENTIRELY. The predecessor encoded "section missing" as the
+  # awk's `exit 2` — colliding with gawk's own FATAL exit 2, so a gawk crash was
+  # silently read as "missing section". With detection moved off the awk exit code,
+  # a non-zero rc from the (md.sh) fence walk below is UNAMBIGUOUSLY a real crash
+  # (rc 2 + diagnostic), never "missing section".
+  if ! grep -qE '^## Expected diff size[[:space:]]*$' "$f"; then
+    _tl_precheck_fail "missing-section ## Expected diff size"
+    return 1
+  fi
+  # TDD 0055: the fence walk is shared via md.sh (md_section_body, ``` AND ~~~);
+  # the per-bullet PATH isolation is shared via md_bullet_path_of_line. The
+  # count/(exception:) parse + the MAX comparison stay HERE (caller-side) — only
+  # the fence walk and path isolation are unified. A non-zero rc is a real crash.
+  local body awk_rc
+  body="$(md_section_body "$f" "Expected diff size")"
   awk_rc=$?
-  if [ "$awk_rc" -gt 2 ]; then
-    echo "tdd-lint: per-file-diff: awk failed (exit $awk_rc) on $f" >&2
+  if [ "$awk_rc" -ne 0 ]; then
+    echo "tdd-lint: per-file-diff: section-body parse failed (rc $awk_rc) on $f" >&2
     return 2
   fi
-  [ -n "$out" ] && printf '%s\n' "$out"
-  [ "$awk_rc" -eq 0 ] && return 0
-  return 1
+  local line file rest n rc=0
+  while IFS= read -r line; do
+    case "$line" in "- "*) ;; *) continue ;; esac   # `/^- /` anchor (A23)
+    file="$(md_bullet_path_of_line "$line")"
+    rest="${line#- }"
+    if [[ "$rest" =~ ([0-9]+)[[:space:]]*lines? ]]; then
+      n="${BASH_REMATCH[1]}"
+      case "$rest" in *'(exception:'*) : ;;   # declared exception → bound not enforced
+        *)
+          if [ "$n" -gt "$max" ]; then
+            _tl_precheck_fail "per-file-diff $file $n > $max (no exception)"
+            rc=1
+          fi ;;
+      esac
+    else
+      _tl_precheck_fail "expected-diff-malformed $line"
+      rc=1
+    fi
+  done <<< "$body"
+  return "$rc"
 }
 
 # tl_check_bounds — run the three scope-bound checks over each TDD. Findings
