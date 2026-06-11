@@ -27,6 +27,21 @@
 # No external dependencies: bash + state.sh readers; JSON via state.sh's
 # json_escape (no jq requirement, matching status.sh's sed-fallback posture).
 
+# Source the single source of truth for `## Touched files` parsing (TDD 0049 /
+# FR-53) by its SIBLING path. learnings.sh sources standalone (the test suite
+# does so), so a neutral shared lib both libs source is cleaner than coupling to
+# gates.sh being sourced. FATAL-on-missing per ADR 0006 spirit; the dual
+# `return 1 2>/dev/null || exit 1` idiom is correct sourced or executed. The lib's
+# `_TL_TOUCHED_FILES_SOURCED` include guard makes the double-source under one
+# implement.sh (gates.sh AND learnings.sh) a no-op.
+_tf_lib="${BASH_SOURCE[0]%/*}/touched-files.sh"
+# shellcheck source=scripts/lib/touched-files.sh
+{ [ -r "$_tf_lib" ] && . "$_tf_lib"; } || {
+  echo "FATAL: cannot source $_tf_lib (partial install or perms)" >&2
+  return 1 2>/dev/null || exit 1
+}
+unset _tf_lib
+
 # --- small helpers ------------------------------------------------------------
 
 # Resolve the recurring threshold (FR-72; resolves the PRD open question).
@@ -123,21 +138,17 @@ _finding_field() {  # <obj> <field>
 # Extract the pattern_tags array as a space-separated tag list.
 _finding_tags() { printf '%s' "$1" | sed -n 's/.*"pattern_tags":\(\[[^]]*\]\).*/\1/p' | head -1 | tr -d '[]"' | sed 's/,/ /g'; }
 
-# Echo the declared `## Touched files` paths (one per line) of a TDD, parsed by
-# the same line shape tdd-lint.sh / gates.sh's _rework_touched_files reads (the
-# first backtick-delimited token on a `- ` bullet, fence-aware).
-_touched_files_of_tdd() {
+# Echo the declared `## Touched files` paths (one per line) of a TDD. Delegates to
+# tl_extract_touched_paths (single source of truth, lib/touched-files.sh — TDD
+# 0049 / FR-53), so the learning-aggregation path reads the SAME annotation-robust
+# set as gates.sh's FR-67(a) reader and tdd-lint.sh's design-time reader (the
+# pre-0049 first-backtick-token logic here was the 0044 footgun: it extracted a
+# description backtick or dropped a bare path). Signature kept as <mainrepo> <slug>;
+# paths-only by intent (learnings never needs `malformed` mode).
+_touched_files_of_tdd() {  # <mainrepo> <slug>
   local f="$1/docs/tdd/$2.md"
   [ -f "$f" ] || return 0
-  awk '
-    BEGIN { in_fence=0; in_sec=0 }
-    /^[[:space:]]*```/ { in_fence = !in_fence; next }
-    !in_fence && /^## Touched files[[:space:]]*$/ { in_sec=1; next }
-    !in_fence && /^## / { in_sec=0; next }
-    in_sec && !in_fence && /^- / {
-      if (match($0, /`[^`]+`/)) print substr($0, RSTART+1, RLENGTH-2)
-    }
-  ' "$f"
+  tl_extract_touched_paths "$f"
 }
 
 # --- §1: recurring-pattern detection ------------------------------------------

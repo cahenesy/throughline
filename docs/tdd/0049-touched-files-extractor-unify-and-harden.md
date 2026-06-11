@@ -1,5 +1,5 @@
 # TDD 0049: Touched-files path extractor — single source of truth + annotation-robust
-Status: draft
+Status: implemented
 PRD refs: FR-67 (criterion (a) touched-file-set check); FR-53; FR-54
 PRD-rev: 0aa1e28
 ADR constraints: 0005, 0006

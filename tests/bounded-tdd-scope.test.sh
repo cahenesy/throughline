@@ -257,6 +257,40 @@ Total expected diff: 40 lines across 1 file.
 EOF
 }
 
+# TDD 0049: emit each .sh (except touched-files.sh) under the given dirs that
+# INLINES a `## Touched files` path extractor — opens the awk section AND emits a
+# path (`print file`); the counter check_touched_file_count only counts (`n++`).
+_inlined_tf_extractors() {  # <dir>...
+  local d sf
+  for d in "$@"; do
+    for sf in "$d"/*.sh; do
+      [ -e "$sf" ] || continue
+      [ "$(basename "$sf")" = touched-files.sh ] && continue
+      grep -qF '## Touched files[[:space:]]*$/' "$sf" && grep -q 'print file' "$sf" && basename "$sf"
+    done
+  done
+}
+
+# TDD 0049: a `## Touched files` section covering EVERY extraction form —
+# backticked, bare, annotated, bare+annotated, the 0044 case, no-em-dash,
+# no-em-dash-with-trailing-backtick, no-path stray.
+make_extract_forms() {  # <path>
+  cat > "$1" <<'EOF'
+# TDD 9010: extraction-form fixture
+Status: draft
+
+## Touched files
+- `src/backticked.txt` — purpose
+- src/bare.txt — purpose
+- `src/annot.txt` (post) — the in-scope file
+- src/bareannot.txt (new) — purpose
+- scripts/lib/gates.sh — `coverage_map_block` description backtick
+- src/noemdash.txt trailing words
+- src/noemdash2.txt notes `backtick` token
+- — a stray note with no path
+EOF
+}
+
 # ============================================================================
 echo "[bounds-clean] in-bounds TDD: --bounds exits 0 with no PRECHECK_FAIL"
 (
@@ -398,33 +432,45 @@ echo "[bounds-touched-bare-ok] a bare-but-extractable touched-files path does NO
   esac
 )
 
-echo "[bounds-parser-agreement] _tl_extract_touched_paths (tdd-lint) and _rework_touched_files (gates.sh) agree byte-for-byte"
+echo "[bounds-parser-agreement] all THREE touched-files readers agree byte-for-byte on one fixture (Verification §2)"
 (
-  TMP="$(mktemp -d)"; f="$TMP/agree.md"
-  cat > "$f" <<'EOF'
-# TDD 9009: parser-agreement fixture
-Status: draft
-
-## Touched files
-- `scripts/lib/gates.sh` — `coverage_map_block` with backticked words
-- scripts/lib/tdd-lint.sh — `_tl_extract_touched_paths` description backticks
-- scripts/foo.sh trailing words with no em-dash
-EOF
-  # Source BOTH libs in one subshell and diff the two extractors on the SAME
-  # fixture; the env mirrors the bounded-rework cases' THROUGHLINE_SOURCE_ONLY path.
+  # Stage the fixture at docs/tdd/<slug>.md under a temp repo so the
+  # <repo> <slug>-signature _touched_files_of_tdd resolves to the SAME file the
+  # path-signature readers see.
+  TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT; mkdir -p "$TMP/docs/tdd"; f="$TMP/docs/tdd/9009.md"
+  make_extract_forms "$f"
   agree="$(
     export STATE_DIR="$TMP/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
     export INTEGRATION="master" CHANGE="ci" LOGDIR="$TMP"
     mkdir -p "$STATE_DIR"
     TDDS=()
-    THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" 2>/dev/null || { printf 'SOURCE_FAIL gates'; exit 0; }
+    # implement.sh brings _rework_touched_files (gates) + _touched_files_of_tdd
+    # (learnings); tdd-lint.sh brings _tl_extract_touched_paths.
+    THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" 2>/dev/null || { printf 'SOURCE_FAIL impl'; exit 0; }
     source "$LINT" 2>/dev/null || { printf 'SOURCE_FAIL lint'; exit 0; }
     a="$(_rework_touched_files "$f")"
     b="$(_tl_extract_touched_paths "$f")"
-    [ "$a" = "$b" ] && printf 'AGREE' || printf 'DIFF a=[%s] b=[%s]' "$a" "$b"
+    c="$(_touched_files_of_tdd "$TMP" 9009)"
+    if [ "$a" = "$b" ] && [ "$b" = "$c" ]; then printf 'AGREE'
+    else printf 'DIFF a=[%s] b=[%s] c=[%s]' "$a" "$b" "$c"; fi
   )"
-  [ "$agree" = "AGREE" ] && ok "the two parsers emit byte-identical output (drift guard)" \
-    || bad "parser drift between tdd-lint and gates.sh: $agree"
+  [ "$agree" = "AGREE" ] && ok "all three readers emit byte-identical output (single source of truth, 3-way drift guard)" \
+    || bad "parser drift across the three readers: $agree"
+)
+
+echo "[bounds-single-source] the inlined-extractor guard catches a planted copy and the real repo is clean (Verification §2)"
+(
+  # Negative control FIRST: plant a file that DOES inline an extractor and assert
+  # the guard detects it — proving the guard is real, not a vacuous always-pass.
+  TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+  printf '%s\n' '/^## Touched files[[:space:]]*$/ { in_sec=1 }' 'in_sec { if (file != "") print file }' > "$TMP/evil.sh"
+  _inlined_tf_extractors "$TMP" | grep -q 'evil.sh' \
+    && ok "guard detects a planted inlined extractor (non-vacuous)" \
+    || bad "guard failed to detect a planted inlined extractor"
+  # Real assertion: the repo's scripts carry NO inlined extractor outside the lib.
+  real="$(_inlined_tf_extractors "$REPO/scripts/lib" "$REPO/scripts")"
+  [ -z "$real" ] && ok "the touched-files path extractor lives only in touched-files.sh" \
+    || bad "inlined '## Touched files' extractor(s) outside the shared lib: $real"
 )
 
 echo "[agent-scope] design-reviewer carries the scope-coherence working-memory item"
@@ -480,6 +526,54 @@ echo "[fr55-no-impl-check] the build side carries no scope-bound logic"
     && bad "build-prompt.md must not add a scope check (FR-55 / §5)" \
     || ok "build-prompt.md adds no scope check"
 )
+
+# --- TDD 0049 / FR-53,54,67(a): annotation-robust single-source extractor ----
+TF="$REPO/scripts/lib/touched-files.sh"
+
+echo "[extract-forms] tl_extract_touched_paths returns the real path for every annotated/bare/backticked form"
+(
+  source "$TF" 2>/dev/null || { bad "could not source touched-files.sh"; exit 0; }
+  TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT; f="$TMP/forms.md"; make_extract_forms "$f"
+  got="$(tl_extract_touched_paths "$f")"
+  want="$(printf 'src/backticked.txt\nsrc/bare.txt\nsrc/annot.txt\nsrc/bareannot.txt\nscripts/lib/gates.sh\nsrc/noemdash.txt\nsrc/noemdash2.txt')"
+  [ "$got" = "$want" ] \
+    && ok "paths mode yields the bare path from each form (annotated → src/annot.txt; no-em-dash with a trailing backtick → src/noemdash2.txt, not 'backtick')" \
+    || bad "extraction mismatch: got=[$got] want=[$want]"
+  mal="$(tl_extract_touched_paths "$f" malformed)"
+  { printf '%s\n' "$mal" | grep -q 'stray' && [ "$(printf '%s\n' "$mal" | grep -c .)" = "1" ]; } \
+    && ok "malformed mode reports exactly the one no-path bullet" \
+    || bad "malformed mode wrong: [$mal]"
+)
+
+echo "[gates-annotated-membership] an in-scope edit to a file declared with the annotated form does NOT trip structural-finding(a) through gates.sh (Verification §3)"
+(
+  D="$(mktemp -d)"; trap 'rm -rf "$D"' EXIT; cd "$D" 2>/dev/null || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"; mkdir -p "$STATE_DIR"; TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" 2>/dev/null || { bad "could not source implement.sh"; exit 0; }
+  git init -q -b master; git config user.email t@t.t; git config user.name t
+  printf 'base\n' > base.txt; git add -A; git commit -qm base >/dev/null
+  mkdir -p docs/tdd
+  cat > docs/tdd/0099-annot.md <<'EOF'
+# TDD 0099: annotated-path fixture
+Status: draft
+
+## Touched files
+- `src/a.txt` (post) — the in-scope file
+EOF
+  git add -A; git commit -qm "build start" >/dev/null; BS="$(git rev-parse HEAD)"
+  mkdir -p src; printf 'l1\nl2\nl3\n' > src/a.txt
+  git add -A; git commit -qm "rework: in-scope edit" >/dev/null; NH="$(git rev-parse HEAD)"
+  out="$(_rework_pre_pass 0099-annot docs/tdd/0099-annot.md "$NH" "$BS" "$BS" 8)"; rc=$?
+  [ "$rc" -eq 0 ] && ok "pre-pass clears the annotated-path in-scope edit (rc 0)" \
+    || bad "annotated-path in-scope edit should clear (rc=$rc, out=$out)"
+  printf '%s\n' "$out" | grep -q 'structural-finding(a)' \
+    && bad "annotated form wrongly tripped structural-finding(a): $out" \
+    || ok "no false structural-finding(a) for the annotated declaration"
+)
+
+# The tdd-lint + learnings wrappers are proven by [bounds-parser-agreement] (all
+# three equal tl_extract_touched_paths, whose output [extract-forms] pins).
 
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
