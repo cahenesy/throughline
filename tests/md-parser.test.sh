@@ -203,6 +203,41 @@ echo "[bullet-path-awk-rc] md_bullet_path propagates md_section_body's rc 2 on a
     || bad "expected rc 2 + empty on awk failure (rc=$rc, out=[$out])"
 )
 
+# ============================================================================
+# touched-files.sh delegate — tl_extract_touched_paths routes through
+# md_bullet_path (TDD 0055 step 2): output unchanged + rc propagates (L-005 for
+# the `## Touched files` path).
+# ============================================================================
+TF="$REPO/scripts/lib/touched-files.sh"
+echo "[touched-delegate] tl_extract_touched_paths delegates to md_bullet_path: same paths, and rc 2 + diagnostic on awk failure (L-005)"
+(
+  source "$TF" 2>/dev/null || { bad "INFRA: could not source touched-files.sh"; exit 0; }
+  TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT; f="$TMP/t.md"
+  printf '## Touched files\n- `src/a.txt` (post) — annotated\n- src/b.txt — bare\n' > "$f"
+  got="$(tl_extract_touched_paths "$f")"
+  want="$(printf 'src/a.txt\nsrc/b.txt')"
+  [ "$got" = "$want" ] \
+    && ok "paths match md_bullet_path output (annotated + bare)" \
+    || bad "delegate output mismatch: got=[$got] want=[$want]"
+  mal="$(printf '## Touched files\n- src/ok.txt — fine\n- — stray\n' > "$f"; tl_extract_touched_paths "$f" malformed)"
+  printf '%s\n' "$mal" | grep -q 'stray' \
+    && ok "malformed mode forwarded through the delegate" \
+    || bad "malformed mode not forwarded: [$mal]"
+  # L-005: an awk failure must surface as rc 2 + a stderr diagnostic, never a
+  # silent empty set (which a membership check would read as "every file out of scope").
+  printf '## Touched files\n- src/a.txt — annotated\n' > "$f"
+  (
+    awk() { return 3; }
+    err="$TMP/err"; out="$(tl_extract_touched_paths "$f" 2>"$err")"; rc=$?
+    { [ "$rc" -eq 2 ] && [ -z "$out" ]; } \
+      && ok "rc 2 + empty on awk failure (delegated L-005)" \
+      || bad "expected rc 2 + empty on awk failure (rc=$rc, out=[$out])"
+    grep -qiE 'awk failed|parse failed' "$err" \
+      && ok "a stderr diagnostic surfaces the parse failure" \
+      || bad "expected a parse-fail diagnostic on stderr (got: $(cat "$err"))"
+  )
+)
+
 # --- report ----------------------------------------------------------------
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
