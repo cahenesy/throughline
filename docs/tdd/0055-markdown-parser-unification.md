@@ -252,6 +252,7 @@ None. A shared pure-bash markdown helper is a localized choice; ADR 0006 governs
 - `tests/md-parser.test.sh` — NEW unit + A4/A21/A23/L-005 + plan-classifier-fence regressions.
 - `tests/bounded-tdd-scope.test.sh` — keep the 0049 3-way agreement green through the delegate + the count/extract anchor case.
 - `tests/implement-gate.test.sh` — register the new eval.
+- `.claude-plugin/plugin.json` — version bump (build-applied housekeeping).
 
 ## Expected diff size
 - `scripts/lib/md.sh` — 95 lines (new: guard + `md_bullet_path_of_line` + 2 rc-checked awk functions + comments; ×1.4 shell-lib).
@@ -262,4 +263,5 @@ None. A shared pure-bash markdown helper is a localized choice; ADR 0006 governs
 - `tests/md-parser.test.sh` — 170 lines (section/bullet/fence ```+~~~/rc-propagation/anchor/exit-code + per-line cases; ×1.6 test).
 - `tests/bounded-tdd-scope.test.sh` — 45 lines (3-way agreement through delegate + count/extract anchor + ~~~ case; ×1.6 test).
 - `tests/implement-gate.test.sh` — 15 lines (register).
-Total expected diff: ~490 lines across 8 files. No per-file exception needed (each well under 300; estimates padded per the systematic-underestimation lesson).
+- `.claude-plugin/plugin.json` — 2 lines (version bump).
+Total expected diff: ~492 lines across 9 files. The 9th file is the trivial build-applied version bump; it pushes the touched-file COUNT to 9 > the default `THROUGHLINE_TDD_MAX_TOUCHED`=8, so this TDD builds with `THROUGHLINE_TDD_MAX_TOUCHED=9`. No per-file diff exception needed (each well under 300).
