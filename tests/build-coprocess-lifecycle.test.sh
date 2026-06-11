@@ -147,6 +147,109 @@ echo "[VP5] BATCH_RESULT: FAIL preserved — synth-OK does NOT fire"
   esac
 ) || true
 
+# --- [VP6] Sentinel injection: tool_result content must NOT close stdin ----
+# Hotfix regression (incident run 20260611-181309; full redesign → TDD 0056):
+# a tool_result that merely CONTAINS the literal `BATCH_RESULT: OK` (the build
+# Reading ci-checks.sh, whose header comment carries it) is environment-
+# authored, not an assistant-declared verdict. Pre-fix, the raw-event
+# substring match closed the build's stdin → the stub saw EOF → exited rc=0,
+# and the injected string satisfied build_status's grep — the false-complete
+# vector. Post-fix the lifecycle does NOT fire; the verdict-less build ends at
+# the inter-event watchdog (rc=143 + HANG marker) — the HONEST transient
+# outcome for a build that never declared completion.
+
+# install_stub_claude_raw <bindir> <events-file>
+# Stub claude that replays the given stream-json events verbatim, then blocks
+# reading stdin until EOF (exit 0). Lets a case emit arbitrary event shapes
+# (user/tool_result, prose-only assistant turns) the templated stub cannot.
+install_stub_claude_raw() {
+  local bindir="$1" events="$2"
+  mkdir -p "$bindir"
+  cat > "$bindir/claude" <<EOF
+#!/usr/bin/env bash
+# Stub claude (sentinel-injection cases). Replays canned events; blocks on stdin.
+cat "$events"
+while IFS= read -r _line; do :; done
+exit 0
+EOF
+  chmod +x "$bindir/claude"
+  export PATH="$bindir:$PATH"
+}
+
+echo "[VP6] injected tool_result carrying 'BATCH_RESULT: OK' → stdin stays open; watchdog ends the verdict-less build"
+( D="$ROOT/vp6"; mkdir -p "$D"
+  setup_repo "$D"
+  cat > "$D/events.jsonl" <<'EVENTS'
+{"type":"system","subtype":"init"}
+{"type":"user","message":{"role":"user","content":[{"tool_use_id":"t1","type":"tool_result","content":"# ci-checks.sh — gates the flip on a real check rather than the model's own `BATCH_RESULT: OK`. Done is verified, not asserted."}]}}
+EVENTS
+  install_stub_claude_raw "$D/bin" "$D/events.jsonl"
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  export THROUGHLINE_BUILD_INTER_EVENT_TIMEOUT=4
+  export TMPL="$D/scripts/build-prompt.md"
+  log="$D/build.log"
+  _per_step_review_loop "0001-alpha" "docs/tdd/0001-alpha.md" "$log"; rc=$?
+  [ "$rc" != "0" ] \
+    && ok "loop refuses rc=0 for an injected (non-authored) sentinel (got rc=$rc)" \
+    || bad "loop returned 0 — injected tool_result sentinel closed the lifecycle (false-complete vector)"
+  grep -q '^THROUGHLINE_BUILD_HANG' "$log" \
+    && ok "verdict-less build ends at the watchdog (honest transient)" \
+    || bad "no HANG marker — build was treated as cleanly finished without an authored verdict"
+) || true
+
+# --- [VP7] Assistant PROSE mention must NOT close stdin --------------------
+# The agent routinely RESTATES the protocol in planning text ("I will emit
+# BATCH_RESULT: OK when done"). A mid-line/mid-message mention is not a
+# verdict: only a final-line, line-anchored sentinel is. Pre-fix the raw
+# substring match treated the restatement as completion.
+echo "[VP7] assistant prose mentioning 'BATCH_RESULT: OK' mid-sentence → stdin stays open"
+( D="$ROOT/vp7"; mkdir -p "$D"
+  setup_repo "$D"
+  cat > "$D/events.jsonl" <<'EVENTS'
+{"type":"assistant","message":{"content":[{"type":"text","text":"Plan: implement each Sequencing step, then after the final step I will emit BATCH_RESULT: OK as the protocol requires."}]}}
+EVENTS
+  install_stub_claude_raw "$D/bin" "$D/events.jsonl"
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  export THROUGHLINE_BUILD_INTER_EVENT_TIMEOUT=4
+  export TMPL="$D/scripts/build-prompt.md"
+  log="$D/build.log"
+  _per_step_review_loop "0001-alpha" "docs/tdd/0001-alpha.md" "$log"; rc=$?
+  [ "$rc" != "0" ] \
+    && ok "loop refuses rc=0 for a prose protocol restatement (got rc=$rc)" \
+    || bad "loop returned 0 — prose mention closed the lifecycle"
+  grep -q '^THROUGHLINE_BUILD_HANG' "$log" \
+    && ok "prose-only build ends at the watchdog (honest transient)" \
+    || bad "no HANG marker — prose mention was treated as a clean finish"
+) || true
+
+# --- [VP8] Control: multi-line final message ENDING with the sentinel ------
+# The genuine protocol shape — self-review narrative, then the verdict as the
+# final line — must still close the lifecycle (guards against over-anchoring,
+# e.g. requiring the whole message to equal the sentinel). Passes pre- and
+# post-fix; red here means the guard broke the normal completion path.
+echo "[VP8] control: final assistant message ending with the sentinel line still closes stdin"
+( D="$ROOT/vp8"; mkdir -p "$D"
+  setup_repo "$D"
+  install_stub_claude "$D/bin" 'Self-review complete; all steps cleared.\nBATCH_RESULT: OK'
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  export THROUGHLINE_BUILD_INTER_EVENT_TIMEOUT=5
+  export TMPL="$D/scripts/build-prompt.md"
+  log="$D/build.log"
+  t0=$(date +%s)
+  _per_step_review_loop "0001-alpha" "docs/tdd/0001-alpha.md" "$log"; rc=$?
+  t1=$(date +%s)
+  elapsed=$((t1 - t0))
+  [ "$rc" = "0" ] \
+    && ok "loop returns 0 on the genuine multi-line completion" \
+    || bad "loop should return 0 (got rc=$rc — guard over-anchored?)"
+  [ "$elapsed" -lt 5 ] \
+    && ok "control exits within watchdog (took ${elapsed}s)" \
+    || bad "control should exit within 5s but took ${elapsed}s (stdin never closed)"
+  grep -q '^THROUGHLINE_BUILD_HANG' "$log" \
+    && bad "control hit the watchdog (lifecycle broken by the guard)" \
+    || ok "control has no HANG marker"
+) || true
+
 # --- report ----------------------------------------------------------------
 # grep -c exits non-zero when there are zero matches; suppress that so the
 # `0 failed` happy path doesn't leak its exit code through pipefail.

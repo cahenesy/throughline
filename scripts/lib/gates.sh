@@ -1285,8 +1285,27 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
             # only one leaves it blocking until the watchdog kills it. Continue (no
             # `break`) to drain tail events. Guarded by _build_stdin_closed (A16) so
             # a later BATCH_RESULT cannot double-close the {build_in} fd.
-            case "$evt" in
-              *"BATCH_RESULT: "*)
+            # SENTINEL-INJECTION GUARD (hotfix, incident run 20260611-181309;
+            # full redesign → TDD 0056): the lifecycle fires ONLY on an
+            # assistant-AUTHORED terminal verdict — the LAST non-empty line of
+            # the event's extracted text starts with the sentinel. The previous
+            # raw-event substring match also fired on environment-authored
+            # content: a tool_result mirroring a file that merely CONTAINS the
+            # literal sentinel (the build Reading ci-checks.sh) closed the
+            # build's stdin mid-run; the build exited rc=0 after one step and
+            # build_status's whole-log grep passed the gate — a 1-of-5-steps
+            # build flipped `implemented` (NFR-4 false PASS). Assistant PROSE
+            # restating the protocol mid-message is excluded the same way.
+            # Anchoring to final-line text intentionally drops the TDD 0053
+            # A16 tool_use-carried-verdict convenience: that shape now ends at
+            # the inter-event watchdog (an honest transient kill, resumable),
+            # never a false complete. The degraded plain-text path is
+            # preserved: _extract_event_text returns a non-JSON line verbatim,
+            # so a bare-line sentinel still anchors.
+            local _tail_line
+            _tail_line="$(printf '%s\n' "$text" | grep -av '^[[:space:]]*$' | tail -1)"
+            case "$_tail_line" in
+              "BATCH_RESULT: "*)
                 if [ "$_build_stdin_closed" -eq 0 ]; then
                   # TDD 0030 §5: commit the final active interval and STOP the clock.
                   build_active_seconds=$((build_active_seconds + $(date +%s) - interval_start))
