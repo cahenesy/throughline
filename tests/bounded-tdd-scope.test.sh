@@ -437,7 +437,7 @@ echo "[bounds-parser-agreement] all THREE touched-files readers agree byte-for-b
   # Stage the fixture at docs/tdd/<slug>.md under a temp repo so the
   # <repo> <slug>-signature _touched_files_of_tdd resolves to the SAME file the
   # path-signature readers see.
-  TMP="$(mktemp -d)"; mkdir -p "$TMP/docs/tdd"; f="$TMP/docs/tdd/9009.md"
+  TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT; mkdir -p "$TMP/docs/tdd"; f="$TMP/docs/tdd/9009.md"
   make_extract_forms "$f"
   agree="$(
     export STATE_DIR="$TMP/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
@@ -533,7 +533,7 @@ TF="$REPO/scripts/lib/touched-files.sh"
 echo "[extract-forms] tl_extract_touched_paths returns the real path for every annotated/bare/backticked form"
 (
   source "$TF" 2>/dev/null || { bad "could not source touched-files.sh"; exit 0; }
-  TMP="$(mktemp -d)"; f="$TMP/forms.md"; make_extract_forms "$f"
+  TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT; f="$TMP/forms.md"; make_extract_forms "$f"
   got="$(tl_extract_touched_paths "$f")"
   want="$(printf 'src/backticked.txt\nsrc/bare.txt\nsrc/annot.txt\nsrc/bareannot.txt\nscripts/lib/gates.sh\nsrc/noemdash.txt\nsrc/noemdash2.txt')"
   [ "$got" = "$want" ] \
@@ -547,7 +547,7 @@ echo "[extract-forms] tl_extract_touched_paths returns the real path for every a
 
 echo "[gates-annotated-membership] an in-scope edit to a file declared with the annotated form does NOT trip structural-finding(a) through gates.sh (Verification §3)"
 (
-  D="$(mktemp -d)"; cd "$D" 2>/dev/null || { bad "cd failed"; exit 0; }
+  D="$(mktemp -d)"; trap 'rm -rf "$D"' EXIT; cd "$D" 2>/dev/null || { bad "cd failed"; exit 0; }
   export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
   export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"; mkdir -p "$STATE_DIR"; TDDS=()
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" 2>/dev/null || { bad "could not source implement.sh"; exit 0; }
