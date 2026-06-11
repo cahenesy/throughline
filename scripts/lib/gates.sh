@@ -331,7 +331,16 @@ _diff_vs_narrative_facts() {  # <build-log> <build-start-sha>
   if [ -z "$log" ] || [ ! -r "$log" ]; then
     printf 'build-log-unavailable: the build log (%s) is missing or unreadable; the narrative CANNOT be extracted — treat any narrative scope claim as UNVERIFIED (this is an extraction gap, NOT a deliberately-absent narrative).\n' "${log:-<unset>}"
   else
-    br="$(grep -aoE 'BATCH_RESULT: .*' "$log" 2>/dev/null | tail -1)"
+    # TDD 0053 A17 (ADR 0006): bound the BATCH_RESULT capture at a JSON-quote
+    # boundary (`[^"]*`) instead of the greedy `.*`. A terminal BATCH_RESULT can
+    # ride INSIDE a stream-json event line (the A16 tool-use case) — there the
+    # greedy `-a` match bled the trailing JSON (`..."}],"stop_reason":...`) into
+    # the verdict-line the reviewer reads. `-a` is kept (binary-safe on a log with
+    # NUL bytes); only the over-inclusion is dropped. A plain-text verdict +
+    # narrative carries no `"`, so it is captured intact. (The git-touched-file
+    # count below is already derived from the structured `git diff`, never this
+    # text pickup.)
+    br="$(grep -aoE 'BATCH_RESULT: [^"]*' "$log" 2>/dev/null | tail -1)"
     if [ -z "$br" ]; then
       printf 'narrative-missing: the build log carries no BATCH_RESULT line; SKIP the diff-vs-narrative check (a missing narrative is not a finding).\n'
     else
@@ -1485,33 +1494,38 @@ _rework_file_declared_bound() {  # <tdd> <file>
 _rework_pre_pass() {  # <slug> <tdd> <new-head> <cleared-sha> <build-start-sha> <region-lines>
   local slug="$1" tdd="$2" new_head="$3" cleared="$4" build_start="$5" region="$6"
   local base="$cleared"; [ -z "$base" ] && base="$build_start"
-  local fail=0 file
+  local file
   # ADR 0006 / FR-70: every PRECHECK_FAIL must rest on a verifiable artifact.
-  # Pre-fix the four `git diff … 2>/dev/null` invocations below dropped both
-  # the stderr AND the exit code, so a real git failure (corrupt ref, bad
-  # working tree, unreadable .git, etc.) returned empty output — `awk` printed
-  # `0` and the process-substitution loops never executed, all three checks
-  # silently passed and the rework was reported as scope-clear without git
-  # ever computing a diff (TDD 0019 review-rerun-2 MAJOR). Now: capture each
-  # diff's stdout AND rc into a local; on rc != 0 emit a PRECHECK_FAIL naming
-  # the failed sub-check and set fail=1 so the caller routes the rework
-  # exactly as it would for a real scope/structural violation. The downstream
-  # `_rework_loop` then resets HEAD and escalates with a non-silent diagnostic.
+  # Pre-fix the `git diff … 2>/dev/null` invocations below dropped both the
+  # stderr AND the exit code, so a real git failure (corrupt ref, bad working
+  # tree, unreadable .git, etc.) returned empty output — `awk` printed `0` and
+  # the loops never executed, all checks silently passed, and the rework was
+  # reported as scope-clear without git ever computing a diff (TDD 0019
+  # review-rerun-2 MAJOR). Each diff's stdout AND rc is captured into a local.
+  #
+  # TDD 0053 A19: route ONE consistent cause + excerpt. The caller derives `cause`
+  # by priority substring (git-diff-failed wins over scope/(a)/(b)) but takes the
+  # excerpt from `head -1`; if a violation line preceded a later git-diff-failed
+  # line (e.g. the per-file (b) diff fails against a bad build_start while the
+  # scope/(a) diffs against `base` succeed), cause(external-blocker) and
+  # excerpt(scope/(a)) diverged. So buffer the scope/(a)/(b) violation lines into
+  # `out`, record only the FIRST git-diff failure into `gitfail`, and at the end
+  # emit EITHER the lone git-diff-failed line (a broken git is a single
+  # external-blocker cause) OR the buffered violations (git healthy) — never both.
+  local out="" gitfail=""
 
   # FR-66 scope cap.
   local cap span numstat_out numstat_rc
   cap="$(_rework_scope_cap "$region")"
   numstat_out="$(git diff --numstat "$base..$new_head" 2>/dev/null)"; numstat_rc=$?
   if [ "$numstat_rc" -ne 0 ]; then
-    printf 'PRECHECK_FAIL: git-diff-failed (FR-66 scope, rc=%s, base=%s, head=%s)\n' \
-      "$numstat_rc" "$base" "$new_head"
-    fail=1
-  fi
-  span="$(printf '%s\n' "$numstat_out" | awk '{a+=$1; d+=$2} END{print a+d+0}')"
-  [ -z "$span" ] && span=0
-  if [ "$span" -gt "$cap" ] 2>/dev/null; then
-    printf 'PRECHECK_FAIL: rework-scope-exceeded %s > %s\n' "$span" "$cap"
-    fail=1
+    [ -z "$gitfail" ] && gitfail="git-diff-failed (FR-66 scope, rc=$numstat_rc, base=$base, head=$new_head)"
+  else
+    span="$(printf '%s\n' "$numstat_out" | awk '{a+=$1; d+=$2} END{print a+d+0}')"
+    [ -z "$span" ] && span=0
+    if [ "$span" -gt "$cap" ] 2>/dev/null; then
+      out="${out}PRECHECK_FAIL: rework-scope-exceeded $span > $cap"$'\n'
+    fi
   fi
 
   # FR-67(a) touched-file scope.
@@ -1519,19 +1533,17 @@ _rework_pre_pass() {  # <slug> <tdd> <new-head> <cleared-sha> <build-start-sha> 
   set_list="$(_rework_touched_files "$tdd")"
   names_a_out="$(git diff --name-only "$base..$new_head" 2>/dev/null)"; names_a_rc=$?
   if [ "$names_a_rc" -ne 0 ]; then
-    printf 'PRECHECK_FAIL: git-diff-failed (FR-67(a) membership, rc=%s, base=%s, head=%s)\n' \
-      "$names_a_rc" "$base" "$new_head"
-    fail=1
+    [ -z "$gitfail" ] && gitfail="git-diff-failed (FR-67(a) membership, rc=$names_a_rc, base=$base, head=$new_head)"
+  else
+    while IFS= read -r file; do
+      [ -z "$file" ] && continue
+      # TDD 0053 A18 (FR-67): `--` so a diff path beginning with '-' is the grep
+      # PATTERN, not parsed as an option (which would mis-report a false (a)).
+      if ! printf '%s\n' "$set_list" | grep -qxF -- "$file"; then
+        out="${out}PRECHECK_FAIL: structural-finding(a) $file"$'\n'
+      fi
+    done <<< "$names_a_out"
   fi
-  while IFS= read -r file; do
-    [ -z "$file" ] && continue
-    # TDD 0053 A18 (FR-67): `--` so a diff path beginning with '-' is the grep
-    # PATTERN, not parsed as an option (which would mis-report a false (a)).
-    if ! printf '%s\n' "$set_list" | grep -qxF -- "$file"; then
-      printf 'PRECHECK_FAIL: structural-finding(a) %s\n' "$file"
-      fail=1
-    fi
-  done <<< "$names_a_out"
 
   # FR-67(b) per-file bound — cumulative since the build start (per §1).
   # TDD 0041 §4 (FR-67 gap-closure): escalate only at actual > declared × K, where
@@ -1552,35 +1564,47 @@ _rework_pre_pass() {  # <slug> <tdd> <new-head> <cleared-sha> <build-start-sha> 
   awk -v k="$K" 'BEGIN{exit !(k<1)}' && K=1.0
   names_b_out="$(git diff --name-only "$base..$new_head" 2>/dev/null)"; names_b_rc=$?
   if [ "$names_b_rc" -ne 0 ]; then
-    printf 'PRECHECK_FAIL: git-diff-failed (FR-67(b) per-file iteration, rc=%s, base=%s, head=%s)\n' \
-      "$names_b_rc" "$base" "$new_head"
-    fail=1
+    [ -z "$gitfail" ] && gitfail="git-diff-failed (FR-67(b) per-file iteration, rc=$names_b_rc, base=$base, head=$new_head)"
+  elif [ -z "$gitfail" ]; then
+    while IFS= read -r file; do
+      [ -z "$file" ] && continue
+      decl="$(_rework_file_declared_bound "$tdd" "$file")"
+      [ -z "$decl" ] && continue          # not declared → (a)'s concern, not (b)'s
+      num="${decl%% *}"; exc="${decl##* }"
+      [ "$exc" = "1" ] && continue        # declared exception → bound not enforced
+      [ "$num" -lt 0 ] 2>/dev/null && continue   # unparseable estimate → skip (b)
+      per_file_out="$(git diff --numstat "$build_start..$new_head" -- "$file" 2>/dev/null)"; per_file_rc=$?
+      if [ "$per_file_rc" -ne 0 ]; then
+        # A19: a per-file diff failure (typically a bad build_start) is a git
+        # failure too — record it as the single cause and STOP scanning, so it is
+        # never co-mingled with the scope/(a) violations already in `out`.
+        gitfail="git-diff-failed (FR-67(b) per-file bound for $file, rc=$per_file_rc)"
+        break
+      fi
+      actual="$(printf '%s\n' "$per_file_out" | awk '{a+=$1; d+=$2} END{print a+d+0}')"
+      [ -z "$actual" ] && actual=0
+      # Escalate iff actual > num × K (awk does the multiply so a float K is exact,
+      # no bash integer-truncation games). The diagnostic carries the factor so the
+      # halt is self-explanatory and reproducible (ADR 0006).
+      if awk -v a="$actual" -v n="$num" -v k="$K" 'BEGIN{exit !(a > n*k)}'; then
+        out="${out}PRECHECK_FAIL: structural-finding(b) $file $actual > $num (tolerance ×$K)"$'\n'
+      fi
+    done <<< "$names_b_out"
   fi
-  while IFS= read -r file; do
-    [ -z "$file" ] && continue
-    decl="$(_rework_file_declared_bound "$tdd" "$file")"
-    [ -z "$decl" ] && continue          # not declared → (a)'s concern, not (b)'s
-    num="${decl%% *}"; exc="${decl##* }"
-    [ "$exc" = "1" ] && continue        # declared exception → bound not enforced
-    [ "$num" -lt 0 ] 2>/dev/null && continue   # unparseable estimate → skip (b)
-    per_file_out="$(git diff --numstat "$build_start..$new_head" -- "$file" 2>/dev/null)"; per_file_rc=$?
-    if [ "$per_file_rc" -ne 0 ]; then
-      printf 'PRECHECK_FAIL: git-diff-failed (FR-67(b) per-file bound for %s, rc=%s)\n' "$file" "$per_file_rc"
-      fail=1
-      continue
-    fi
-    actual="$(printf '%s\n' "$per_file_out" | awk '{a+=$1; d+=$2} END{print a+d+0}')"
-    [ -z "$actual" ] && actual=0
-    # Escalate iff actual > num × K (awk does the multiply so a float K is exact,
-    # no bash integer-truncation games). The diagnostic carries the factor so the
-    # halt is self-explanatory and reproducible (ADR 0006).
-    if awk -v a="$actual" -v n="$num" -v k="$K" 'BEGIN{exit !(a > n*k)}'; then
-      printf 'PRECHECK_FAIL: structural-finding(b) %s %s > %s (tolerance ×%s)\n' "$file" "$actual" "$num" "$K"
-      fail=1
-    fi
-  done <<< "$names_b_out"
 
-  return "$fail"
+  # A19: a broken git is a single external-blocker cause — emit it ALONE (the
+  # caller's priority-routed cause and head-1 excerpt then agree). Otherwise emit
+  # the buffered scope/(a)/(b) violations (git was healthy). Either non-empty
+  # result returns 1; a clean pre-pass returns 0 with no output.
+  if [ -n "$gitfail" ]; then
+    printf 'PRECHECK_FAIL: %s\n' "$gitfail"
+    return 1
+  fi
+  if [ -n "$out" ]; then
+    printf '%s' "$out"
+    return 1
+  fi
+  return 0
 }
 
 # _rework_one <tdd> <log> <finding-ref> <finding-text> <cap>
