@@ -20,6 +20,23 @@
 # the file directly (`bash scripts/lib/tdd-lint.sh <tdd-or-glob>...`) — the
 # trailing dispatcher routes positional args to `tl_lint_all`.
 
+# Source the single source of truth for `## Touched files` parsing (TDD 0049 /
+# FR-53, FR-54) by its SIBLING path. This block runs at the TOP, before the
+# bottom-of-file `[ "${BASH_SOURCE[0]:-$0}" = "$0" ]` dispatch guard — the two
+# guards are independent. The `return 1 2>/dev/null || exit 1` is a SINGLE idiom
+# correct in BOTH contexts: bash permits a top-level `return` in a SOURCED file
+# (it unwinds the `source`, so a test sourcing tdd-lint.sh sees the source
+# terminate, not the harness exit), and the `|| exit 1` fires only in the
+# EXECUTED context (`bash tdd-lint.sh`, where a top-level `return` is an error).
+# Either way the FATAL prints first, so a missing lib is never silent (ADR 0006).
+_tf_lib="${BASH_SOURCE[0]%/*}/touched-files.sh"
+# shellcheck source=scripts/lib/touched-files.sh
+{ [ -r "$_tf_lib" ] && . "$_tf_lib"; } || {
+  echo "FATAL: cannot source $_tf_lib (partial install or perms)" >&2
+  return 1 2>/dev/null || exit 1
+}
+unset _tf_lib
+
 # Emit a finding line on stdout. Internal helper; callers pass severity/code/msg.
 _tl_emit() {  # <file> <line> <severity> <code> <msg>
   printf '%s:%s %s %s: %s\n' "$1" "$2" "$3" "$4" "$5"
@@ -452,36 +469,17 @@ check_tdd_doc_size() {  # <tdd-path>
 }
 
 # _tl_extract_touched_paths <tdd> [mode] — extract one path per `## Touched files`
-# bullet (fence/section-aware) using the IDENTICAL em-dash-split + backtick-strip
-# + trim logic as gates.sh _rework_touched_files (TDD 0048 / FR-53, FR-54), so the
-# design-time and build-time parsers agree (the Verification §2 cross-check asserts
-# byte-identical output as the durable guard against a one-sided edit re-introducing
-# the drift). The path is whatever precedes the em-dash (`—`, U+2014), or — when a
-# bullet has no em-dash — its first whitespace-delimited token; backticks are
-# stripped so a bare or backticked path both parse.
-#   mode=paths (default): emit each non-empty extracted path (drop empties) — this
-#     is the surface the cross-check diffs against _rework_touched_files.
+# bullet (fence/section-aware). Thin delegating wrapper over the single source of
+# truth in lib/touched-files.sh (TDD 0049 / FR-53, FR-54): one annotation-robust
+# extractor backs this design-time reader, gates.sh's build-time FR-67(a) reader,
+# and learnings.sh's aggregation reader, so they cannot drift (the Verification §2
+# cross-check asserts byte-identical output across all three). Forwards `"$@"` so
+# the `malformed` mode that check_touched_file_count calls is preserved.
+#   mode=paths (default): emit each non-empty extracted path (drop empties).
 #   mode=malformed: emit the 60-char excerpt of each `- ` bullet whose extracted
 #     path is empty (a stray bullet with no parseable path), for the PRECHECK below.
 _tl_extract_touched_paths() {  # <tdd> [mode]
-  local f="$1" mode="${2:-paths}"
-  [ -f "$f" ] || return 0
-  awk -v MODE="$mode" '
-    BEGIN { in_fence=0; in_sec=0 }
-    /^[[:space:]]*```/ { in_fence = !in_fence; next }
-    !in_fence && /^## Touched files[[:space:]]*$/ { in_sec=1; next }
-    !in_fence && /^## / { in_sec=0; next }
-    in_sec && !in_fence && /^- / {
-      rest = substr($0, 3)                       # drop "- "
-      em = index(rest, "—")                      # em-dash separates path from purpose
-      if (em > 0) { file = substr(rest, 1, em - 1) }
-      else        { file = rest; sub(/[[:space:]].*/, "", file) }  # no em-dash: first token
-      gsub(/`/, "", file)                        # strip backticks if the path was quoted
-      gsub(/^[[:space:]]+|[[:space:]]+$/, "", file)
-      if (MODE == "malformed") { if (file == "") print substr($0, 1, 60) }
-      else                     { if (file != "") print file }
-    }
-  ' "$f"
+  tl_extract_touched_paths "$@"
 }
 
 # check_touched_file_count — count `^- \S` entries in the `## Touched files`
