@@ -14,6 +14,20 @@
 #   3. Else if any mechanical evidence keyword matches → `mechanical`.
 #   4. Default → `nontrivial` (conservative; when in doubt use the build model).
 
+# Source the unified markdown parser (TDD 0055) by its SIBLING path with the
+# FATAL-on-missing + dual `return||exit` idiom (correct sourced OR executed;
+# `bash plan-classifier.sh <tdd>` runs this file directly). `${BASH_SOURCE[0]%/*}`
+# (no dirname) keeps this minimal-host caller safe; md.sh's include guard makes a
+# repeat source a no-op. The FATAL prints first, so a missing lib is never silent
+# (ADR 0006).
+_md_lib="${BASH_SOURCE[0]%/*}/md.sh"
+# shellcheck source=scripts/lib/md.sh
+{ [ -r "$_md_lib" ] && . "$_md_lib"; } || {
+  echo "FATAL: cannot source $_md_lib (partial install or perms)" >&2
+  return 1 2>/dev/null || exit 1
+}
+unset _md_lib
+
 # tl_classify_plan <tdd-path>
 tl_classify_plan() {
   local f="$1"
@@ -21,32 +35,24 @@ tl_classify_plan() {
     echo "plan-classifier: input not found: $f" >&2
     return 2
   fi
-  # Extract just the verification-plan section body (between its heading and
-  # the next `^## ` heading). The body, lowercased, is what the keyword
-  # checks scan — nothing else in the TDD should influence the classifier.
-  #
-  # BL-2 (review pass 3): the previous form used `PIPESTATUS` after a
-  # `$(awk | tr)` command substitution. Without `set -o pipefail`,
-  # `PIPESTATUS` in the outer shell collapses to a single subshell
-  # exit — and the production CLI invocation
-  # `bash scripts/lib/plan-classifier.sh <tdd>` runs WITHOUT pipefail,
-  # so the guard was non-functional on that path (the
-  # implement.sh-sourced path happened to work because implement.sh
-  # sets pipefail). Run awk INDEPENDENTLY of `tr` so awk's rc is
-  # directly observable; `tr` is a deterministic character translator
-  # that doesn't fail on the captured-string stdin.
-  local body body_awk awk_rc
-  body_awk="$(awk '
-    /^## Verification plan/ { in_sec=1; next }
-    /^## / { in_sec=0; next }
-    in_sec { print }
-  ' "$f")"
+  # Extract just the verification-plan section body via the unified parser
+  # (TDD 0055 / reuse #11): md_section_body is FENCE-AWARE (``` AND ~~~), so a
+  # fenced `## Verification plan` / nontrivial-keyword example inside another
+  # section no longer leaks into the keyword scan and misroutes the model. The
+  # body, lowercased, is what the keyword checks scan — nothing else in the TDD
+  # should influence the classifier. md_section_body returns 2 + a stderr
+  # diagnostic on an awk failure (subsuming this function's prior standalone
+  # awk-rc handling); `tr` runs INDEPENDENTLY on the captured string (a
+  # deterministic translator that doesn't fail on that stdin), so awk's rc stays
+  # directly observable without a PIPESTATUS dance.
+  local body body_raw awk_rc
+  body_raw="$(md_section_body "$f" "Verification plan")"
   awk_rc=$?
   if [ "$awk_rc" -ne 0 ]; then
-    echo "plan-classifier: body-extract awk failed (exit $awk_rc) on $f" >&2
+    echo "plan-classifier: body-extract failed (rc $awk_rc) on $f" >&2
     return 2
   fi
-  body="$(printf '%s' "$body_awk" | tr '[:upper:]' '[:lower:]')"
+  body="$(printf '%s' "$body_raw" | tr '[:upper:]' '[:lower:]')"
 
   # Nontrivial triggers — the bare keyword set the TDD enumerates. Case-
   # insensitive match against the lowercased body. "websocket" covers the
