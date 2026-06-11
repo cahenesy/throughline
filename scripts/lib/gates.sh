@@ -1432,33 +1432,30 @@ _rework_touched_files() {  # <tdd>
 # <file>'s entry in the TDD's `## Expected diff size` section (TDD 0014), where
 # <exception?> is 1 if an inline `(exception: …)` marker is present, else 0.
 # Echoes nothing when the file is not declared; <lines> is -1 when the estimate
-# is unparseable. Mirrors tdd-lint.sh check_per_file_diff_bound's awk.
+# is unparseable. TDD 0055: the fence walk is shared via md.sh (md_section_body,
+# ``` AND ~~~) and the per-bullet PATH isolation via md_bullet_path_of_line; the
+# (n, exc) parse stays caller-side, mirroring tdd-lint.sh check_per_file_diff_bound.
 _rework_file_declared_bound() {  # <tdd> <file>
   local f="$1" target="$2"
   [ -f "$f" ] || return 0
-  awk -v TARGET="$target" '
-    BEGIN { in_fence=0; in_sec=0 }
-    /^[[:space:]]*```/ { in_fence = !in_fence; next }
-    !in_fence && /^## Expected diff size[[:space:]]*$/ { in_sec=1; next }
-    !in_fence && /^## / { in_sec=0; next }
-    in_sec && !in_fence && /^- / {
-      rest = substr($0, 3)
-      em = index(rest, "—")
-      if (em > 0) { file = substr(rest, 1, em - 1) }
-      else        { file = rest; sub(/[[:space:]].*/, "", file) }
-      gsub(/`/, "", file)
-      gsub(/^[[:space:]]+|[[:space:]]+$/, "", file)
-      if (file == TARGET) {
-        n = -1
-        if (match(rest, /[0-9]+[[:space:]]*lines?/)) {
-          num = substr(rest, RSTART, RLENGTH); sub(/[^0-9].*/, "", num); n = num + 0
-        }
-        exc = (index(rest, "(exception:") > 0) ? 1 : 0
-        printf "%d %d\n", n, exc
-        exit
-      }
-    }
-  ' "$f"
+  local body rc line file rest n exc
+  body="$(md_section_body "$f" "Expected diff size" 2>/dev/null)"; rc=$?
+  # Lenient on parse failure (matching the missing-file `return 0` above): the (b)
+  # per-file reader treats an unreadable declaration as "not declared"; the (a)
+  # membership path is the one that surfaces a parse failure honestly (L-005).
+  [ "$rc" -ne 0 ] && return 0
+  while IFS= read -r line; do
+    case "$line" in "- "*) ;; *) continue ;; esac
+    file="$(md_bullet_path_of_line "$line")"
+    [ "$file" = "$target" ] || continue
+    rest="${line#- }"
+    n=-1
+    if [[ "$rest" =~ ([0-9]+)[[:space:]]*lines? ]]; then n="${BASH_REMATCH[1]}"; fi
+    case "$rest" in *'(exception:'*) exc=1 ;; *) exc=0 ;; esac
+    printf '%d %d\n' "$n" "$exc"
+    return 0
+  done <<< "$body"
+  return 0
 }
 
 # _rework_pre_pass <slug> <tdd> <new-head> <cleared-sha> <build-start-sha> <region-lines>
@@ -1489,7 +1486,11 @@ _rework_pre_pass() {  # <slug> <tdd> <new-head> <cleared-sha> <build-start-sha> 
   # diverge. So buffer scope/(a)/(b) violations into `out`, record the FIRST git
   # failure into `gitfail`, and emit EITHER the lone git-diff-failed line OR the
   # buffered violations — never both.
-  local out="" gitfail=""
+  # TDD 0055 / L-005: a `## Touched files` PARSE failure (rc 2 from the md.sh
+  # extractor) is a distinct, third "cannot evaluate" condition alongside a git
+  # failure — it must route to a parse-error cause, NEVER the empty-set →
+  # structural-finding(a) path (a silent awk failure was producing a FALSE (a)).
+  local out="" gitfail="" parsefail=""
 
   # FR-66 scope cap.
   local cap span numstat_out numstat_rc
@@ -1506,20 +1507,30 @@ _rework_pre_pass() {  # <slug> <tdd> <new-head> <cleared-sha> <build-start-sha> 
   fi
 
   # FR-67(a) touched-file scope.
-  local set_list names_a_out names_a_rc
-  set_list="$(_rework_touched_files "$tdd")"
-  names_a_out="$(git diff --name-only "$base..$new_head" 2>/dev/null)"; names_a_rc=$?
-  if [ "$names_a_rc" -ne 0 ]; then
-    [ -z "$gitfail" ] && gitfail="git-diff-failed (FR-67(a) membership, rc=$names_a_rc, base=$base, head=$new_head)"
+  # L-005 (split-declare so the `local x="$(...)"` rc mask does not hide it): a
+  # non-zero set_rc means the declared set could not be parsed (awk failure
+  # end-to-end through md_bullet_path → tl_extract_touched_paths →
+  # _rework_touched_files). Route it to a parse-error cause and SKIP the
+  # membership scan, so an empty-because-unparseable set never reads as "every
+  # changed file out of scope".
+  local set_list set_rc names_a_out names_a_rc
+  set_list="$(_rework_touched_files "$tdd")"; set_rc=$?
+  if [ "$set_rc" -ne 0 ]; then
+    [ -z "$parsefail" ] && parsefail="touched-files-parse-failed (## Touched files parse rc=$set_rc; cannot evaluate FR-67(a) membership for $tdd)"
   else
-    while IFS= read -r file; do
-      [ -z "$file" ] && continue
-      # TDD 0053 A18 (FR-67): `--` so a diff path beginning with '-' is the grep
-      # PATTERN, not parsed as an option (which would mis-report a false (a)).
-      if ! printf '%s\n' "$set_list" | grep -qxF -- "$file"; then
-        out="${out}PRECHECK_FAIL: structural-finding(a) $file"$'\n'
-      fi
-    done <<< "$names_a_out"
+    names_a_out="$(git diff --name-only "$base..$new_head" 2>/dev/null)"; names_a_rc=$?
+    if [ "$names_a_rc" -ne 0 ]; then
+      [ -z "$gitfail" ] && gitfail="git-diff-failed (FR-67(a) membership, rc=$names_a_rc, base=$base, head=$new_head)"
+    else
+      while IFS= read -r file; do
+        [ -z "$file" ] && continue
+        # TDD 0053 A18 (FR-67): `--` so a diff path beginning with '-' is the grep
+        # PATTERN, not parsed as an option (which would mis-report a false (a)).
+        if ! printf '%s\n' "$set_list" | grep -qxF -- "$file"; then
+          out="${out}PRECHECK_FAIL: structural-finding(a) $file"$'\n'
+        fi
+      done <<< "$names_a_out"
+    fi
   fi
 
   # FR-67(b) per-file bound — cumulative since the build start (per §1).
@@ -1542,7 +1553,7 @@ _rework_pre_pass() {  # <slug> <tdd> <new-head> <cleared-sha> <build-start-sha> 
   names_b_out="$(git diff --name-only "$base..$new_head" 2>/dev/null)"; names_b_rc=$?
   if [ "$names_b_rc" -ne 0 ]; then
     [ -z "$gitfail" ] && gitfail="git-diff-failed (FR-67(b) per-file iteration, rc=$names_b_rc, base=$base, head=$new_head)"
-  elif [ -z "$gitfail" ]; then
+  elif [ -z "$gitfail" ] && [ -z "$parsefail" ]; then
     while IFS= read -r file; do
       [ -z "$file" ] && continue
       decl="$(_rework_file_declared_bound "$tdd" "$file")"
@@ -1570,11 +1581,18 @@ _rework_pre_pass() {  # <slug> <tdd> <new-head> <cleared-sha> <build-start-sha> 
   fi
 
   # A19: a broken git is a single external-blocker cause — emit it ALONE (the
-  # caller's priority-routed cause and head-1 excerpt then agree). Otherwise emit
-  # the buffered scope/(a)/(b) violations (git was healthy). Either non-empty
+  # caller's priority-routed cause and head-1 excerpt then agree). L-005: a
+  # touched-files PARSE failure is likewise a single "cannot evaluate" cause,
+  # emitted alone as a DISTINCT diagnostic (never co-mingled with, nor masquerading
+  # as, a structural-finding(a)). Priority: git failure, then parse failure, then
+  # the buffered scope/(a)/(b) violations (everything healthy). Any non-empty
   # result returns 1; a clean pre-pass returns 0 with no output.
   if [ -n "$gitfail" ]; then
     printf 'PRECHECK_FAIL: %s\n' "$gitfail"
+    return 1
+  fi
+  if [ -n "$parsefail" ]; then
+    printf 'PRECHECK_FAIL: %s\n' "$parsefail"
     return 1
   fi
   if [ -n "$out" ]; then
@@ -1973,19 +1991,19 @@ coverage_map_normalize() {  # <scoped-diff-files>  (block lines on stdin)
 # _coverage_inscope_reqs <tdd-file> — echo the unique FR/NFR ids from the first
 # column of the TDD's `## Requirement traceability` table, one per line. This is
 # FR-78's domain: exactly the landing TDD's in-scope requirements, never the
-# whole PRD. Fence-aware section walk mirrors _rework_touched_files. Missing
-# file or table → empty output, rc 0 (the writer then skips the unlisted-id
-# filter rather than dropping every row).
+# whole PRD. TDD 0055: the fence-aware section walk is shared via md.sh
+# (md_section_body, ``` AND ~~~); the caller-side predicate (split the `|`-table,
+# take column 2) stays here. This is the FR-78 coverage map — REPORTED, advisory,
+# NOT a gate — so it PRESERVES the silent-fail contract: md_section_body's rc is
+# intentionally ignored (`2>/dev/null`), yielding empty on a parse failure (never
+# a false all-covered). The L-005 rc-propagation applies only to the
+# structural-finding membership path, not this advisory reader.
 _coverage_inscope_reqs() {  # <tdd-file>
   local f="${1:-}"
   { [ -n "$f" ] && [ -f "$f" ]; } || return 0
-  awk '
-    BEGIN { in_fence = 0; in_sec = 0 }
-    /^[[:space:]]*```/ { in_fence = !in_fence; next }
-    !in_fence && /^## Requirement traceability[[:space:]]*$/ { in_sec = 1; next }
-    !in_fence && /^## / { in_sec = 0; next }
-    in_sec && /^\|/ { n = split($0, c, "|"); if (n >= 2) print c[2] }
-  ' "$f" 2>/dev/null | grep -aoE '(FR|NFR)-[0-9]+[A-Za-z]?' | sort -u
+  md_section_body "$f" "Requirement traceability" 2>/dev/null \
+    | awk -F'|' '/^\|/ && NF >= 2 { print $2 }' \
+    | grep -aoE '(FR|NFR)-[0-9]+[A-Za-z]?' | sort -u
   return 0
 }
 
