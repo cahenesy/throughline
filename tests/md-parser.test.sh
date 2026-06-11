@@ -148,11 +148,11 @@ make_bullet_fixture() {  # <path>
 - src/noemdash2.txt notes `backtick` token
 - — a stray note with no path
 ```
-- fenced/not-a-bullet.txt — inside a fence
+- fenced/not-a-bullet.txt — inside a backtick fence
+```
 ~~~
 - tilde/not-a-bullet.txt — inside a tilde fence
 ~~~
-```
 
 ## Expected diff size
 - src/elsewhere.txt — 40 lines
