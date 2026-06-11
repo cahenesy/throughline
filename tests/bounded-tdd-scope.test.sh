@@ -572,6 +572,32 @@ EOF
     || ok "no false structural-finding(a) for the annotated declaration"
 )
 
+echo "[delegate-fence-anchor] count and extract agree through the md.sh delegate: a ~~~-fenced bullet is excluded and a two-space /^- / bullet is counted (TDD 0055 §6, A21/A23)"
+(
+  source "$TF" 2>/dev/null || { bad "could not source touched-files.sh"; exit 0; }
+  TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT; f="$TMP/fence.md"
+  cat > "$f" <<'EOF'
+# TDD 9011: fence + anchor fixture
+Status: draft
+
+## Touched files
+- src/real.txt — a real declared file
+-  src/twospace.txt — two-space /^- / anchor bullet (A23)
+~~~
+- src/fenced.txt — inside a tilde fence, MUST be excluded (A21)
+~~~
+EOF
+  got="$(tl_extract_touched_paths "$f")"
+  printf '%s\n' "$got" | grep -q 'src/fenced.txt' \
+    && bad "the ~~~-fenced bullet leaked through the delegate: [$got]" \
+    || ok "the delegate excludes the ~~~-fenced bullet (A21 through tl_extract_touched_paths)"
+  n_extract="$(printf '%s\n' "$got" | grep -c .)"
+  n_count="$(md_section_body "$f" "Touched files" | grep -cE '^- ')"
+  { [ "$n_extract" = "$n_count" ] && [ "$n_extract" = "2" ]; } \
+    && ok "count and extract agree on the /^- / anchor (both see the plain + two-space bullet, exclude the fenced one)" \
+    || bad "count/extract anchor disagreement: extract=$n_extract count=$n_count"
+)
+
 # The tdd-lint + learnings wrappers are proven by [bounds-parser-agreement] (all
 # three equal tl_extract_touched_paths, whose output [extract-forms] pins).
 
