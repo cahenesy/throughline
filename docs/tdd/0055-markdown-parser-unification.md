@@ -1,5 +1,5 @@
 # TDD 0055: Markdown section/bullet parser unification (scripts/lib/md.sh)
-Status: draft
+Status: implemented
 PRD refs: FR-53 (Touched files / Expected diff parsing); FR-54 (per-file diff bound); FR-67 (structural-finding scope); FR-69 (self-compliance with Theme A)
 PRD-rev: 0aa1e28
 ADR constraints: 0006
