@@ -820,6 +820,88 @@ EOF
   grep -q '"review:1":3' "$F" 2>/dev/null && ok "rework_attempts == {review:1:3}" || bad "rework_attempts should be review:1=3 (got: $(_read_fragment_raw_object "$F" rework_attempts))"
 ) || true
 
+# --- TDD 0053 / A1: convergence keys on a FRESH verdict, not a stale cumulative
+# PASS; the coverage check distinguishes a git-diff failure from an empty diff.
+# (NFR-4: no false PASS; ambiguity → FAIL. ADR 0006: convergence rests on a fresh
+# artifact verdict.) Both directions are tested so a one-directional fix is caught
+# (the §Failure-modes elephant): no-fresh-verdict must NOT converge; a genuine
+# fresh PASS MUST still converge.
+echo "[E6] A1(a): a re-review with NO fresh verdict + a stale cumulative PASS + an empty scope does NOT falsely converge"
+( D="$ROOT/E6"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D" MAINREPO="$D/repo"
+  unset THROUGHLINE_REWORK_MODEL
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  setup_loop_repo "$D/repo" || { bad "setup failed"; exit 0; }
+  HEAD_SHA="$(git rev-parse HEAD)"
+  # The bounded-rework loop legitimately leaves a prior iteration's PASS in the
+  # CUMULATIVE log. Pre-seed exactly that stale verdict.
+  log="$D/e6.log"
+  printf 'REVIEW_RESULT: PASS (stale verdict from a prior rework iteration)\n' > "$log"
+  # rbase == HEAD → the scoped review/coverage diff is empty, so review_one fails
+  # closed and writes NO fresh REVIEW_RESULT this pass. The pre-fix path fell back
+  # to the stale cumulative PASS (rs=${verdict_in_new:-$(review_status)}) and
+  # converged on the rrc==0 arm; the A1 fix routes an empty FRESH-slice verdict to
+  # gate-unobservable regardless of rrc.
+  _rework_loop 0099-fix docs/tdd/0099-fix.md "$HEAD_SHA" "$log"; rc=$?
+  F="$STATE_DIR/0099-fix.json"
+  [ "$rc" -ne 0 ] && ok "does NOT converge on a stale PASS with no fresh verdict (rc=$rc)" \
+    || bad "stale-PASS + no-fresh-verdict must NOT converge (rc=$rc)"
+  grep -q '"halt_cause":"gate-unobservable"' "$F" 2>/dev/null \
+    && ok "records a resumable gate-unobservable halt (not a terminal flip)" \
+    || bad "halt_cause should be gate-unobservable (got: $(grep -o '"halt_cause":"[^"]*"' "$F" 2>/dev/null))"
+) || true
+
+echo "[E7] A1(b): a FRESH REVIEW_RESULT: PASS still converges (the fix keys on fresh-verdict presence, not diff-emptiness)"
+( D="$ROOT/E7"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D" MAINREPO="$D/repo"
+  unset THROUGHLINE_REWORK_MODEL
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  setup_loop_repo "$D/repo" || { bad "setup failed"; exit 0; }
+  BS="$(git rev-parse HEAD)"
+  printf 'build-output\n' >> src/a.txt; git add -A; git commit -qm "build: output past build-start" >/dev/null
+  # The re-review writes a FRESH PASS with a per-file disposition (full coverage).
+  printf 'FILE_REVIEWED_NO_FINDINGS: src/a.txt\nREVIEW_RESULT: PASS\n' > "$D/repo/ctl/review.out"
+  # Pre-seed a stale BLOCK to prove the FRESH PASS — not the cumulative tail —
+  # drives convergence even when an older verdict sits in the log.
+  log="$D/e7.log"
+  printf 'REVIEW_RESULT: BLOCK (stale prior-iteration verdict)\n' > "$log"
+  _rework_loop 0099-fix docs/tdd/0099-fix.md "$BS" "$log"; rc=$?
+  [ "$rc" -eq 0 ] && ok "a fresh REVIEW_RESULT: PASS converges (rc=0)" \
+    || bad "a fresh PASS must still converge — the fix must not false-FAIL it (rc=$rc)"
+) || true
+
+echo "[E8] A1(c): a git-diff failure at the coverage check is NOT read as 'no files changed → complete coverage'"
+( D="$ROOT/E8"; mkdir -p "$D/state.d" "$D/bin"; cd "$D" || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  git init -q -b master; git config user.email t@t.t; git config user.name t
+  printf 'a\n' > f; git add -A; git commit -qm base >/dev/null
+  # Stub git so `git diff --name-only` FAILS (a transient git failure). Pre-fix
+  # the rc was swallowed by 2>/dev/null and the empty output read as "no files
+  # changed → complete coverage → converge" (a false PASS). The fix distinguishes
+  # rc!=0 from a genuinely-empty diff.
+  REAL_GIT="$(command -v git)"
+  cat > "$D/bin/git" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+  *"diff --name-only"*) exit 3 ;;
+  *) exec "$REAL_GIT" "\$@" ;;
+esac
+EOF
+  chmod +x "$D/bin/git"
+  log="$D/e8.log"; : > "$log"
+  export PATH="$D/bin:$PATH"
+  _per_file_coverage_check "$log" 0 0099-fix HEAD HEAD "review:1"; rc=$?
+  [ "$rc" -ne 0 ] && ok "git-diff failure → coverage check returns non-zero (not complete)" \
+    || bad "a git-diff rc!=0 must NOT be read as complete coverage (rc=$rc)"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
