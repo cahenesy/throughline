@@ -495,6 +495,45 @@ EOF
     || bad "pre-pass should clear the bare-path rework (rc=$rc, out=$out)"
 ) || true
 
+# --- TDD 0053 / A18 (FR-67): the FR-67(a) membership grep must pass `--` so a
+# diff/cited path that begins with '-' is treated as a PATTERN, not a grep option.
+# Pre-fix `grep -qxF "$file"` parses a leading-'-' path as options → no match →
+# a FALSE structural-finding(a) on an in-scope file.
+echo "[C11] A18: a declared leading-'-' path matches the FR-67(a) membership check (grep --), not parsed as an option"
+( D="$ROOT/C11"; mkdir -p "$D/state.d"; cd "$D" || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  git init -q -b master; git config user.email t@t.t; git config user.name t
+  printf 'base\n' > base.txt; git add -A; git commit -qm base >/dev/null
+  mkdir -p docs/tdd
+  cat > docs/tdd/0048-dash.md <<'EOF'
+# TDD 0048: leading-dash membership fixture
+Status: draft
+
+## Touched files
+- `-dash.txt` — a declared path that begins with a dash
+
+## Expected diff size
+- `-dash.txt` — 25 lines
+EOF
+  git add -A; git commit -qm "build start: declare a leading-dash path" >/dev/null
+  BS="$(git rev-parse HEAD)"
+  printf 'l1\nl2\nl3\n' > ./-dash.txt        # in-scope small edit to the declared dash file
+  git add -A; git commit -qm "rework: small in-scope edit to the dash file" >/dev/null
+  NH="$(git rev-parse HEAD)"
+  out="$(_rework_pre_pass 0048-dash docs/tdd/0048-dash.md "$NH" "$BS" "$BS" 8)"; rc=$?
+  printf '%s\n' "$out" | grep -q 'structural-finding(a)'; g=$?
+  case "$g" in
+    1) ok "no false structural-finding(a) for the in-scope leading-'-' file" ;;
+    0) bad "false structural-finding(a): leading-'-' path parsed as a grep option (got: $out)" ;;
+    *) bad "grep errored (exit $g) scanning the pre-pass output" ;;
+  esac
+  [ "$rc" -eq 0 ] && ok "pre-pass clears the in-scope leading-'-' rework" \
+    || bad "pre-pass should clear the leading-'-' rework (rc=$rc, out=$out)"
+) || true
+
 # --- §5 / FR-61, FR-62: _rework_one spawns a bounded fix + commits -----------
 echo "[D1] _rework_one substitutes the template, runs the rework model, echoes the new HEAD"
 ( D="$ROOT/D1"; mkdir -p "$D/state.d" "$D/bin"; cd "$D" || { bad "cd failed"; exit 0; }
