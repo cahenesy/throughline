@@ -21,13 +21,11 @@
 # Shared scope is deliberate for this dogfood slice, matching lib/state.sh.
 
 # Source the single source of truth for `## Touched files` parsing (TDD 0049 /
-# FR-53, FR-54, FR-67(a)) by its SIBLING path, resolved from THIS file's own
-# location so it works whether gates.sh is sourced by absolute path or run
-# standalone. FATAL-on-missing (never silently leave _rework_touched_files
-# undefined) per ADR 0006 spirit. The `return 1 2>/dev/null || exit 1` idiom is
-# correct in both sourced and executed contexts. `_tf_lib` is scratch and is
-# unset after use; the lib's own `_TL_TOUCHED_FILES_SOURCED` include guard makes
-# a double-source (gates.sh AND learnings.sh under one implement.sh) a no-op.
+# FR-53, FR-67(a)) by its SIBLING path, resolved from THIS file's own location.
+# FATAL-on-missing per ADR 0006 spirit (never leave _rework_touched_files
+# undefined); the `return 1 2>/dev/null || exit 1` idiom is correct sourced or
+# executed; the lib's `_TL_TOUCHED_FILES_SOURCED` guard makes a double-source
+# (gates.sh AND learnings.sh under one implement.sh) a no-op.
 _tf_lib="${BASH_SOURCE[0]%/*}/touched-files.sh"
 # shellcheck source=scripts/lib/touched-files.sh
 { [ -r "$_tf_lib" ] && . "$_tf_lib"; } || {

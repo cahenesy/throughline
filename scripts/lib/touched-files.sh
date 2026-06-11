@@ -1,50 +1,31 @@
 #!/usr/bin/env bash
 # touched-files.sh — the SINGLE source of truth for parsing a TDD's
 # `## Touched files` section into its declared path set (TDD 0049 / FR-53, FR-54,
-# FR-67(a)).
-#
-# Three readers parse this section: gates.sh's _rework_touched_files (build-time
-# FR-67(a) membership), tdd-lint.sh's _tl_extract_touched_paths (design-time
-# malformed PRECHECK), and learnings.sh's _touched_files_of_tdd (learning
-# aggregation). TDD 0048 unified the first two onto an em-dash-split extractor;
-# this lib unifies ALL THREE onto one annotation-robust definition so a future
-# edit cannot re-introduce a divergent copy (the 0044 footgun) or the annotated-
-# path mis-parse 0048 left open.
-#
-# Sourced, never executed: no top-level side effects, no `set` options, only the
-# include guard and the function definition.
+# FR-67(a)). gates.sh, tdd-lint.sh and learnings.sh all delegate here so no
+# divergent copy can re-introduce the 0044 footgun or the annotated-path
+# mis-parse 0048 left open. Sourced, never executed: no top-level side effects.
 
 # Include guard: gates.sh AND learnings.sh both pull this lib under one
 # implement.sh, so double-sourcing must be a clean no-op. _TL_TOUCHED_FILES_SOURCED
-# is PERSISTENT process state and is never unset (unlike the per-host `_tf_lib`
-# scratch variable), or the guard would not hold.
+# is PERSISTENT state, never unset (unlike the per-host `_tf_lib` scratch var).
 [ -n "${_TL_TOUCHED_FILES_SOURCED:-}" ] && return 0
 _TL_TOUCHED_FILES_SOURCED=1
 
 # tl_extract_touched_paths <tdd-file> [mode] — extract one declared path per
-# `- ` bullet of the (fence-aware) `## Touched files` section.
+# `- ` bullet of the (fence-aware) `## Touched files` section. A missing file is
+# caller-friendly: return 0, emit nothing.
 #   mode=paths (default): emit each non-empty extracted path, one per line.
-#   mode=malformed:       emit the 60-char excerpt of each `- ` bullet whose
-#                         extracted path is empty (the no-path bullets).
-# A missing file is caller-friendly: return 0, emit nothing.
-#
-# Algorithm (annotation-robust). Within each bullet, the path lives in the
-# segment LEFT of the em-dash (`—`, U+2014, which separates path from purpose),
-# or the whole bullet when there is no em-dash:
-#   - if the segment (after trimming leading whitespace) STARTS with a backtick,
-#     the path is that leading backtick-delimited token (the quoted path) — this
-#     is what makes an annotated bullet like `` `path` (post) — purpose `` yield
-#     `path`, not `path (post)`;
-#   - otherwise the path is the segment's FIRST whitespace-delimited token (with
-#     any stray backticks stripped, matching the predecessor) — this keeps the
-#     0044 case (bare path, backticked DESCRIPTION) yielding the path, not the
-#     description backtick, INCLUDING the no-em-dash bullet where the description
-#     backtick sits in the same segment as the bare path.
-# The start-anchored backtick check (not "contains a backtick anywhere") is what
-# makes this subsume EVERY form the em-dash-split predecessor handled: a no-em-
-# dash bullet whose trailing words contain a backtick still yields its first
-# token, exactly as the predecessor's first-whitespace-token branch did.
-# A bullet that yields no path is dropped (paths mode) or reported (malformed).
+#   mode=malformed:       emit the 60-char excerpt of each `- ` bullet whose path
+#                         is empty (the no-path bullets).
+# Algorithm (annotation-robust): the path lives in the segment LEFT of the em-dash
+# (`—`, U+2014), or the whole bullet when there is none. If that segment (leading
+# ws trimmed) STARTS with a backtick, the path is that leading backtick-quoted
+# token (so `` `path` (post) — purpose `` yields `path`, not `path (post)`);
+# otherwise it is the segment's FIRST whitespace token (so the 0044 bare-path-with-
+# backticked-DESCRIPTION case yields the path). Anchoring the backtick check to the
+# segment START (not "contains a backtick anywhere") is what subsumes EVERY form
+# the em-dash-split predecessor handled, including a no-em-dash bullet whose
+# trailing words contain a backtick. A no-path bullet is dropped / reported.
 tl_extract_touched_paths() {  # <tdd-file> [mode]
   local f="$1" mode="${2:-paths}"
   [ -f "$f" ] || return 0
