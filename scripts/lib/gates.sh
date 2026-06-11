@@ -34,6 +34,19 @@ _tf_lib="${BASH_SOURCE[0]%/*}/touched-files.sh"
 }
 unset _tf_lib
 
+# Source the unified markdown parser DIRECTLY (TDD 0055) — gates.sh consumes
+# md_section_body / md_bullet_path_of_line itself, so it owns its source line (the
+# 0050 consumer-sources-it rule), not transitively via touched-files.sh. Same
+# SIBLING-path + FATAL-on-missing + dual `return||exit` idiom; md.sh's own include
+# guard makes this a no-op when touched-files.sh already pulled it in.
+_md_lib="${BASH_SOURCE[0]%/*}/md.sh"
+# shellcheck source=scripts/lib/md.sh
+{ [ -r "$_md_lib" ] && . "$_md_lib"; } || {
+  echo "FATAL: cannot source $_md_lib (partial install or perms)" >&2
+  return 1 2>/dev/null || exit 1
+}
+unset _md_lib
+
 # _claude_call <log> <args...> — run a single-shot `claude` call under the child
 # watchdog (TDD 0027 §1 / FR-42). On timeout, GNU `timeout` SIGTERMs the child
 # and ITSELF exits 124 — a code _classify_cause's signal arm does NOT handle (it
