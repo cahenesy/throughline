@@ -238,6 +238,48 @@ echo "[touched-delegate] tl_extract_touched_paths delegates to md_bullet_path: s
   )
 )
 
+# ============================================================================
+# plan-classifier.sh — section scan routed through md_section_body (TDD 0055
+# step 3): the classifier becomes fence-aware, closing the reuse-#11 misroute
+# (a fenced `## Verification plan` / nontrivial-keyword example inside ANOTHER
+# section no longer leaks into the keyword scan).
+# ============================================================================
+CLS="$REPO/scripts/lib/plan-classifier.sh"
+# A TDD whose REAL `## Verification plan` is mechanical (CLI exit code), but whose
+# `## Approach` contains a FENCED example of a rejected browser-driven approach —
+# including a fenced `## Verification plan` heading. A non-fence-aware walk reads
+# the fenced "browser/playwright" lines and misroutes to `nontrivial`.
+make_fence_misroute() {  # <path>
+  cat > "$1" <<'EOF'
+# TDD 9100: fence-misroute fixture
+Status: draft
+
+## Approach
+We considered a browser-driven check but rejected it. The rejected example:
+```
+## Verification plan
+Open a browser with playwright and click through the rendered DOM.
+```
+The chosen approach is a plain CLI invocation.
+
+## Verification plan
+Run the CLI and assert exit code 0; grep the log for the done marker.
+
+## Requirement traceability
+| FR-52 | x |
+EOF
+}
+
+echo "[cls-fence-misroute] a fenced browser/playwright example does not misroute a mechanical plan (reuse #11)"
+(
+  TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT; f="$TMP/m.md"; make_fence_misroute "$f"
+  out="$(source "$CLS"; tl_classify_plan "$f" 2>/dev/null)"; rc=$?
+  [ "$rc" -eq 0 ] && ok "classifier exits 0 on the fixture" || bad "expected rc 0 (got $rc)"
+  [ "$out" = "mechanical" ] \
+    && ok "mechanical (fenced browser example excluded; real plan is exit-code/grep)" \
+    || bad "fence misroute: expected 'mechanical', got '$out'"
+)
+
 # --- report ----------------------------------------------------------------
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
