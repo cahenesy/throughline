@@ -1,5 +1,5 @@
 # TDD 0054: Runner & observability hardening (watcher staleness, lock identity, status robustness)
-Status: draft
+Status: implemented
 PRD refs: FR-39 (detached run + completion callback); FR-28 (progress snapshot); FR-72 (learning capture); FR-69 (self-compliance with Theme A)
 PRD-rev: 0aa1e28
 ADR constraints: 0006
