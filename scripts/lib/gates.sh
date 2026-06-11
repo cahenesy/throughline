@@ -2479,8 +2479,19 @@ _rework_loop() {  # <slug> <tdd> <rbase> <log>
       # remediation for a git crash. Now the `git-diff-failed` arm is
       # checked FIRST so it cannot be shadowed by a later
       # `structural-finding(*)` substring match.
+      # TDD 0055 / L-005: a `touched-files-parse-failed` from _rework_pre_pass is
+      # the SAME class of "cannot evaluate" failure — the `## Touched files`
+      # declaration could not be PARSED (awk failed end-to-end), so FR-67(a)
+      # membership and FR-67(b) bounds were both skipped. It is an external
+      # parse-environment failure, NOT a structural scope flaw, so it gets its
+      # OWN arm routing to `external-blocker` with a distinct `parse-failure`
+      # criterion — never the `structural-finding(?)` fall-through whose
+      # "revise the TDD scope via /tdd-author" remediation is wrong for a
+      # parse crash (the operator must inspect the parse environment / the
+      # TDD's `## Touched files` section instead, per the carried excerpt).
       case "$pp" in
         *git-diff-failed*)         cause=external-blocker;     crit="git-failure" ;;
+        *touched-files-parse-failed*) cause=external-blocker; crit="parse-failure" ;;
         *rework-scope-exceeded*)   cause=rework-scope-exceeded; crit="scope" ;;
         *"structural-finding(a)"*) cause=structural-finding;    crit="(a)" ;;
         *"structural-finding(b)"*) cause=structural-finding;    crit="(b)" ;;
