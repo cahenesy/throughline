@@ -1,5 +1,5 @@
 # TDD 0053: gates.sh gate-integrity hardening (fresh-verdict + sentinel/parse fixes)
-Status: draft
+Status: implemented
 PRD refs: NFR-4 (no false PASS; ambiguity resolves to FAIL); FR-57 (per-step review); FR-67 (structural-finding scope); FR-69 (self-compliance with Theme A)
 PRD-rev: 0aa1e28
 ADR constraints: 0006

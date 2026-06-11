@@ -495,6 +495,134 @@ EOF
     || bad "pre-pass should clear the bare-path rework (rc=$rc, out=$out)"
 ) || true
 
+# --- TDD 0053 / A18 (FR-67): the FR-67(a) membership grep must pass `--` so a
+# diff/cited path that begins with '-' is treated as a PATTERN, not a grep option.
+# Pre-fix `grep -qxF "$file"` parses a leading-'-' path as options → no match →
+# a FALSE structural-finding(a) on an in-scope file.
+echo "[C11] A18: a declared leading-'-' path matches the FR-67(a) membership check (grep --), not parsed as an option"
+( D="$ROOT/C11"; mkdir -p "$D/state.d"; cd "$D" || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  git init -q -b master; git config user.email t@t.t; git config user.name t
+  printf 'base\n' > base.txt; git add -A; git commit -qm base >/dev/null
+  mkdir -p docs/tdd
+  cat > docs/tdd/0048-dash.md <<'EOF'
+# TDD 0048: leading-dash membership fixture
+Status: draft
+
+## Touched files
+- `-dash.txt` — a declared path that begins with a dash
+
+## Expected diff size
+- `-dash.txt` — 25 lines
+EOF
+  git add -A; git commit -qm "build start: declare a leading-dash path" >/dev/null
+  BS="$(git rev-parse HEAD)"
+  printf 'l1\nl2\nl3\n' > ./-dash.txt        # in-scope small edit to the declared dash file
+  git add -A; git commit -qm "rework: small in-scope edit to the dash file" >/dev/null
+  NH="$(git rev-parse HEAD)"
+  out="$(_rework_pre_pass 0048-dash docs/tdd/0048-dash.md "$NH" "$BS" "$BS" 8)"; rc=$?
+  printf '%s\n' "$out" | grep -q 'structural-finding(a)'; g=$?
+  case "$g" in
+    1) ok "no false structural-finding(a) for the in-scope leading-'-' file" ;;
+    0) bad "false structural-finding(a): leading-'-' path parsed as a grep option (got: $out)" ;;
+    *) bad "grep errored (exit $g) scanning the pre-pass output" ;;
+  esac
+  [ "$rc" -eq 0 ] && ok "pre-pass clears the in-scope leading-'-' rework" \
+    || bad "pre-pass should clear the leading-'-' rework (rc=$rc, out=$out)"
+) || true
+
+echo "[C12] A18: _per_file_coverage_check matches a dispositioned leading-'-' diff file (grep --), not mis-reporting it un-covered"
+( D="$ROOT/C12"; mkdir -p "$D/state.d"; cd "$D" || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  git init -q -b master; git config user.email t@t.t; git config user.name t
+  printf 'base\n' > base.txt; git add -A; git commit -qm base >/dev/null
+  BS="$(git rev-parse HEAD)"
+  printf 'l1\n' > ./-dash.txt; git add -A; git commit -qm "change a leading-dash file" >/dev/null
+  # A state fragment so a (pre-fix) incomplete-file-coverage finding would record
+  # cleanly instead of warning to stderr.
+  _write_tdd_fragment 0099-fix 99 docs/tdd/0099-fix.md 1 reviewing review \
+    1000 1000 "feat/0099-fix" "" "$D/c12.log" "" "" "" "" "" "" "" "" ""
+  # The review pass dispositions the leading-dash file explicitly. Pre-fix the
+  # membership grep parses `-dash.txt` as an option → it reads as un-dispositioned
+  # → a false incomplete-file-coverage (return 1). With `--` it matches → complete.
+  log="$D/c12.log"
+  printf 'FILE_REVIEWED_NO_FINDINGS: -dash.txt\nREVIEW_RESULT: PASS\n' > "$log"
+  _per_file_coverage_check "$log" 0 0099-fix "$BS" HEAD "review:1"; rc=$?
+  [ "$rc" -eq 0 ] && ok "complete coverage: the dispositioned leading-'-' file is matched" \
+    || bad "leading-'-' diff file mis-reported as un-dispositioned (rc=$rc)"
+) || true
+
+# --- TDD 0053 / A17 (ADR 0006): _diff_vs_narrative_facts must not over-include
+# via the greedy `-a` BATCH_RESULT match. The git-touched-file-count is already
+# structured (tests/severity-honest-reporting.test.sh D1), but a terminal
+# BATCH_RESULT carried INSIDE a JSON event line (the A16 tool-use case) made the
+# `build-verdict-line` extraction bleed the trailing JSON into the verdict the
+# reviewer reads. Bound the match so the verdict-line is clean (and the count
+# stays structured).
+echo "[C13] A17: the BATCH_RESULT verdict-line does not bleed trailing JSON when the sentinel rides in an event line"
+( D="$ROOT/C13"; mkdir -p "$D/state.d"; cd "$D" || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  git init -q -b master; git config user.email t@t.t; git config user.name t
+  printf 'a\n' > f1; printf 'b\n' > f2; git add -A; git commit -qm base >/dev/null
+  BS="$(git rev-parse HEAD)"
+  printf 'a2\n' > f1; printf 'b2\n' > f2; git add -A; git commit -qm change >/dev/null
+  log="$D/c13.log"
+  # The terminal BATCH_RESULT is carried inside a JSON assistant/tool-use event
+  # line (no later plain-text verdict). Pre-fix `grep -aoE 'BATCH_RESULT: .*'`
+  # greedily captures the trailing JSON; the fix bounds the match.
+  printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"BATCH_RESULT: OK"}],"stop_reason":"end_turn"}}' > "$log"
+  out="$(_diff_vs_narrative_facts "$log" "$BS")"
+  vline="$(printf '%s\n' "$out" | grep '^build-verdict-line:' | head -1)"
+  [ "$vline" = "build-verdict-line: BATCH_RESULT: OK" ] \
+    && ok "verdict-line is the clean BATCH_RESULT, no trailing JSON" \
+    || bad "verdict-line bled trailing JSON (got: $vline)"
+  printf '%s\n' "$out" | grep -qE 'git-touched-file-count: *2' \
+    && ok "git-touched-file-count stays structured (2)" \
+    || bad "file count should be the structured git count 2 (got: $(printf '%s\n' "$out" | grep file-count))"
+) || true
+
+# --- TDD 0053 / A19 (FR-67): when a git-diff failure co-occurs with a scope/(a)
+# violation, _rework_pre_pass must route ONE consistent cause + excerpt. The
+# caller derives `cause` by priority (git-diff-failed wins) but takes the excerpt
+# from `head -1`; pre-fix a violation line could precede the git-diff-failed line,
+# so cause(external-blocker) and excerpt(scope/(a)) diverged. The fix emits the
+# lone git-diff-failed line when any diff fails.
+echo "[C14] A19: a git-diff failure co-occurring with an (a) violation → a single consistent git-diff-failed cause/excerpt"
+( D="$ROOT/C14"; mkdir -p "$D/state.d"; cd "$D" || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  mk_rework_repo; BS="$(git rev-parse HEAD)"
+  mkdir -p src
+  printf 'x\n' > src/a.txt        # declared, small in-scope edit (drives the (b) per-file diff)
+  printf 'y\n' > src/c.txt        # UNdeclared → would emit structural-finding(a)
+  git add -A; git commit -qm "rework: edits a declared + an out-of-set file" >/dev/null
+  NH="$(git rev-parse HEAD)"
+  # A bad build-start SHA makes ONLY the per-file (b) diff (build_start..new_head)
+  # fail, while the scope/(a) diffs (cleared..new_head) succeed and surface the (a)
+  # violation — the exact co-occurrence A19 must collapse to one cause.
+  BADSHA="0000000000000000000000000000000000000000"
+  out="$(_rework_pre_pass 0099-fix docs/tdd/0099-fix.md "$NH" "$BS" "$BADSHA" 40)"; rc=$?
+  [ "$rc" -ne 0 ] && ok "pre-pass returns non-zero on the git failure" || bad "should be non-zero (rc=$rc)"
+  first="$(printf '%s\n' "$out" | head -1)"
+  printf '%s' "$first" | grep -q 'git-diff-failed' \
+    && ok "excerpt (head -1) is the git-diff-failed line (consistent with the external-blocker cause)" \
+    || bad "head -1 should be git-diff-failed (got: $first)"
+  ! printf '%s\n' "$out" | grep -q 'structural-finding(a)' \
+    && ok "the co-occurring (a) violation is suppressed → one consistent cause" \
+    || bad "git-diff-failed must not co-mingle with structural-finding(a) (got: $out)"
+) || true
+
 # --- §5 / FR-61, FR-62: _rework_one spawns a bounded fix + commits -----------
 echo "[D1] _rework_one substitutes the template, runs the rework model, echoes the new HEAD"
 ( D="$ROOT/D1"; mkdir -p "$D/state.d" "$D/bin"; cd "$D" || { bad "cd failed"; exit 0; }
@@ -818,6 +946,92 @@ EOF
   [ "$n" -eq 3 ] && ok "exactly 3 shipped rework attempts" || bad "should ship exactly 3 reworks (got $n)"
   grep -q '"halt_cause":"rework-budget-exhausted"' "$F" 2>/dev/null && ok "halt_cause=rework-budget-exhausted" || bad "halt_cause should be rework-budget-exhausted"
   grep -q '"review:1":3' "$F" 2>/dev/null && ok "rework_attempts == {review:1:3}" || bad "rework_attempts should be review:1=3 (got: $(_read_fragment_raw_object "$F" rework_attempts))"
+) || true
+
+# --- TDD 0053 / A1: convergence keys on a FRESH verdict, not a stale cumulative
+# PASS; the coverage check distinguishes a git-diff failure from an empty diff.
+# (NFR-4: no false PASS; ambiguity → FAIL. ADR 0006: convergence rests on a fresh
+# artifact verdict.) Both directions are tested so a one-directional fix is caught
+# (the §Failure-modes elephant): no-fresh-verdict must NOT converge; a genuine
+# fresh PASS MUST still converge.
+echo "[E6] A1(a): a re-review with NO fresh verdict + a stale cumulative PASS + an empty scope does NOT falsely converge"
+( D="$ROOT/E6"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D" MAINREPO="$D/repo"
+  unset THROUGHLINE_REWORK_MODEL
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  setup_loop_repo "$D/repo" || { bad "setup failed"; exit 0; }
+  HEAD_SHA="$(git rev-parse HEAD)"
+  # The bounded-rework loop legitimately leaves a prior iteration's PASS in the
+  # CUMULATIVE log. Pre-seed exactly that stale verdict.
+  log="$D/e6.log"
+  printf 'REVIEW_RESULT: PASS (stale verdict from a prior rework iteration)\n' > "$log"
+  # rbase == HEAD → the scoped review/coverage diff is empty, so review_one fails
+  # closed and writes NO fresh REVIEW_RESULT this pass. The pre-fix path fell back
+  # to the stale cumulative PASS (rs=${verdict_in_new:-$(review_status)}) and
+  # converged on the rrc==0 arm; the A1 fix routes an empty FRESH-slice verdict to
+  # gate-unobservable regardless of rrc.
+  _rework_loop 0099-fix docs/tdd/0099-fix.md "$HEAD_SHA" "$log"; rc=$?
+  F="$STATE_DIR/0099-fix.json"
+  [ "$rc" -ne 0 ] && ok "does NOT converge on a stale PASS with no fresh verdict (rc=$rc)" \
+    || bad "stale-PASS + no-fresh-verdict must NOT converge (rc=$rc)"
+  grep -q '"halt_cause":"gate-unobservable"' "$F" 2>/dev/null \
+    && ok "records a resumable gate-unobservable halt (not a terminal flip)" \
+    || bad "halt_cause should be gate-unobservable (got: $(grep -o '"halt_cause":"[^"]*"' "$F" 2>/dev/null))"
+) || true
+
+echo "[E7] A1(b): a FRESH REVIEW_RESULT: PASS still converges (the fix keys on fresh-verdict presence, not diff-emptiness)"
+( D="$ROOT/E7"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D" MAINREPO="$D/repo"
+  unset THROUGHLINE_REWORK_MODEL
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  setup_loop_repo "$D/repo" || { bad "setup failed"; exit 0; }
+  BS="$(git rev-parse HEAD)"
+  printf 'build-output\n' >> src/a.txt; git add -A; git commit -qm "build: output past build-start" >/dev/null
+  # The re-review writes a FRESH PASS with a per-file disposition (full coverage).
+  printf 'FILE_REVIEWED_NO_FINDINGS: src/a.txt\nREVIEW_RESULT: PASS\n' > "$D/repo/ctl/review.out"
+  # Pre-seed a stale BLOCK to prove the FRESH PASS — not the cumulative tail —
+  # drives convergence even when an older verdict sits in the log.
+  log="$D/e7.log"
+  printf 'REVIEW_RESULT: BLOCK (stale prior-iteration verdict)\n' > "$log"
+  _rework_loop 0099-fix docs/tdd/0099-fix.md "$BS" "$log"; rc=$?
+  [ "$rc" -eq 0 ] && ok "a fresh REVIEW_RESULT: PASS converges (rc=0)" \
+    || bad "a fresh PASS must still converge — the fix must not false-FAIL it (rc=$rc)"
+) || true
+
+echo "[E8] A1(c): a git-diff failure at the coverage check is NOT read as 'no files changed → complete coverage'"
+( D="$ROOT/E8"; mkdir -p "$D/state.d" "$D/bin"; cd "$D" || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  git init -q -b master; git config user.email t@t.t; git config user.name t
+  printf 'a\n' > f; git add -A; git commit -qm base >/dev/null
+  # A real state fragment so the coverage-diff-unavailable finding records cleanly
+  # (mirrors the production path; without it _record_finding warns to stderr).
+  _write_tdd_fragment 0099-fix 99 docs/tdd/0099-fix.md 1 reviewing review \
+    1000 1000 "feat/0099-fix" "" "$D/e8.log" "" "" "" "" "" "" "" "" ""
+  # Stub git so `git diff --name-only` FAILS (a transient git failure). Pre-fix
+  # the rc was swallowed by 2>/dev/null and the empty output read as "no files
+  # changed → complete coverage → converge" (a false PASS). The fix distinguishes
+  # rc!=0 from a genuinely-empty diff.
+  REAL_GIT="$(command -v git)"
+  cat > "$D/bin/git" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+  *"diff --name-only"*) exit 3 ;;
+  *) exec "$REAL_GIT" "\$@" ;;
+esac
+EOF
+  chmod +x "$D/bin/git"
+  log="$D/e8.log"; : > "$log"
+  export PATH="$D/bin:$PATH"
+  _per_file_coverage_check "$log" 0 0099-fix HEAD HEAD "review:1"; rc=$?
+  [ "$rc" -ne 0 ] && ok "git-diff failure → coverage check returns non-zero (not complete)" \
+    || bad "a git-diff rc!=0 must NOT be read as complete coverage (rc=$rc)"
 ) || true
 
 echo

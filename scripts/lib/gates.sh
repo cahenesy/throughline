@@ -331,7 +331,12 @@ _diff_vs_narrative_facts() {  # <build-log> <build-start-sha>
   if [ -z "$log" ] || [ ! -r "$log" ]; then
     printf 'build-log-unavailable: the build log (%s) is missing or unreadable; the narrative CANNOT be extracted — treat any narrative scope claim as UNVERIFIED (this is an extraction gap, NOT a deliberately-absent narrative).\n' "${log:-<unset>}"
   else
-    br="$(grep -aoE 'BATCH_RESULT: .*' "$log" 2>/dev/null | tail -1)"
+    # TDD 0053 A17 (ADR 0006): bound the capture at a JSON-quote boundary
+    # (`[^"]*`) not the greedy `.*` — a BATCH_RESULT carried INSIDE a stream-json
+    # event line (the A16 tool-use case) otherwise bled trailing JSON into the
+    # verdict-line. `-a` kept (binary-safe); a plain-text verdict has no `"`. (The
+    # file count below is already derived from the structured `git diff`.)
+    br="$(grep -aoE 'BATCH_RESULT: [^"]*' "$log" 2>/dev/null | tail -1)"
     if [ -z "$br" ]; then
       printf 'narrative-missing: the build log carries no BATCH_RESULT line; SKIP the diff-vs-narrative check (a missing narrative is not a finding).\n'
     else
@@ -1030,6 +1035,9 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
   # pause/resume spawns a fresh coprocess + fresh counters — the budget is "2
   # corrections per build attempt", not per TDD lifetime). No fragment-schema change.
   local _protocol_errors=0 _protocol_fatal=0
+  # TDD 0053 A16: latch the stdin-close lifecycle to run at most once, so a second
+  # BATCH_RESULT event cannot double-close the {build_in} fd.
+  local _build_stdin_closed=0
   interval_start=$(date +%s)   # the spawn → first-STEP_COMMIT interval begins now
   while :; do
     # Capture read's OWN status directly — NOT via `if ! read; then read_rc=$?`,
@@ -1197,6 +1205,12 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
                 if [ "$_protocol_errors" -le 2 ]; then
                   verdict='STEP_REVIEW: BLOCK protocol-error: STEP_COMMIT must be exactly "STEP_COMMIT: <integer-step-index> <full-commit-sha>". <integer-step-index> is the 1-based ordinal of the Sequencing item (a TDD label like "5b" maps to its ordinal position). Re-emit the sentinel for the SAME completed work in that exact format — do not redo the work.'
                   printf '%s\n' "$verdict" >> "$log"
+                  # TDD 0053 A15 (FR-57): COMMIT the elapsed interval into
+                  # build_active_seconds BEFORE resetting interval_start (as the
+                  # review-verdict / test-first paths do). Pre-fix this reset the
+                  # clock without crediting the interval, so the active-time
+                  # watchdog under-counted a build looping on protocol errors.
+                  build_active_seconds=$((build_active_seconds + $(date +%s) - interval_start))
                   # Same SIGPIPE-safe write as the review-verdict path: a coproc
                   # that died mid-correction breaks to the post-loop classifier.
                   _coproc_write "${build_in}" "$(_user_turn_json "$verdict")" || break
@@ -1215,23 +1229,34 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
               # No real attempt (template echo / prose) → ignore, exactly as before.
             fi
             ;;
-          *"BATCH_RESULT: "*)
-            # TDD 0025 §1 — stream-json input-mode lifecycle. `claude -p
-            # --input-format stream-json` does NOT self-terminate on `end_turn`;
-            # it blocks reading stdin for the next user-turn JSON until EOF.
-            # Close BOTH parent-side write ends of the build's stdin pipe — our
-            # dup'd ${build_in} AND the coproc's original ${BUILD[1]} — so the
-            # build sees EOF and exits cleanly (rc=0). Closing only one leaves
-            # the other holding the pipe open, so the build keeps blocking and
-            # the inter-event watchdog kills it (143 → transient → pause).
-            # Continue (no `break`) — the read loop drains any tail events
-            # until the build's stdout closes naturally.
-            # TDD 0030 §5: commit the final active interval and STOP the clock —
-            # the build is done; remaining drain time is free.
-            build_active_seconds=$((build_active_seconds + $(date +%s) - interval_start))
-            clock_active=0
-            exec {build_in}>&- 2>/dev/null || true
-            exec {BUILD[1]}>&- 2>/dev/null || true
+          *)
+            # BATCH_RESULT lifecycle. This arm fires when the extracted text is
+            # NOT a STEP_COMMIT — the text carries the BATCH_RESULT (normal path)
+            # OR is empty because the sentinel rode in a tool-use block (TDD 0053
+            # A16). In BOTH cases, if the RAW event is a BATCH_RESULT sentinel, run
+            # the stdin-close lifecycle (the verdict is parsed from the mirrored
+            # raw log regardless), so a tool-use-carried verdict does not fall
+            # through and hang the finished build to the inter-event watchdog.
+            #
+            # TDD 0025 §1: `claude -p --input-format stream-json` does NOT self-
+            # terminate on `end_turn`; it blocks reading stdin until EOF. Close
+            # BOTH parent-side write ends — our dup'd ${build_in} AND the coproc's
+            # original ${BUILD[1]} — so the build sees EOF and exits (rc=0); closing
+            # only one leaves it blocking until the watchdog kills it. Continue (no
+            # `break`) to drain tail events. Guarded by _build_stdin_closed (A16) so
+            # a later BATCH_RESULT cannot double-close the {build_in} fd.
+            case "$evt" in
+              *"BATCH_RESULT: "*)
+                if [ "$_build_stdin_closed" -eq 0 ]; then
+                  # TDD 0030 §5: commit the final active interval and STOP the clock.
+                  build_active_seconds=$((build_active_seconds + $(date +%s) - interval_start))
+                  clock_active=0
+                  exec {build_in}>&- 2>/dev/null || true
+                  exec {BUILD[1]}>&- 2>/dev/null || true
+                  _build_stdin_closed=1
+                fi
+                ;;
+            esac
             ;;
         esac
         ;;
@@ -1452,33 +1477,32 @@ _rework_file_declared_bound() {  # <tdd> <file>
 _rework_pre_pass() {  # <slug> <tdd> <new-head> <cleared-sha> <build-start-sha> <region-lines>
   local slug="$1" tdd="$2" new_head="$3" cleared="$4" build_start="$5" region="$6"
   local base="$cleared"; [ -z "$base" ] && base="$build_start"
-  local fail=0 file
-  # ADR 0006 / FR-70: every PRECHECK_FAIL must rest on a verifiable artifact.
-  # Pre-fix the four `git diff … 2>/dev/null` invocations below dropped both
-  # the stderr AND the exit code, so a real git failure (corrupt ref, bad
-  # working tree, unreadable .git, etc.) returned empty output — `awk` printed
-  # `0` and the process-substitution loops never executed, all three checks
-  # silently passed and the rework was reported as scope-clear without git
-  # ever computing a diff (TDD 0019 review-rerun-2 MAJOR). Now: capture each
-  # diff's stdout AND rc into a local; on rc != 0 emit a PRECHECK_FAIL naming
-  # the failed sub-check and set fail=1 so the caller routes the rework
-  # exactly as it would for a real scope/structural violation. The downstream
-  # `_rework_loop` then resets HEAD and escalates with a non-silent diagnostic.
+  local file
+  # ADR 0006 / FR-70: every PRECHECK_FAIL must rest on a verifiable artifact, so
+  # each diff's stdout AND rc is captured (a swallowed rc let a real git failure
+  # read as scope-clear — TDD 0019 review-rerun-2 MAJOR).
+  #
+  # TDD 0053 A19: route ONE consistent cause + excerpt. The caller derives `cause`
+  # by priority (git-diff-failed wins) but takes the excerpt from `head -1`; a
+  # violation line preceding a later git-diff-failed line (e.g. the per-file (b)
+  # diff failing against a bad build_start while the base diffs succeed) made those
+  # diverge. So buffer scope/(a)/(b) violations into `out`, record the FIRST git
+  # failure into `gitfail`, and emit EITHER the lone git-diff-failed line OR the
+  # buffered violations — never both.
+  local out="" gitfail=""
 
   # FR-66 scope cap.
   local cap span numstat_out numstat_rc
   cap="$(_rework_scope_cap "$region")"
   numstat_out="$(git diff --numstat "$base..$new_head" 2>/dev/null)"; numstat_rc=$?
   if [ "$numstat_rc" -ne 0 ]; then
-    printf 'PRECHECK_FAIL: git-diff-failed (FR-66 scope, rc=%s, base=%s, head=%s)\n' \
-      "$numstat_rc" "$base" "$new_head"
-    fail=1
-  fi
-  span="$(printf '%s\n' "$numstat_out" | awk '{a+=$1; d+=$2} END{print a+d+0}')"
-  [ -z "$span" ] && span=0
-  if [ "$span" -gt "$cap" ] 2>/dev/null; then
-    printf 'PRECHECK_FAIL: rework-scope-exceeded %s > %s\n' "$span" "$cap"
-    fail=1
+    [ -z "$gitfail" ] && gitfail="git-diff-failed (FR-66 scope, rc=$numstat_rc, base=$base, head=$new_head)"
+  else
+    span="$(printf '%s\n' "$numstat_out" | awk '{a+=$1; d+=$2} END{print a+d+0}')"
+    [ -z "$span" ] && span=0
+    if [ "$span" -gt "$cap" ] 2>/dev/null; then
+      out="${out}PRECHECK_FAIL: rework-scope-exceeded $span > $cap"$'\n'
+    fi
   fi
 
   # FR-67(a) touched-file scope.
@@ -1486,17 +1510,17 @@ _rework_pre_pass() {  # <slug> <tdd> <new-head> <cleared-sha> <build-start-sha> 
   set_list="$(_rework_touched_files "$tdd")"
   names_a_out="$(git diff --name-only "$base..$new_head" 2>/dev/null)"; names_a_rc=$?
   if [ "$names_a_rc" -ne 0 ]; then
-    printf 'PRECHECK_FAIL: git-diff-failed (FR-67(a) membership, rc=%s, base=%s, head=%s)\n' \
-      "$names_a_rc" "$base" "$new_head"
-    fail=1
+    [ -z "$gitfail" ] && gitfail="git-diff-failed (FR-67(a) membership, rc=$names_a_rc, base=$base, head=$new_head)"
+  else
+    while IFS= read -r file; do
+      [ -z "$file" ] && continue
+      # TDD 0053 A18 (FR-67): `--` so a diff path beginning with '-' is the grep
+      # PATTERN, not parsed as an option (which would mis-report a false (a)).
+      if ! printf '%s\n' "$set_list" | grep -qxF -- "$file"; then
+        out="${out}PRECHECK_FAIL: structural-finding(a) $file"$'\n'
+      fi
+    done <<< "$names_a_out"
   fi
-  while IFS= read -r file; do
-    [ -z "$file" ] && continue
-    if ! printf '%s\n' "$set_list" | grep -qxF "$file"; then
-      printf 'PRECHECK_FAIL: structural-finding(a) %s\n' "$file"
-      fail=1
-    fi
-  done <<< "$names_a_out"
 
   # FR-67(b) per-file bound — cumulative since the build start (per §1).
   # TDD 0041 §4 (FR-67 gap-closure): escalate only at actual > declared × K, where
@@ -1517,35 +1541,47 @@ _rework_pre_pass() {  # <slug> <tdd> <new-head> <cleared-sha> <build-start-sha> 
   awk -v k="$K" 'BEGIN{exit !(k<1)}' && K=1.0
   names_b_out="$(git diff --name-only "$base..$new_head" 2>/dev/null)"; names_b_rc=$?
   if [ "$names_b_rc" -ne 0 ]; then
-    printf 'PRECHECK_FAIL: git-diff-failed (FR-67(b) per-file iteration, rc=%s, base=%s, head=%s)\n' \
-      "$names_b_rc" "$base" "$new_head"
-    fail=1
+    [ -z "$gitfail" ] && gitfail="git-diff-failed (FR-67(b) per-file iteration, rc=$names_b_rc, base=$base, head=$new_head)"
+  elif [ -z "$gitfail" ]; then
+    while IFS= read -r file; do
+      [ -z "$file" ] && continue
+      decl="$(_rework_file_declared_bound "$tdd" "$file")"
+      [ -z "$decl" ] && continue          # not declared → (a)'s concern, not (b)'s
+      num="${decl%% *}"; exc="${decl##* }"
+      [ "$exc" = "1" ] && continue        # declared exception → bound not enforced
+      [ "$num" -lt 0 ] 2>/dev/null && continue   # unparseable estimate → skip (b)
+      per_file_out="$(git diff --numstat "$build_start..$new_head" -- "$file" 2>/dev/null)"; per_file_rc=$?
+      if [ "$per_file_rc" -ne 0 ]; then
+        # A19: a per-file diff failure (typically a bad build_start) is a git
+        # failure too — record it as the single cause and STOP scanning, so it is
+        # never co-mingled with the scope/(a) violations already in `out`.
+        gitfail="git-diff-failed (FR-67(b) per-file bound for $file, rc=$per_file_rc)"
+        break
+      fi
+      actual="$(printf '%s\n' "$per_file_out" | awk '{a+=$1; d+=$2} END{print a+d+0}')"
+      [ -z "$actual" ] && actual=0
+      # Escalate iff actual > num × K (awk does the multiply so a float K is exact,
+      # no bash integer-truncation games). The diagnostic carries the factor so the
+      # halt is self-explanatory and reproducible (ADR 0006).
+      if awk -v a="$actual" -v n="$num" -v k="$K" 'BEGIN{exit !(a > n*k)}'; then
+        out="${out}PRECHECK_FAIL: structural-finding(b) $file $actual > $num (tolerance ×$K)"$'\n'
+      fi
+    done <<< "$names_b_out"
   fi
-  while IFS= read -r file; do
-    [ -z "$file" ] && continue
-    decl="$(_rework_file_declared_bound "$tdd" "$file")"
-    [ -z "$decl" ] && continue          # not declared → (a)'s concern, not (b)'s
-    num="${decl%% *}"; exc="${decl##* }"
-    [ "$exc" = "1" ] && continue        # declared exception → bound not enforced
-    [ "$num" -lt 0 ] 2>/dev/null && continue   # unparseable estimate → skip (b)
-    per_file_out="$(git diff --numstat "$build_start..$new_head" -- "$file" 2>/dev/null)"; per_file_rc=$?
-    if [ "$per_file_rc" -ne 0 ]; then
-      printf 'PRECHECK_FAIL: git-diff-failed (FR-67(b) per-file bound for %s, rc=%s)\n' "$file" "$per_file_rc"
-      fail=1
-      continue
-    fi
-    actual="$(printf '%s\n' "$per_file_out" | awk '{a+=$1; d+=$2} END{print a+d+0}')"
-    [ -z "$actual" ] && actual=0
-    # Escalate iff actual > num × K (awk does the multiply so a float K is exact,
-    # no bash integer-truncation games). The diagnostic carries the factor so the
-    # halt is self-explanatory and reproducible (ADR 0006).
-    if awk -v a="$actual" -v n="$num" -v k="$K" 'BEGIN{exit !(a > n*k)}'; then
-      printf 'PRECHECK_FAIL: structural-finding(b) %s %s > %s (tolerance ×%s)\n' "$file" "$actual" "$num" "$K"
-      fail=1
-    fi
-  done <<< "$names_b_out"
 
-  return "$fail"
+  # A19: a broken git is a single external-blocker cause — emit it ALONE (the
+  # caller's priority-routed cause and head-1 excerpt then agree). Otherwise emit
+  # the buffered scope/(a)/(b) violations (git was healthy). Either non-empty
+  # result returns 1; a clean pre-pass returns 0 with no output.
+  if [ -n "$gitfail" ]; then
+    printf 'PRECHECK_FAIL: %s\n' "$gitfail"
+    return 1
+  fi
+  if [ -n "$out" ]; then
+    printf '%s' "$out"
+    return 1
+  fi
+  return 0
 }
 
 # _rework_one <tdd> <log> <finding-ref> <finding-text> <cap>
@@ -1800,9 +1836,22 @@ _review_halt_boundary() {  # <review-log> <pre-log-size> <slug> <pass_id> <verdi
 _per_file_coverage_check() {  # <review-log> <pre-log-size> <slug> <scope-base> <scope-head> <pass_id>
   local log="$1" pre="${2:-0}" slug="$3" base="$4" head="${5:-HEAD}" pass_id="$6"
   RFIND_RE_REVIEW_DIRECTIVE=""
-  local diff_files
-  diff_files="$(git diff --name-only "$base..$head" 2>/dev/null)"
-  [ -z "$diff_files" ] && return 0   # nothing to require coverage for
+  local diff_files diff_rc
+  diff_files="$(git diff --name-only "$base..$head" 2>/dev/null)"; diff_rc=$?
+  if [ "$diff_rc" -ne 0 ]; then
+    # TDD 0053 A1 (NFR-4, ADR 0006): a `git diff` FAILURE must NOT be swallowed
+    # into an empty `diff_files` and read as "no files changed → coverage complete
+    # → converge" (laundering a transient git failure into a false PASS). The
+    # changed-file set is UNVERIFIABLE → record a finding, set the re-review
+    # directive, and return 1 (incomplete) so §3c re-runs the review.
+    RFIND_RE_REVIEW_DIRECTIVE="git diff --name-only $base..$head failed (rc=$diff_rc); the changed-file set could not be enumerated — re-run once git is healthy"
+    _record_finding "$slug" runner-check "$pass_id" major false "" 0 "coverage-diff-unavailable" \
+      "git diff --name-only $base..$head failed (rc=$diff_rc); per-file coverage could not be verified — not treating an unreadable diff as complete coverage" \
+      "git diff --name-only $base..$head exited $diff_rc" \
+      || echo "warning: _per_file_coverage_check: could not record coverage-diff-unavailable for $slug" >> "$log"
+    return 1
+  fi
+  [ -z "$diff_files" ] && return 0   # genuinely no files changed → nothing to cover
   # Files the reviewer dispositioned: FINDING `region` filenames (strip :line-line)
   # in this pass's slice + every FILE_REVIEWED_NO_FINDINGS: line.
   local slice cited
@@ -1815,7 +1864,9 @@ _per_file_coverage_check() {  # <review-log> <pre-log-size> <slug> <scope-base> 
   local f uncited=""
   while IFS= read -r f; do
     [ -z "$f" ] && continue
-    if ! printf '%s\n' "$cited" | grep -qxF "$f"; then
+    # TDD 0053 A18: `--` so a diff path beginning with '-' is the grep PATTERN,
+    # not parsed as an option (which would mis-report a file as un-dispositioned).
+    if ! printf '%s\n' "$cited" | grep -qxF -- "$f"; then
       uncited="${uncited:+$uncited }$f"
     fi
   done < <(printf '%s\n' "$diff_files")
@@ -2230,19 +2281,22 @@ _rework_loop() {  # <slug> <tdd> <rbase> <log>
     # gate). The retries-recorded check stays for diagnostic clarity but
     # becomes a refinement of the fail path, not the only fail trigger.
     verdict_in_new="$(_fresh_review_verdict "$log" "$pre_log_size")"
-    if [ "$rrc" -ne 0 ] && [ -z "$verdict_in_new" ]; then
-      # TDD 0040 §2 (FR-57, NFR-4, ADR 0006): the review subprocess exited
-      # leaving NO parseable REVIEW_RESULT line — couldn't-observe, NOT
-      # observed-wrong. Record a resumable gate-unobservable blocked halt with the
-      # captured output tail as detail, instead of the old terminal `failed`. The
-      # discriminator is verdict-presence (a mechanical check on the output),
-      # never the exit code; the retries-recorded distinction folds into the tail.
+    if [ -z "$verdict_in_new" ]; then
+      # TDD 0040 §2 (FR-57, NFR-4, ADR 0006) + TDD 0053 A1: this pass wrote NO
+      # parseable REVIEW_RESULT — couldn't-observe. The discriminator is FRESH-
+      # verdict presence (the post-pre_log_size slice), NEVER the exit code: on the
+      # rrc==0 arm a review can exit 0 (or fail closed on an empty scope) with no
+      # verdict, and the pre-fix `rs=${verdict_in_new:-$(review_status "$log")}`
+      # fallback then read a STALE cumulative `REVIEW_RESULT: PASS` (left by a prior
+      # rework iteration) and FALSELY converged (NFR-4 false PASS). So an empty
+      # fresh slice routes to a resumable gate-unobservable halt regardless of rrc;
+      # a fresh PASS (even on an empty diff) is non-empty and still converges below.
       _classify_gate_no_verdict "$slug" review "$(_gate_output_tail "$log" "$pre_log_size") (rc=$rrc)"
       return 1
     fi
-    # Prefer the fresh-pass verdict over the cumulative log tail; review_status
-    # is the legacy fallback for callers that didn't snapshot pre_log_size.
-    rs="${verdict_in_new:-$(review_status "$log")}"
+    # The fresh-pass verdict is authoritative; convergence never falls back to the
+    # cumulative `review_status` tail (TDD 0053 A1 — that was the stale-PASS bypass).
+    rs="$verdict_in_new"
     # Crash guard: a pass that produced neither verdict is couldn't-observe — a
     # garbled/empty run (rc may even be 0). TDD 0040 §2: a malformed/absent
     # verdict resolves to gate-unobservable (couldn't-observe), never a guessed

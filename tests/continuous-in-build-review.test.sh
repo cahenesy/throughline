@@ -756,6 +756,83 @@ EOF
   fi
 ) || true
 
+# --- TDD 0053 / A15: the protocol-error correction path must COMMIT the elapsed
+# streaming interval into build_active_seconds BEFORE resetting interval_start
+# (the review-verdict and test-first paths already do). Otherwise the active-time
+# watchdog under-counts and a misbehaving build runs past its active-seconds
+# budget (FR-57). Observable surface: the watchdog kill (build-overall-timeout).
+# Timing-based, mirroring the existing [C9] overall-watchdog test: overall_active
+# is 6s; the build streams ~4s, hits a malformed STEP_COMMIT (the protocol-error
+# reset), then streams another ~4s. Pre-fix the first interval is dropped so the
+# accumulated active time stays ~4s (< 6s) and the build reaches BATCH_RESULT;
+# post-fix the committed 4s + the second ~4s exceeds 6s and the watchdog kills it.
+echo "[G1] A15: a malformed STEP_COMMIT does not drop the elapsed active interval (watchdog accounting not under-counted)"
+( D="$ROOT/G1"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  export THROUGHLINE_BUILD_TIMEOUT=6 THROUGHLINE_BUILD_INTER_EVENT_TIMEOUT=20
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  setup_step_repo "$D/repo" || { bad "setup failed"; exit 0; }
+  _write_tdd_fragment 0020-fix 20 docs/tdd/0020-fix.md 1 building build 1000 1000 "feat/0020-fix" "" log "" "" "" "" "" "" "" "" "" "" "" ""
+  cat > "$D/repo/ctl/build_plan" <<'EOF'
+IFS= read -r _init || true   # consume the runner's initial prompt (TDD 0030 §1)
+sleep 4                      # active interval #1 (~4s) BEFORE the protocol error
+echo "STEP_COMMIT: notaninteger badsha"   # malformed: no integer step-id → protocol-error correction path
+IFS= read -r _reply || true  # the protocol-error BLOCK reply (interval_start reset here)
+sleep 4                      # active interval #2 (~4s)
+echo "BATCH_RESULT: OK"
+EOF
+  t0=$(date +%s)
+  _per_step_review_loop 0020-fix docs/tdd/0020-fix.md "$D/g1.log"; rc=$?
+  t1=$(date +%s)
+  [ "$rc" -ne 0 ] && ok "build killed by the active-time watchdog (interval #1 was accounted)" \
+    || bad "pre-reset interval must be committed so the watchdog fires (rc=$rc)"
+  grep -q 'build-overall-timeout' "$D/g1.log" 2>/dev/null \
+    && ok "log records build-overall-timeout (active budget exceeded)" \
+    || bad "log should note build-overall-timeout (got tail: $(tail -2 "$D/g1.log" 2>/dev/null))"
+  ! grep -q 'BATCH_RESULT' "$D/g1.log" 2>/dev/null \
+    && ok "build did not reach BATCH_RESULT (under-counting would have let it finish)" \
+    || bad "build should have been killed before BATCH_RESULT (under-counted active time)"
+  [ $((t1 - t0)) -lt 18 ] && ok "killed near the active cap, not left to the inter-event timeout" \
+    || bad "build should be killed at the active cap, not hang"
+) || true
+
+# --- TDD 0053 / A16: a terminal BATCH_RESULT carried in a TOOL-USE block yields
+# empty assistant text (the sentinel sits in the model's tool-call JSON, not its
+# spoken content). The stdin-close lifecycle must still run — the verdict is
+# parsed from the mirrored raw log regardless — so a finished build does not hang
+# to the inter-event timeout → a spurious transient pause (NFR-4, FR-57). The bug
+# only manifests when _extract_event_text can parse JSON (jq present); without jq
+# the raw line is returned and the normal BATCH_RESULT arm already fires.
+echo "[G2] A16: an empty-text (tool-use-carried) BATCH_RESULT closes the build instead of hanging"
+( D="$ROOT/G2"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  export THROUGHLINE_BUILD_INTER_EVENT_TIMEOUT=8
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  if ! command -v jq >/dev/null 2>&1; then ok "A16 hang-repro needs jq to empty the text (skipped without jq)"; exit 0; fi
+  setup_step_repo "$D/repo" || { bad "setup failed"; exit 0; }
+  _write_tdd_fragment 0020-fix 20 docs/tdd/0020-fix.md 1 building build 1000 1000 "feat/0020-fix" "" log "" "" "" "" "" "" "" "" "" "" "" ""
+  cat > "$D/repo/ctl/build_plan" <<'EOF'
+IFS= read -r _init || true
+# BATCH_RESULT carried INSIDE a tool_use block: _extract_event_text yields empty
+# assistant text, but the raw event line still contains "BATCH_RESULT: ". Pre-fix
+# the empty-text inner case fell through with no stdin-close lifecycle, so the
+# build hung on the next stdin read until the inter-event watchdog killed it.
+echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"BATCH_RESULT: OK"}}]}}'
+IFS= read -r _next || true   # blocks for the next user turn; the loop's stdin close → EOF → returns → build exits
+EOF
+  t0=$(date +%s)
+  _per_step_review_loop 0020-fix docs/tdd/0020-fix.md "$D/g2.log"; rc=$?
+  t1=$(date +%s)
+  [ "$rc" -eq 0 ] && ok "build exits cleanly via stdin EOF (rc=0), not a transient kill" \
+    || bad "empty-text BATCH_RESULT must close the build, not hang to a transient kill (rc=$rc)"
+  [ $((t1 - t0)) -lt 6 ] && ok "completed promptly (did not hang to the inter-event timeout)" \
+    || bad "build hung instead of closing on the empty-text BATCH_RESULT (took $((t1 - t0))s)"
+  grep -q 'BATCH_RESULT' "$D/g2.log" 2>/dev/null && ok "the BATCH_RESULT event was mirrored to the log" \
+    || bad "the BATCH_RESULT event should be mirrored to the log"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
