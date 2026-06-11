@@ -95,19 +95,27 @@ echo "launched build pid $BUILD_PID"
 LATEST="$LOGS_DIR/latest"
 WEDGED=0   # set only on an inactivity break; consumed by the emit block below
 WATCH_START="$(date +%s)"  # startup-window guard: files older than this are stale prior-run artifacts
+
+# newest mtime (integer epoch seconds) of any regular file under the active run
+# dir — the single freshness probe BOTH the inactivity check and the completion
+# read gate on WATCH_START (TDD 0036 §1 / TDD 0054 A9). %T@ is fractional epoch
+# seconds; truncate to integer (sub-second precision is irrelevant at a ≥1s
+# poll). Empty output = unreadable/empty run dir (symlink missing, race at run
+# start) — callers treat that as "cannot measure".
+_newest_under_latest() {
+  find "$LATEST/" -type f -printf '%T@\n' 2>/dev/null | cut -d. -f1 | sort -rn | head -1
+}
 while :; do
   kill -0 "$BUILD_PID" 2>/dev/null || break
   [ "$WOKEN" -eq 1 ] && break
   # Inactivity probe (TDD 0036 §1). newest = the latest mtime of any regular file
   # under the active run dir (recursively — covers BOTH the per-TDD build logs,
   # which grow token-by-token as the coprocess streams, AND state.d/*.json, which
-  # are rewritten at every status/stage transition). %T@ is fractional epoch
-  # seconds; truncate to integer (sub-second precision is irrelevant at a ≥1s
-  # poll). An unreadable/empty run dir (symlink missing, race at run start) yields
-  # NO mtime → we cannot measure inactivity this poll, so we SKIP the wedge check
-  # (never exit) and keep polling; the PID-gone break stays the guaranteed
+  # are rewritten at every status/stage transition). An unreadable/empty run dir
+  # yields NO mtime → we cannot measure inactivity this poll, so we SKIP the wedge
+  # check (never exit) and keep polling; the PID-gone break stays the guaranteed
   # terminator. This reintroduces no silent total-time cap (TDD 0036 §Failure-modes).
-  newest="$(find "$LATEST/" -type f -printf '%T@\n' 2>/dev/null | cut -d. -f1 | sort -rn | head -1)"
+  newest="$(_newest_under_latest)"
   if [ -n "$newest" ]; then
     now="$(date +%s)"
     stale=$((now - newest))
@@ -144,15 +152,28 @@ logdir_abs="${logdir_abs//$'\n'/ }"; logdir_abs="${logdir_abs//$'\r'/ }"
 # mid-run. Honest per NFR-4: a running build is never reported as a normal
 # completion. The PID-gone and USR1 exits (WEDGED stays 0) keep reading run.json
 # as today — a genuine terminal state passes through unchanged.
+# TDD 0054 A9: the completion read is WATCH_START-gated, mirroring the
+# inactivity probe's `[ "$newest" -ge "$WATCH_START" ]` gate. On a 2nd+ run whose
+# build died BEFORE state_init relinked `latest` (single-run-lock reject, early
+# FATAL, parse error), `latest` still points at the PRIOR run, whose run.json
+# carries a terminal state — reporting it would make the completion callback
+# inspect the wrong run and mask the real fast-failure. A run dir whose newest
+# file predates THIS launch (or yields no mtime at all) is that stale prior run:
+# refuse the read and emit state=unknown — a non-terminal state the skill
+# already handles by re-arming a poll on the build PID, so a false `unknown`
+# self-corrects rather than masking (TDD 0054 §Failure-modes).
 state="unknown"
 if [ "$WEDGED" -eq 1 ]; then
   state="watcher-timeout"
 elif [ -r "$LATEST/state.d/run.json" ]; then
-  _s="$(sed -n 's/.*"state":"\([^"]*\)".*/\1/p' "$LATEST/state.d/run.json" | head -1)"
-  case "$_s" in
-    running|done|paused|blocked|interrupted|failed|watcher-timeout) state="$_s" ;;
-    *) state="unknown" ;;
-  esac
+  newest="$(_newest_under_latest)"
+  if [ -n "$newest" ] && [ "$newest" -ge "$WATCH_START" ]; then
+    _s="$(sed -n 's/.*"state":"\([^"]*\)".*/\1/p' "$LATEST/state.d/run.json" | head -1)"
+    case "$_s" in
+      running|done|paused|blocked|interrupted|failed|watcher-timeout) state="$_s" ;;
+      *) state="unknown" ;;
+    esac
+  fi
 fi
 cl="no"; [ -f "$LATEST/candidate-learnings.json" ] && cl="yes"
 echo "IMPLEMENT_RUN_COMPLETE logdir=$logdir_abs state=$state candidate_learnings=$cl"

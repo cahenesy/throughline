@@ -65,17 +65,25 @@ lock/run.json fields); A25 augments what the lock file stores (PID + start-token
 identity → fall back to today's PID-only liveness check", so no migration breakage.
 
 ## Sequencing / implementation plan
+> Partial-delivery note (2026-06-11): step 1 (A9) and its regression suite
+> (the `tests/watcher-inactivity-completion.test.sh` portion of step 6) were
+> DELIVERED by PR #151 — the run 20260611-181309 build was cut short after
+> step 1 by the sentinel-injection runner bug (see BLOCKERS.md entry; resolved
+> by TDD 0056), and the partial work was merged after review. A rebuild of
+> this TDD starts at step 2; step 1's code is already on the integration
+> branch (verify, don't re-implement — emit `TEST_FIRST_SKIPPED:` for it if
+> the runner requires a step-1 sentinel).
 1. A9: `WATCH_START`-gate the watcher completion read; emit `state=unknown` for a
-   pre-`WATCH_START` `latest`.
+   pre-`WATCH_START` `latest`. **[delivered: PR #151]**
 2. A25: write PID+start-token into the lock; validate both on staleness check;
    fall back to PID-only when the token is absent (old lock).
 3. A26: guard the `--logdir`/`--max-seconds` value args; exit-2 usage.
 4. A27: map jq `null` scalar → empty before the numeric test.
 5. A2: numeric-guard the `L-` id scan.
-6. Regressions in `tests/watcher-inactivity-completion.test.sh` (A9),
-   `tests/run-progress-visibility.test.sh` or the status eval (A26/A27),
-   `tests/detached-run-recovery.test.sh` (A25), and the learnings eval (A2);
-   register if new.
+6. Regressions in `tests/watcher-inactivity-completion.test.sh` (A9 —
+   **delivered: PR #151**), `tests/run-progress-visibility.test.sh` or the
+   status eval (A26/A27), `tests/detached-run-recovery.test.sh` (A25), and the
+   learnings eval (A2); register if new.
 
 ## Failure modes & edge cases
 **Real risks.**

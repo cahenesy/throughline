@@ -20,6 +20,11 @@
 #        watcher-timeout.
 #   §5 — skills/implement/SKILL.md classifies the non-terminal state and re-arms a
 #        build-PID poll (mechanical grep, file-readable-guarded).
+#   §7 — TDD 0054 A9: the COMPLETION read is WATCH_START-gated. A build that dies
+#        BEFORE state_init relinks `latest` leaves `latest` on the PRIOR run,
+#        whose run.json is terminal — the watcher must report state=unknown, not
+#        the stale terminal state. Control: a build that DOES relink to a fresh
+#        run still passes its real terminal state through.
 #
 # Mechanical-check robustness (L-001/L-002): absence assertions fail CLOSED via
 # absent() (grep rc 1 = absent → PASS; rc >= 2 = unreadable → FAIL); the §5 target
@@ -290,6 +295,82 @@ EOF
     *) bad "expected state=watcher-timeout on inactivity wedge after relink ($ln1)" ;;
   esac
   kill_stub "$out"
+) || true
+
+# ===========================================================================
+# §7 (TDD 0054 A9): stale-latest completion guard. The completion block's
+# run.json read must be WATCH_START-gated (the same newest-mtime gate the
+# inactivity probe applies at the wedge check). Arm 1: pre-seed a PRIOR run dir
+# (terminal run.json, mtimes well before WATCH_START), link latest -> it, and
+# stub a build that dies BEFORE state_init relinks (single-run-lock reject /
+# early FATAL) — the watcher must emit state=unknown, NOT the prior run's stale
+# state=done (which would make the callback inspect the wrong run and mask the
+# real fast-failure). Arm 2 (control, no over-broad unknown): with the same
+# stale prior seeded, a build that DOES relink latest to a fresh terminal run
+# still reports its real state=done.
+echo "[§7] stale-latest completion guard: pre-relink death -> state=unknown; fresh relink -> real state"
+( WT="$ROOT/s7"; mkdir -p "$WT/scripts" "$WT/repo/docs/tdd/.implement-logs"
+  # Pre-seed the prior run: terminal run.json, latest -> run0, mtimes 30s old
+  # (well before WATCH_START, so newest < WATCH_START is guaranteed).
+  mkdir -p "$WT/repo/docs/tdd/.implement-logs/run0/state.d"
+  printf '{"schema":1,"state":"done"}\n' > "$WT/repo/docs/tdd/.implement-logs/run0/state.d/run.json"
+  ln -sfn run0 "$WT/repo/docs/tdd/.implement-logs/latest"
+  find "$WT/repo/docs/tdd/.implement-logs/run0" -type f -exec touch -d '30 seconds ago' {} \;
+  # Arm 1: the build dies before state_init ever relinks latest.
+  cat > "$WT/scripts/stub.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+  out="$WT/out.txt"
+  ( cd "$WT/repo" && THROUGHLINE_WATCH_BUILD_SCRIPT="$WT/scripts/stub.sh" \
+      THROUGHLINE_WATCH_POLL_SECS=1 THROUGHLINE_WATCH_MAX_SECS=60 \
+      bash "$WATCH" >"$out" 2>&1 ) &
+  wpid=$!
+  # Bounded wait: the stub exits immediately, so the PID-gone break ends the
+  # watcher within ~1 poll; 10s ceiling keeps the aggregator hang-free.
+  i=0; while kill -0 "$wpid" 2>/dev/null && [ "$i" -lt 10 ]; do sleep 1; i=$((i+1)); done
+  if kill -0 "$wpid" 2>/dev/null; then bad "watcher still alive after 10s ceiling (PID-gone check regressed)"; kill "$wpid" 2>/dev/null; fi
+  wait "$wpid" 2>/dev/null
+  ln1="$(grep '^IMPLEMENT_RUN_COMPLETE' "$out" 2>/dev/null)"
+  [ -n "$ln1" ] && ok "watcher emitted IMPLEMENT_RUN_COMPLETE after the pre-relink death" \
+    || bad "no IMPLEMENT_RUN_COMPLETE after the pre-relink death (got: $(cat "$out" 2>/dev/null))"
+  case "$ln1" in
+    *"state=unknown"*) ok "pre-relink death reports state=unknown (stale terminal state suppressed)" ;;
+    *) bad "expected state=unknown for a stale latest, got the prior run's state ($ln1)" ;;
+  esac
+  case "$ln1" in
+    *"state=done"*) bad "stale prior-run state=done leaked through the completion read ($ln1)" ;;
+    *) ok "stale state=done is not reported (callback will not inspect the wrong run)" ;;
+  esac
+) || true
+
+( WT="$ROOT/s7b"; mkdir -p "$WT/scripts" "$WT/repo/docs/tdd/.implement-logs"
+  # Same stale prior seeded as arm 1.
+  mkdir -p "$WT/repo/docs/tdd/.implement-logs/run0/state.d"
+  printf '{"schema":1,"state":"done"}\n' > "$WT/repo/docs/tdd/.implement-logs/run0/state.d/run.json"
+  ln -sfn run0 "$WT/repo/docs/tdd/.implement-logs/latest"
+  find "$WT/repo/docs/tdd/.implement-logs/run0" -type f -exec touch -d '30 seconds ago' {} \;
+  # Arm 2 (control): the build relinks latest to a FRESH terminal run and exits.
+  cat > "$WT/scripts/stub.sh" <<'EOF'
+#!/usr/bin/env bash
+LOGS="$PWD/docs/tdd/.implement-logs"
+mkdir -p "$LOGS/run1/state.d"
+printf '{"schema":1,"state":"done"}\n' > "$LOGS/run1/state.d/run.json"
+ln -sfn run1 "$LOGS/latest"
+EOF
+  out="$WT/out.txt"
+  ( cd "$WT/repo" && THROUGHLINE_WATCH_BUILD_SCRIPT="$WT/scripts/stub.sh" \
+      THROUGHLINE_WATCH_POLL_SECS=1 THROUGHLINE_WATCH_MAX_SECS=60 \
+      bash "$WATCH" >"$out" 2>&1 ) &
+  wpid=$!
+  i=0; while kill -0 "$wpid" 2>/dev/null && [ "$i" -lt 10 ]; do sleep 1; i=$((i+1)); done
+  if kill -0 "$wpid" 2>/dev/null; then bad "watcher still alive after 10s ceiling (PID-gone check regressed)"; kill "$wpid" 2>/dev/null; fi
+  wait "$wpid" 2>/dev/null
+  ln1="$(grep '^IMPLEMENT_RUN_COMPLETE' "$out" 2>/dev/null)"
+  case "$ln1" in
+    *"state=done"*) ok "control: fresh relink passes the real terminal state=done through" ;;
+    *) bad "control: a genuinely-relinked fresh run must report its real state=done, got ($ln1) — over-broad unknown" ;;
+  esac
 ) || true
 
 # --- report ----------------------------------------------------------------
