@@ -1,6 +1,6 @@
 # TDD 0050: Canonical JSON escaper + array builder (scripts/lib/json.sh)
 Status: draft
-PRD refs: FR-72 (candidate-learnings JSON); FR-27 (run-state JSON record); FR-46 (draft persistence JSON); FR-69 (self-compliance with Theme A)
+PRD refs: FR-72 (candidate-learnings JSON); FR-27 (run-state JSON record); FR-46 (draft persistence JSON); FR-39 (resume reads run-state); FR-69 (self-compliance with Theme A)
 PRD-rev: 0aa1e28
 ADR constraints: 0006
 
@@ -35,6 +35,21 @@ without breaking that contract (interview decision), `json.sh` is itself
 **dependency-free and `dirname`-free**: it defines pure-bash functions with no
 top-level side effects and no sourcing of its own. The *consumers* source it.
 
+**JSON also has a READ side, and its primary reader is broken (folds A10/A5,
+extracted from the deferred [[0051]]).** `state.sh`'s free-text fragment fields
+(`note`, `halt_cause_detail`) are read with `sed -n 's/.*"k":"\([^"]*\)".*/\1/p'`.
+The `[^"]*` class stops at the FIRST `"` byte — which is the quote half of a stored
+`\"` escape — so a quote-bearing value is silently TRUNCATED on read (and the
+dangling `\` is re-escaped to `\\` on the next write). The audit traced the
+reachable corruption through `_read_fragment_field` (state.sh:50): a gate's
+free-text `halt_cause_detail` (e.g. `gate emitted no verdict: "PASS" expected`) is
+truncated on the very next `set_tdd_state`. Because `json.sh` is now THE canonical
+JSON helper, this TDD adds the matching READ helper and repoints the PRIMARY reader
+to it. The mutator-inline `[^"]*` copies (state.sh:701, 782, …) and resume.sh's
+copies are left to the deferred [[0051]] carry-forward refactor, which routes them
+ALL through this same reader — so the highest-traffic documented path is fixed now,
+the rest follow with the refactor.
+
 ## Components & interfaces
 **New — `scripts/lib/json.sh`** (side-effect-free, idempotently sourceable):
 ```
@@ -48,6 +63,12 @@ tl_json_array <csv>
     element is tl_json_escape'd; empty input → []. No trailing space after commas.
 tl_json_array_ws <ws-list>
     same, for a whitespace-separated list (the _json_str_array shape learnings uses).
+tl_json_field <key>     (reads the JSON text on stdin)
+    echo the UNescaped string value of top-level "<key>":"…" from the JSON on stdin,
+    consuming the JSON string quote-aware (honoring \" \\ \/ \n.. escapes) so an
+    embedded quote does not truncate it; empty if the key is absent or null. Pure
+    awk, no jq (state.sh's fragment I/O is deliberately jq-optional — TDD 0037).
+    This is the A10/A5 read-side fix and the inverse of tl_json_escape.
 ```
 Include guard so double-sourcing (state.sh + gates.sh both pull it under one
 implement.sh) is a no-op:
@@ -69,6 +90,10 @@ kept so every caller and test is untouched):
   finding summary/evidence is now escaped (**A3 fix**).
 - `_tl_csv_to_json_array` (markers.sh) → `tl_json_array "$1"`.
 - The 5 inline array builders (state.sh ×4, gates.sh ×1) → `tl_json_array`/`_ws`.
+- `_read_fragment_field` (state.sh:50) → reads the fragment and pipes it to
+  `tl_json_field "$key"` instead of the `[^"]*` sed. **This is the A10/A5 fix** for
+  the primary reader; its name/signature/output are unchanged (only quote-bearing
+  values now round-trip instead of truncating — the sole intended output change).
 
 **Sourcing (per consumer).** Each consumer sources json.sh by its sibling path
 with the FATAL-on-missing pattern and the dual `return||exit` idiom established by
@@ -94,9 +119,10 @@ stdout. `_TL_JSON_SOURCED` is process-local shell state only.
 
 ## Sequencing / implementation plan
 1. Create `scripts/lib/json.sh`: guard + `tl_json_escape` (C0-complete) +
-   `tl_json_array` + `tl_json_array_ws`.
+   `tl_json_array` + `tl_json_array_ws` + `tl_json_field` (quote-aware reader).
 2. Wire `scripts/lib/state.sh`: source json.sh; `json_escape` → delegate; the 4
-   inline array builders → `tl_json_array`/`_ws`.
+   inline array builders → `tl_json_array`/`_ws`; repoint `_read_fragment_field`
+   (state.sh:50) to `tl_json_field` (A10/A5 primary-reader fix).
 3. Wire `scripts/lib/markers.sh`: source json.sh (dependency-free); `_tl_json_escape`
    + `_tl_csv_to_json_array` → delegate.
 4. Wire `scripts/lib/learnings.sh`: source json.sh; `_json_str_array` → delegate;
@@ -148,6 +174,12 @@ stdout. `_TL_JSON_SOURCED` is process-local shell state only.
      `bash markers.sh`-style, SOURCE_ONLY eval, double-source) — assert no FATAL
      and `tl_json_escape` is defined.
   5. Repo-grep: no escaper/array awk/sed copy remains outside json.sh.
+  6. **A10/A5:** write a fragment whose `note`/`halt_cause_detail` contains a `"`
+     (e.g. `gate emitted no verdict: "PASS" expected`); read it back via
+     `_read_fragment_field` and, separately, drive a `set_tdd_state` carry-forward
+     of it → assert the full original string round-trips (no truncation at the first
+     `"`, no dangling `\`). Also feed `tl_json_field` an absent key and a `null`
+     value → empty.
 - **Expected observations (PASS):**
   - §1: the parser accepts the output; the control byte appears as ``/``.
   - §2 (**A11 + A3 regression**): pre-fix, the strict parse FAILS (raw control in
@@ -155,6 +187,8 @@ stdout. `_TL_JSON_SOURCED` is process-local shell state only.
   - §3: arrays are byte-exact (`["a","b","c"]`, no inner space; `[]` on empty).
   - §4: every context sources cleanly; markers.sh still needs no `dirname`.
   - §5: single source of truth — no other escaper body found.
+  - §6 (**A10/A5 regression**): pre-fix the quote-bearing field reads back truncated
+    at the first `"`; post-fix it round-trips intact through the primary reader.
 
 ## Evaluation rubric
 | Criterion | High-quality | Acceptable | Failing |
@@ -172,13 +206,15 @@ stdout. `_TL_JSON_SOURCED` is process-local shell state only.
 |---|---|
 | FR-72 (candidate-learnings JSON validity) | learnings.sh routes summary/evidence through the C0-safe `tl_json_escape` (step 4); A3 regression Verification §2 |
 | FR-27 (run-state JSON record) | state.sh `json_escape` delegates to C0-safe escaper (step 2); A11 regression Verification §2 |
+| FR-39 (resume reads run-state) | `_read_fragment_field` → `tl_json_field` so a quote-bearing `note`/`halt_cause_detail` is not truncated on the read paths resume/refuse-to-resume use; A10/A5 regression Verification §6 |
 | FR-46 (draft JSON) | drafts.sh drops its third escaper for the canonical one (step 5) |
 | ADR 0006 (artifacts grounded) | a sourcing failure FATALs loudly (no silent half-escaped writer) |
 | FR-69 (self-compliance with Theme A) | one canonical `json.sh` retires 3 escapers + 5 array sites, reducing the libs' duplicated scope |
 | bug A11 | `json_escape` → `tl_json_escape` (C0-complete); Verification §2 |
 | bug A3 | learnings candidate writes route through C0-safe escaper; Verification §2 |
+| bug A10 / A5 (primary reader) | `tl_json_field` quote-aware reader; `_read_fragment_field` repointed to it; Verification §6. Residual mutator-inline + resume.sh readers → deferred [[0051]] |
 
-No gaps.
+No gaps (A10/A5 are fixed at the primary `_read_fragment_field` path; the inline mutator/resume.sh copies are explicitly carried to the deferred [[0051]] refactor — not dropped).
 
 ## Dependencies considered
 No new external dependency — pure bash, NO jq (json.sh must work on the same
@@ -200,8 +236,8 @@ None. A shared pure-bash JSON helper is a localized implementation choice, not a
 durable cross-cutting decision. ADR 0006 already governs and is respected.
 
 ## Touched files
-- `scripts/lib/json.sh` — NEW: guard + `tl_json_escape` (C0-safe) + `tl_json_array` + `tl_json_array_ws`.
-- `scripts/lib/state.sh` — source json.sh; `json_escape` → delegate (A11); 4 inline array builders → delegate.
+- `scripts/lib/json.sh` — NEW: guard + `tl_json_escape` (C0-safe) + `tl_json_array` + `tl_json_array_ws` + `tl_json_field` (quote-aware reader, A10/A5).
+- `scripts/lib/state.sh` — source json.sh; `json_escape` → delegate (A11); 4 inline array builders → delegate; `_read_fragment_field` → `tl_json_field` (A10/A5 primary-reader fix).
 - `scripts/lib/markers.sh` — source json.sh (dependency-free); `_tl_json_escape` + `_tl_csv_to_json_array` → delegate.
 - `scripts/lib/learnings.sh` — source json.sh; `_json_str_array` → delegate (A3 escaper path).
 - `scripts/lib/drafts.sh` — source json.sh; delete `_tl_json_escape_full`; callers use `tl_json_escape`.
@@ -211,8 +247,8 @@ durable cross-cutting decision. ADR 0006 already governs and is respected.
 - `.claude-plugin/plugin.json` — version bump (build-applied housekeeping).
 
 ## Expected diff size
-- `scripts/lib/json.sh` — 60 lines (new: guard + 3 functions + comments; ×1.4 shell-lib).
-- `scripts/lib/state.sh` — 40 lines (source block + escaper delegate + 4 array delegates; ×1.4).
+- `scripts/lib/json.sh` — 80 lines (new: guard + 4 functions incl the `tl_json_field` quote-aware reader awk + comments; ×1.4 shell-lib).
+- `scripts/lib/state.sh` — 50 lines (source block + escaper delegate + 4 array delegates + `_read_fragment_field` reader repoint; ×1.4).
 - `scripts/lib/markers.sh` — 25 lines (source block + 2 delegates; ×1.4).
 - `scripts/lib/learnings.sh` — 15 lines (source block + 1 delegate; ×1.4).
 - `scripts/lib/drafts.sh` — 20 lines (source block + delete full-escaper + caller update; ×1.4).
@@ -220,4 +256,4 @@ durable cross-cutting decision. ADR 0006 already governs and is respected.
 - `tests/json-helper.test.sh` — 120 lines (new eval: escape/array/regression/sourcing; ×1.6 test).
 - `tests/implement-gate.test.sh` — 15 lines (register).
 - `.claude-plugin/plugin.json` — 2 lines (version bump).
-Total expected diff: ~312 lines across 9 files. The 9th file is the trivial build-applied version bump (1 line changed); it pushes the touched-file COUNT to 9 > the default `THROUGHLINE_TDD_MAX_TOUCHED`=8, so this TDD builds with `THROUGHLINE_TDD_MAX_TOUCHED=9`. No per-file diff exception needed (each well under 300).
+Total expected diff: ~342 lines across 9 files. The 9th file is the trivial build-applied version bump (1 line changed); it pushes the touched-file COUNT to 9 > the default `THROUGHLINE_TDD_MAX_TOUCHED`=8 (design-time `--bounds` only — the build does not re-check the count), so a clean design-time `--bounds` uses `THROUGHLINE_TDD_MAX_TOUCHED=9`. No per-file diff exception needed (each well under 300).

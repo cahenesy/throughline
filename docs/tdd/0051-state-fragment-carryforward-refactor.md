@@ -5,6 +5,20 @@ PRD-rev: 0aa1e28
 ADR constraints: 0006
 
 ## Approach
+> **STATUS (2026-06-11): DEFERRED out of the 0050–0055 hardening push.** This is
+> the biggest/riskiest pending TDD (a 320-line rewrite of the core run-state I/O
+> every gate depends on) and its bugs are forensic-cosmetic, so it is held for a
+> later dedicated, heavily-verified effort rather than built in the current
+> small-and-safe sequence. **The A10/A5 PRIMARY-reader fix was extracted into
+> [[0050]]** (the `tl_json_field` quote-aware reader, repointing
+> `_read_fragment_field`), so the highest-traffic documented corruption path is
+> fixed without this refactor. When 0051 is eventually built, its remaining job is
+> the maintainability refactor (reuse #3/#2: the read-all/write-all pair retiring
+> the 29-param writer) PLUS routing the RESIDUAL inline `[^"]*` readers
+> (state.sh:701, 782, … and resume.sh) through the same `tl_json_field` reader 0050
+> introduced. Re-scope/re-author at that time; the text below is the original
+> full-refactor design.
+
 The per-TDD run-state fragment (`state.d/<slug>.json`) is mutated by **nine
 functions** that each open-code the same block: read EVERY carry-forward field
 into locals, override the 1–3 they own, then call `_write_tdd_fragment` threading
