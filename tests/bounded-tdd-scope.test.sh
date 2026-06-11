@@ -257,6 +257,28 @@ Total expected diff: 40 lines across 1 file.
 EOF
 }
 
+# TDD 0049: a `## Touched files` section whose bullets cover EVERY extraction
+# form — backticked, bare, annotated (`` `p` (x) — ``), bare+annotated (`p (x) —`),
+# the 0044 bare-path-with-backticked-DESCRIPTION case, no-em-dash, no-em-dash with
+# a trailing backtick, and a no-path stray. Defined here (with the other fixture
+# builders) so it is in scope for every test below that uses it.
+make_extract_forms() {  # <path>
+  cat > "$1" <<'EOF'
+# TDD 9010: extraction-form fixture
+Status: draft
+
+## Touched files
+- `src/backticked.txt` — purpose
+- src/bare.txt — purpose
+- `src/annot.txt` (post) — the in-scope file
+- src/bareannot.txt (new) — purpose
+- scripts/lib/gates.sh — `coverage_map_block` description backtick
+- src/noemdash.txt trailing words
+- src/noemdash2.txt notes `backtick` token
+- — a stray note with no path
+EOF
+}
+
 # ============================================================================
 echo "[bounds-clean] in-bounds TDD: --bounds exits 0 with no PRECHECK_FAIL"
 (
@@ -398,33 +420,47 @@ echo "[bounds-touched-bare-ok] a bare-but-extractable touched-files path does NO
   esac
 )
 
-echo "[bounds-parser-agreement] _tl_extract_touched_paths (tdd-lint) and _rework_touched_files (gates.sh) agree byte-for-byte"
+echo "[bounds-parser-agreement] all THREE touched-files readers agree byte-for-byte on one fixture (Verification §2)"
 (
-  TMP="$(mktemp -d)"; f="$TMP/agree.md"
-  cat > "$f" <<'EOF'
-# TDD 9009: parser-agreement fixture
-Status: draft
-
-## Touched files
-- `scripts/lib/gates.sh` — `coverage_map_block` with backticked words
-- scripts/lib/tdd-lint.sh — `_tl_extract_touched_paths` description backticks
-- scripts/foo.sh trailing words with no em-dash
-EOF
-  # Source BOTH libs in one subshell and diff the two extractors on the SAME
-  # fixture; the env mirrors the bounded-rework cases' THROUGHLINE_SOURCE_ONLY path.
+  # Stage the fixture under a temp repo at docs/tdd/<slug>.md so the
+  # <repo> <slug>-signature _touched_files_of_tdd resolves to the SAME file the
+  # path-signature readers see. make_extract_forms covers every extraction form
+  # (annotated, bare+annotated, 0044, no-em-dash, no-path stray).
+  TMP="$(mktemp -d)"; mkdir -p "$TMP/docs/tdd"; f="$TMP/docs/tdd/9009.md"
+  make_extract_forms "$f"
   agree="$(
     export STATE_DIR="$TMP/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
     export INTEGRATION="master" CHANGE="ci" LOGDIR="$TMP"
     mkdir -p "$STATE_DIR"
     TDDS=()
-    THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" 2>/dev/null || { printf 'SOURCE_FAIL gates'; exit 0; }
+    # implement.sh brings gates.sh (_rework_touched_files) + learnings.sh
+    # (_touched_files_of_tdd); tdd-lint.sh brings _tl_extract_touched_paths.
+    THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" 2>/dev/null || { printf 'SOURCE_FAIL impl'; exit 0; }
     source "$LINT" 2>/dev/null || { printf 'SOURCE_FAIL lint'; exit 0; }
     a="$(_rework_touched_files "$f")"
     b="$(_tl_extract_touched_paths "$f")"
-    [ "$a" = "$b" ] && printf 'AGREE' || printf 'DIFF a=[%s] b=[%s]' "$a" "$b"
+    c="$(_touched_files_of_tdd "$TMP" 9009)"
+    if [ "$a" = "$b" ] && [ "$b" = "$c" ]; then printf 'AGREE'
+    else printf 'DIFF a=[%s] b=[%s] c=[%s]' "$a" "$b" "$c"; fi
   )"
-  [ "$agree" = "AGREE" ] && ok "the two parsers emit byte-identical output (drift guard)" \
-    || bad "parser drift between tdd-lint and gates.sh: $agree"
+  [ "$agree" = "AGREE" ] && ok "all three readers emit byte-identical output (single source of truth, 3-way drift guard)" \
+    || bad "parser drift across the three readers: $agree"
+)
+
+echo "[bounds-single-source] no inlined '## Touched files' path extractor exists outside touched-files.sh (Verification §2)"
+(
+  inlined=0
+  for sf in "$REPO"/scripts/lib/*.sh "$REPO"/scripts/*.sh; do
+    [ "$(basename "$sf")" = touched-files.sh ] && continue
+    # An inlined extractor opens the `## Touched files` awk section AND emits a
+    # path (`print file`). tdd-lint.sh's check_touched_file_count opens the same
+    # section but only COUNTS (`n++`), so it is correctly not a match.
+    if grep -qF '## Touched files[[:space:]]*$/' "$sf" && grep -q 'print file' "$sf"; then
+      inlined=$((inlined + 1)); printf '  unexpected inlined extractor: %s\n' "$sf"
+    fi
+  done
+  [ "$inlined" -eq 0 ] && ok "the touched-files path extractor lives only in touched-files.sh" \
+    || bad "$inlined inlined '## Touched files' extractor(s) found outside the shared lib"
 )
 
 echo "[agent-scope] design-reviewer carries the scope-coherence working-memory item"
@@ -483,27 +519,6 @@ echo "[fr55-no-impl-check] the build side carries no scope-bound logic"
 
 # --- TDD 0049 / FR-53,54,67(a): annotation-robust single-source extractor ----
 TF="$REPO/scripts/lib/touched-files.sh"
-LEARN="$REPO/scripts/lib/learnings.sh"
-
-# A fixture whose `## Touched files` bullets cover every extraction form
-# (Verification §1): backticked, bare, annotated, bare+annotated, the 0044
-# bare-path-with-backticked-description case, no-em-dash, and a no-path stray.
-make_extract_forms() {  # <path>
-  cat > "$1" <<'EOF'
-# TDD 9010: extraction-form fixture
-Status: draft
-
-## Touched files
-- `src/backticked.txt` — purpose
-- src/bare.txt — purpose
-- `src/annot.txt` (post) — the in-scope file
-- src/bareannot.txt (new) — purpose
-- scripts/lib/gates.sh — `coverage_map_block` description backtick
-- src/noemdash.txt trailing words
-- src/noemdash2.txt notes `backtick` token
-- — a stray note with no path
-EOF
-}
 
 echo "[extract-forms] tl_extract_touched_paths returns the real path for every annotated/bare/backticked form"
 (
@@ -550,30 +565,11 @@ EOF
     || ok "no false structural-finding(a) for the annotated declaration"
 )
 
-echo "[tddlint-delegates] _tl_extract_touched_paths (tdd-lint wrapper) yields the annotated bare path and preserves malformed mode"
-(
-  source "$LINT" 2>/dev/null || { bad "could not source tdd-lint.sh"; exit 0; }
-  TMP="$(mktemp -d)"; f="$TMP/forms.md"; make_extract_forms "$f"
-  got="$(_tl_extract_touched_paths "$f")"
-  printf '%s\n' "$got" | grep -qx 'src/annot.txt' \
-    && ok "paths mode yields the annotated bare path src/annot.txt (not 'src/annot.txt (post)')" \
-    || bad "tdd-lint wrapper mis-parsed the annotated form: [$got]"
-  mal="$(_tl_extract_touched_paths "$f" malformed)"
-  printf '%s\n' "$mal" | grep -q 'stray' \
-    && ok "malformed mode preserved through the wrapper" \
-    || bad "malformed mode lost through the wrapper: [$mal]"
-)
-
-echo "[learnings-delegates] _touched_files_of_tdd (learnings wrapper) extracts the real path, not the first description backtick (0044 footgun)"
-(
-  source "$LEARN" 2>/dev/null || { bad "could not source learnings.sh"; exit 0; }
-  TMP="$(mktemp -d)"; mkdir -p "$TMP/docs/tdd"; make_extract_forms "$TMP/docs/tdd/9011.md"
-  got="$(_touched_files_of_tdd "$TMP" 9011)"
-  want="$(printf 'src/backticked.txt\nsrc/bare.txt\nsrc/annot.txt\nsrc/bareannot.txt\nscripts/lib/gates.sh\nsrc/noemdash.txt\nsrc/noemdash2.txt')"
-  [ "$got" = "$want" ] \
-    && ok "learnings wrapper extracts every form's real path (0044 bare-with-backticked-desc → scripts/lib/gates.sh, not coverage_map_block)" \
-    || bad "learnings wrapper mismatch: got=[$got] want=[$want]"
-)
+# The tdd-lint (_tl_extract_touched_paths) and learnings (_touched_files_of_tdd)
+# wrappers are proven by the 3-way [bounds-parser-agreement] above: [extract-forms]
+# pins tl_extract_touched_paths's exact output and the agreement asserts all three
+# wrappers equal it on the same fixture (so each is transitively correct); the
+# wrapper-preserved `malformed` mode is covered by [bounds-touched-malformed].
 
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
