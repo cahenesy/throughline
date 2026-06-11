@@ -549,6 +549,20 @@ EOF
     || ok "no false structural-finding(a) for the annotated declaration"
 )
 
+echo "[tddlint-delegates] _tl_extract_touched_paths (tdd-lint wrapper) yields the annotated bare path and preserves malformed mode"
+(
+  source "$LINT" 2>/dev/null || { bad "could not source tdd-lint.sh"; exit 0; }
+  TMP="$(mktemp -d)"; f="$TMP/forms.md"; make_extract_forms "$f"
+  got="$(_tl_extract_touched_paths "$f")"
+  printf '%s\n' "$got" | grep -qx 'src/annot.txt' \
+    && ok "paths mode yields the annotated bare path src/annot.txt (not 'src/annot.txt (post)')" \
+    || bad "tdd-lint wrapper mis-parsed the annotated form: [$got]"
+  mal="$(_tl_extract_touched_paths "$f" malformed)"
+  printf '%s\n' "$mal" | grep -q 'stray' \
+    && ok "malformed mode preserved through the wrapper" \
+    || bad "malformed mode lost through the wrapper: [$mal]"
+)
+
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
 rm -f "$RESULTS"
