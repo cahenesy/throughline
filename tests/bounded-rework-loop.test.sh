@@ -882,6 +882,10 @@ echo "[E8] A1(c): a git-diff failure at the coverage check is NOT read as 'no fi
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
   git init -q -b master; git config user.email t@t.t; git config user.name t
   printf 'a\n' > f; git add -A; git commit -qm base >/dev/null
+  # A real state fragment so the coverage-diff-unavailable finding records cleanly
+  # (mirrors the production path; without it _record_finding warns to stderr).
+  _write_tdd_fragment 0099-fix 99 docs/tdd/0099-fix.md 1 reviewing review \
+    1000 1000 "feat/0099-fix" "" "$D/e8.log" "" "" "" "" "" "" "" "" ""
   # Stub git so `git diff --name-only` FAILS (a transient git failure). Pre-fix
   # the rc was swallowed by 2>/dev/null and the empty output read as "no files
   # changed → complete coverage → converge" (a false PASS). The fix distinguishes

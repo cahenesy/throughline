@@ -1800,9 +1800,25 @@ _review_halt_boundary() {  # <review-log> <pre-log-size> <slug> <pass_id> <verdi
 _per_file_coverage_check() {  # <review-log> <pre-log-size> <slug> <scope-base> <scope-head> <pass_id>
   local log="$1" pre="${2:-0}" slug="$3" base="$4" head="${5:-HEAD}" pass_id="$6"
   RFIND_RE_REVIEW_DIRECTIVE=""
-  local diff_files
-  diff_files="$(git diff --name-only "$base..$head" 2>/dev/null)"
-  [ -z "$diff_files" ] && return 0   # nothing to require coverage for
+  local diff_files diff_rc
+  diff_files="$(git diff --name-only "$base..$head" 2>/dev/null)"; diff_rc=$?
+  if [ "$diff_rc" -ne 0 ]; then
+    # TDD 0053 A1 (NFR-4, ADR 0006): a `git diff` FAILURE (bad ref, corrupt repo,
+    # transient git error) must NOT be swallowed into an empty `diff_files` and
+    # read as "no files changed → coverage complete → converge" — that would
+    # launder a transient git failure into a false PASS. The changed-file set is
+    # UNVERIFIABLE, so the pass cannot be cleared: record a `runner-check` finding,
+    # set the re-review directive, and return 1 (incomplete) so the §3c routing
+    # re-runs the review (bounded by THROUGHLINE_RE_REVIEW_MAX) rather than
+    # converging on an unobservable diff.
+    RFIND_RE_REVIEW_DIRECTIVE="git diff --name-only $base..$head failed (rc=$diff_rc); the changed-file set could not be enumerated — re-run once git is healthy"
+    _record_finding "$slug" runner-check "$pass_id" major false "" 0 "coverage-diff-unavailable" \
+      "git diff --name-only $base..$head failed (rc=$diff_rc); per-file coverage could not be verified — not treating an unreadable diff as complete coverage" \
+      "git diff --name-only $base..$head exited $diff_rc" \
+      || echo "warning: _per_file_coverage_check: could not record coverage-diff-unavailable for $slug" >> "$log"
+    return 1
+  fi
+  [ -z "$diff_files" ] && return 0   # genuinely no files changed → nothing to cover
   # Files the reviewer dispositioned: FINDING `region` filenames (strip :line-line)
   # in this pass's slice + every FILE_REVIEWED_NO_FINDINGS: line.
   local slice cited
@@ -2230,19 +2246,27 @@ _rework_loop() {  # <slug> <tdd> <rbase> <log>
     # gate). The retries-recorded check stays for diagnostic clarity but
     # becomes a refinement of the fail path, not the only fail trigger.
     verdict_in_new="$(_fresh_review_verdict "$log" "$pre_log_size")"
-    if [ "$rrc" -ne 0 ] && [ -z "$verdict_in_new" ]; then
-      # TDD 0040 §2 (FR-57, NFR-4, ADR 0006): the review subprocess exited
-      # leaving NO parseable REVIEW_RESULT line — couldn't-observe, NOT
-      # observed-wrong. Record a resumable gate-unobservable blocked halt with the
-      # captured output tail as detail, instead of the old terminal `failed`. The
-      # discriminator is verdict-presence (a mechanical check on the output),
-      # never the exit code; the retries-recorded distinction folds into the tail.
+    if [ -z "$verdict_in_new" ]; then
+      # TDD 0040 §2 (FR-57, NFR-4, ADR 0006) + TDD 0053 A1: this pass wrote NO
+      # parseable REVIEW_RESULT line — couldn't-observe, NOT observed-wrong. The
+      # discriminator is FRESH-verdict presence (the post-pre_log_size slice),
+      # NEVER the exit code: on the rrc==0 arm a review subprocess can exit 0
+      # (or fail closed on an empty scope) without writing a verdict, and the
+      # pre-fix `rs=${verdict_in_new:-$(review_status "$log")}` fallback then read
+      # a STALE cumulative `REVIEW_RESULT: PASS` (legitimately left by a prior
+      # bounded-rework iteration) and FALSELY converged the gate (NFR-4 false PASS;
+      # ADR 0006 — the verdict must rest on a fresh artifact, not a stale one). So
+      # an empty fresh slice routes to a resumable gate-unobservable blocked halt
+      # regardless of rrc; review_status is no longer consulted for convergence.
+      # A genuine empty-diff PASS that DID write a fresh `REVIEW_RESULT: PASS`
+      # still converges below (the fresh slice is non-empty).
       _classify_gate_no_verdict "$slug" review "$(_gate_output_tail "$log" "$pre_log_size") (rc=$rrc)"
       return 1
     fi
-    # Prefer the fresh-pass verdict over the cumulative log tail; review_status
-    # is the legacy fallback for callers that didn't snapshot pre_log_size.
-    rs="${verdict_in_new:-$(review_status "$log")}"
+    # The fresh-pass verdict is authoritative (it exists past the guard above);
+    # convergence never falls back to the cumulative `review_status` tail (TDD
+    # 0053 A1 — that fallback is the stale-PASS bypass).
+    rs="$verdict_in_new"
     # Crash guard: a pass that produced neither verdict is couldn't-observe — a
     # garbled/empty run (rc may even be 0). TDD 0040 §2: a malformed/absent
     # verdict resolves to gate-unobservable (couldn't-observe), never a guessed
