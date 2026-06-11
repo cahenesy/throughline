@@ -483,6 +483,7 @@ echo "[fr55-no-impl-check] the build side carries no scope-bound logic"
 
 # --- TDD 0049 / FR-53,54,67(a): annotation-robust single-source extractor ----
 TF="$REPO/scripts/lib/touched-files.sh"
+LEARN="$REPO/scripts/lib/learnings.sh"
 
 # A fixture whose `## Touched files` bullets cover every extraction form
 # (Verification §1): backticked, bare, annotated, bare+annotated, the 0044
@@ -561,6 +562,17 @@ echo "[tddlint-delegates] _tl_extract_touched_paths (tdd-lint wrapper) yields th
   printf '%s\n' "$mal" | grep -q 'stray' \
     && ok "malformed mode preserved through the wrapper" \
     || bad "malformed mode lost through the wrapper: [$mal]"
+)
+
+echo "[learnings-delegates] _touched_files_of_tdd (learnings wrapper) extracts the real path, not the first description backtick (0044 footgun)"
+(
+  source "$LEARN" 2>/dev/null || { bad "could not source learnings.sh"; exit 0; }
+  TMP="$(mktemp -d)"; mkdir -p "$TMP/docs/tdd"; make_extract_forms "$TMP/docs/tdd/9011.md"
+  got="$(_touched_files_of_tdd "$TMP" 9011)"
+  want="$(printf 'src/backticked.txt\nsrc/bare.txt\nsrc/annot.txt\nsrc/bareannot.txt\nscripts/lib/gates.sh\nsrc/noemdash.txt\nsrc/noemdash2.txt')"
+  [ "$got" = "$want" ] \
+    && ok "learnings wrapper extracts every form's real path (0044 bare-with-backticked-desc → scripts/lib/gates.sh, not coverage_map_block)" \
+    || bad "learnings wrapper mismatch: got=[$got] want=[$want]"
 )
 
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
