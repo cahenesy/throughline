@@ -534,6 +534,30 @@ EOF
     || bad "pre-pass should clear the leading-'-' rework (rc=$rc, out=$out)"
 ) || true
 
+echo "[C12] A18: _per_file_coverage_check matches a dispositioned leading-'-' diff file (grep --), not mis-reporting it un-covered"
+( D="$ROOT/C12"; mkdir -p "$D/state.d"; cd "$D" || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  git init -q -b master; git config user.email t@t.t; git config user.name t
+  printf 'base\n' > base.txt; git add -A; git commit -qm base >/dev/null
+  BS="$(git rev-parse HEAD)"
+  printf 'l1\n' > ./-dash.txt; git add -A; git commit -qm "change a leading-dash file" >/dev/null
+  # A state fragment so a (pre-fix) incomplete-file-coverage finding would record
+  # cleanly instead of warning to stderr.
+  _write_tdd_fragment 0099-fix 99 docs/tdd/0099-fix.md 1 reviewing review \
+    1000 1000 "feat/0099-fix" "" "$D/c12.log" "" "" "" "" "" "" "" "" ""
+  # The review pass dispositions the leading-dash file explicitly. Pre-fix the
+  # membership grep parses `-dash.txt` as an option → it reads as un-dispositioned
+  # → a false incomplete-file-coverage (return 1). With `--` it matches → complete.
+  log="$D/c12.log"
+  printf 'FILE_REVIEWED_NO_FINDINGS: -dash.txt\nREVIEW_RESULT: PASS\n' > "$log"
+  _per_file_coverage_check "$log" 0 0099-fix "$BS" HEAD "review:1"; rc=$?
+  [ "$rc" -eq 0 ] && ok "complete coverage: the dispositioned leading-'-' file is matched" \
+    || bad "leading-'-' diff file mis-reported as un-dispositioned (rc=$rc)"
+) || true
+
 # --- §5 / FR-61, FR-62: _rework_one spawns a bounded fix + commits -----------
 echo "[D1] _rework_one substitutes the template, runs the rework model, echoes the new HEAD"
 ( D="$ROOT/D1"; mkdir -p "$D/state.d" "$D/bin"; cd "$D" || { bad "cd failed"; exit 0; }
