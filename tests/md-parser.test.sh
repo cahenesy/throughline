@@ -280,6 +280,77 @@ echo "[cls-fence-misroute] a fenced browser/playwright example does not misroute
     || bad "fence misroute: expected 'mechanical', got '$out'"
 )
 
+# ============================================================================
+# tdd-lint.sh — check_per_file_diff_bound + check_touched_file_count routed
+# through md.sh (TDD 0055 step 4). Folds A4 (gawk-fatal vs missing-section
+# exit-code collision) and A23 (count/extract bullet-anchor agreement), plus the
+# residual ~~~ count-vs-extract divergence (MINOR-1).
+# ============================================================================
+LINT="$REPO/scripts/lib/tdd-lint.sh"
+
+echo "[a4-gawk-fatal] a gawk FATAL (awk exit 2) inside check_per_file_diff_bound is a crash (rc 2 + diag), NOT 'missing section' (A4, Verification §6)"
+(
+  source "$LINT" 2>/dev/null || { bad "INFRA: could not source tdd-lint.sh"; exit 0; }
+  TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT; f="$TMP/d.md"
+  printf '## Expected diff size\n- scripts/foo.sh — 40 lines\n' > "$f"
+  (
+    awk() { return 2; }   # gawk-style FATAL exit code (collides with old missing-section sentinel)
+    err="$TMP/err"; out="$(check_per_file_diff_bound "$f" 2>"$err")"; rc=$?
+    [ "$rc" -eq 2 ] \
+      && ok "rc 2 (crash) on awk exit 2" \
+      || bad "expected crash rc 2 on a gawk FATAL, got $rc (out=[$out])"
+    grep -qiE 'awk failed|parse failed' "$err" \
+      && ok "a stderr diagnostic surfaces the crash" \
+      || bad "expected a parse-fail diagnostic (got: $(cat "$err"))"
+    printf '%s\n' "$out" | grep -q 'missing-section' \
+      && bad "a gawk FATAL was wrongly read as missing-section (A4 collision)" \
+      || ok "the gawk FATAL is not read as missing-section"
+  )
+)
+
+echo "[a4-genuine-missing] a genuinely missing ## Expected diff size still emits its missing-section PRECHECK"
+(
+  source "$LINT" 2>/dev/null || { bad "INFRA: could not source tdd-lint.sh"; exit 0; }
+  TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT; f="$TMP/d.md"
+  printf '## Approach\nno expected-diff section here at all\n' > "$f"
+  out="$(check_per_file_diff_bound "$f" 2>/dev/null)"; rc=$?
+  printf '%s\n' "$out" | grep -qF 'missing-section ## Expected diff size' \
+    && ok "missing-section PRECHECK still emitted (rc=$rc)" \
+    || bad "expected the missing-section PRECHECK (got: $out, rc=$rc)"
+)
+
+echo "[a23-count-extract-anchor] check_touched_file_count and md_bullet_path agree on a two-space bullet (A23, Verification §5)"
+(
+  source "$LINT" 2>/dev/null || { bad "INFRA: could not source tdd-lint.sh"; exit 0; }
+  TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT; f="$TMP/t.md"
+  # one normal bullet + one two-space bullet (dash, two spaces, path); the count
+  # and the extractor must agree that BOTH are bullets.
+  printf '## Touched files\n- a.txt — one\n-  b.txt — two-space bullet\n\n## Expected diff size\n- a.txt — 10 lines\n-  b.txt — 10 lines\n' > "$f"
+  n_extract="$(md_bullet_path "$f" "Touched files" | grep -c .)"
+  out="$(THROUGHLINE_TDD_MAX_TOUCHED=1 check_touched_file_count "$f" 2>/dev/null)"
+  [ "$n_extract" -eq 2 ] \
+    && ok "md_bullet_path extracts 2 paths (incl the two-space bullet)" \
+    || bad "md_bullet_path count=$n_extract (want 2)"
+  printf '%s\n' "$out" | grep -qF 'touched-files 2 > 1' \
+    && ok "check_touched_file_count counts 2 (anchor agrees with extract)" \
+    || bad "count/extract disagree on the two-space bullet (got: $out)"
+)
+
+echo "[minor1-tilde-fence] a ~~~-fenced bullet in ## Touched files is excluded by BOTH count and extract (MINOR-1)"
+(
+  source "$LINT" 2>/dev/null || { bad "INFRA: could not source tdd-lint.sh"; exit 0; }
+  TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT; f="$TMP/t.md"
+  printf '## Touched files\n- real.txt — keep\n~~~\n- fenced.txt — drop\n~~~\n\n## Expected diff size\n- real.txt — 10 lines\n' > "$f"
+  paths="$(md_bullet_path "$f" "Touched files")"
+  out="$(THROUGHLINE_TDD_MAX_TOUCHED=1 check_touched_file_count "$f" 2>/dev/null)"
+  [ "$paths" = "real.txt" ] \
+    && ok "extract excludes the ~~~-fenced bullet" \
+    || bad "extract did not exclude the ~~~-fenced bullet: [$paths]"
+  printf '%s\n' "$out" | grep -q 'touched-files [0-9]* >' \
+    && bad "count should be 1 (~~~-fenced bullet excluded), but reported an overflow: $out" \
+    || ok "count excludes the ~~~-fenced bullet (no overflow at MAX=1)"
+)
+
 # --- report ----------------------------------------------------------------
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
