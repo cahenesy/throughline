@@ -1866,7 +1866,9 @@ _per_file_coverage_check() {  # <review-log> <pre-log-size> <slug> <scope-base> 
   local f uncited=""
   while IFS= read -r f; do
     [ -z "$f" ] && continue
-    if ! printf '%s\n' "$cited" | grep -qxF "$f"; then
+    # TDD 0053 A18: `--` so a diff path beginning with '-' is the grep PATTERN,
+    # not parsed as an option (which would mis-report a file as un-dispositioned).
+    if ! printf '%s\n' "$cited" | grep -qxF -- "$f"; then
       uncited="${uncited:+$uncited }$f"
     fi
   done < <(printf '%s\n' "$diff_files")
