@@ -499,6 +499,7 @@ Status: draft
 - src/bareannot.txt (new) — purpose
 - scripts/lib/gates.sh — `coverage_map_block` description backtick
 - src/noemdash.txt trailing words
+- src/noemdash2.txt notes `backtick` token
 - — a stray note with no path
 EOF
 }
@@ -508,9 +509,9 @@ echo "[extract-forms] tl_extract_touched_paths returns the real path for every a
   source "$TF" 2>/dev/null || { bad "could not source touched-files.sh"; exit 0; }
   TMP="$(mktemp -d)"; f="$TMP/forms.md"; make_extract_forms "$f"
   got="$(tl_extract_touched_paths "$f")"
-  want="$(printf 'src/backticked.txt\nsrc/bare.txt\nsrc/annot.txt\nsrc/bareannot.txt\nscripts/lib/gates.sh\nsrc/noemdash.txt')"
+  want="$(printf 'src/backticked.txt\nsrc/bare.txt\nsrc/annot.txt\nsrc/bareannot.txt\nscripts/lib/gates.sh\nsrc/noemdash.txt\nsrc/noemdash2.txt')"
   [ "$got" = "$want" ] \
-    && ok "paths mode yields the bare path from each form (annotated → src/annot.txt, not 'src/annot.txt (post)')" \
+    && ok "paths mode yields the bare path from each form (annotated → src/annot.txt; no-em-dash with a trailing backtick → src/noemdash2.txt, not 'backtick')" \
     || bad "extraction mismatch: got=[$got] want=[$want]"
   mal="$(tl_extract_touched_paths "$f" malformed)"
   { printf '%s\n' "$mal" | grep -q 'stray' && [ "$(printf '%s\n' "$mal" | grep -c .)" = "1" ]; } \
