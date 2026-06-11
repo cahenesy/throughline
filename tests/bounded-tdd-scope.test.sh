@@ -447,20 +447,20 @@ echo "[bounds-parser-agreement] all THREE touched-files readers agree byte-for-b
     || bad "parser drift across the three readers: $agree"
 )
 
-echo "[bounds-single-source] no inlined '## Touched files' path extractor exists outside touched-files.sh (Verification §2)"
+echo "[bounds-single-source] the inlined-extractor guard catches a planted copy and the real repo is clean (Verification §2)"
 (
-  inlined=0
-  for sf in "$REPO"/scripts/lib/*.sh "$REPO"/scripts/*.sh; do
-    [ "$(basename "$sf")" = touched-files.sh ] && continue
-    # An inlined extractor opens the `## Touched files` awk section AND emits a
-    # path (`print file`). tdd-lint.sh's check_touched_file_count opens the same
-    # section but only COUNTS (`n++`), so it is correctly not a match.
-    if grep -qF '## Touched files[[:space:]]*$/' "$sf" && grep -q 'print file' "$sf"; then
-      inlined=$((inlined + 1)); printf '  unexpected inlined extractor: %s\n' "$sf"
-    fi
-  done
-  [ "$inlined" -eq 0 ] && ok "the touched-files path extractor lives only in touched-files.sh" \
-    || bad "$inlined inlined '## Touched files' extractor(s) found outside the shared lib"
+  # Negative control FIRST: plant a file that DOES inline a `## Touched files`
+  # extractor and assert the guard detects it — proving the guard is real, not a
+  # vacuous always-pass over a repo that happens to be clean.
+  TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+  printf '%s\n' '/^## Touched files[[:space:]]*$/ { in_sec=1 }' 'in_sec { if (file != "") print file }' > "$TMP/evil.sh"
+  _inlined_tf_extractors "$TMP" | grep -q 'evil.sh' \
+    && ok "guard detects a planted inlined extractor (non-vacuous)" \
+    || bad "guard failed to detect a planted inlined extractor"
+  # Real assertion: the repo's scripts carry NO inlined extractor outside the lib.
+  real="$(_inlined_tf_extractors "$REPO/scripts/lib" "$REPO/scripts")"
+  [ -z "$real" ] && ok "the touched-files path extractor lives only in touched-files.sh" \
+    || bad "inlined '## Touched files' extractor(s) outside the shared lib: $real"
 )
 
 echo "[agent-scope] design-reviewer carries the scope-coherence working-memory item"
