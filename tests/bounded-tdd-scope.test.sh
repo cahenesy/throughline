@@ -257,11 +257,23 @@ Total expected diff: 40 lines across 1 file.
 EOF
 }
 
-# TDD 0049: a `## Touched files` section whose bullets cover EVERY extraction
-# form — backticked, bare, annotated (`` `p` (x) — ``), bare+annotated (`p (x) —`),
-# the 0044 bare-path-with-backticked-DESCRIPTION case, no-em-dash, no-em-dash with
-# a trailing backtick, and a no-path stray. Defined here (with the other fixture
-# builders) so it is in scope for every test below that uses it.
+# TDD 0049: emit each .sh (except touched-files.sh) under the given dirs that
+# INLINES a `## Touched files` path extractor — opens the awk section AND emits a
+# path (`print file`); the counter check_touched_file_count only counts (`n++`).
+_inlined_tf_extractors() {  # <dir>...
+  local d sf
+  for d in "$@"; do
+    for sf in "$d"/*.sh; do
+      [ -e "$sf" ] || continue
+      [ "$(basename "$sf")" = touched-files.sh ] && continue
+      grep -qF '## Touched files[[:space:]]*$/' "$sf" && grep -q 'print file' "$sf" && basename "$sf"
+    done
+  done
+}
+
+# TDD 0049: a `## Touched files` section covering EVERY extraction form —
+# backticked, bare, annotated, bare+annotated, the 0044 case, no-em-dash,
+# no-em-dash-with-trailing-backtick, no-path stray.
 make_extract_forms() {  # <path>
   cat > "$1" <<'EOF'
 # TDD 9010: extraction-form fixture
@@ -422,10 +434,9 @@ echo "[bounds-touched-bare-ok] a bare-but-extractable touched-files path does NO
 
 echo "[bounds-parser-agreement] all THREE touched-files readers agree byte-for-byte on one fixture (Verification §2)"
 (
-  # Stage the fixture under a temp repo at docs/tdd/<slug>.md so the
+  # Stage the fixture at docs/tdd/<slug>.md under a temp repo so the
   # <repo> <slug>-signature _touched_files_of_tdd resolves to the SAME file the
-  # path-signature readers see. make_extract_forms covers every extraction form
-  # (annotated, bare+annotated, 0044, no-em-dash, no-path stray).
+  # path-signature readers see.
   TMP="$(mktemp -d)"; mkdir -p "$TMP/docs/tdd"; f="$TMP/docs/tdd/9009.md"
   make_extract_forms "$f"
   agree="$(
@@ -433,8 +444,8 @@ echo "[bounds-parser-agreement] all THREE touched-files readers agree byte-for-b
     export INTEGRATION="master" CHANGE="ci" LOGDIR="$TMP"
     mkdir -p "$STATE_DIR"
     TDDS=()
-    # implement.sh brings gates.sh (_rework_touched_files) + learnings.sh
-    # (_touched_files_of_tdd); tdd-lint.sh brings _tl_extract_touched_paths.
+    # implement.sh brings _rework_touched_files (gates) + _touched_files_of_tdd
+    # (learnings); tdd-lint.sh brings _tl_extract_touched_paths.
     THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" 2>/dev/null || { printf 'SOURCE_FAIL impl'; exit 0; }
     source "$LINT" 2>/dev/null || { printf 'SOURCE_FAIL lint'; exit 0; }
     a="$(_rework_touched_files "$f")"
@@ -449,9 +460,8 @@ echo "[bounds-parser-agreement] all THREE touched-files readers agree byte-for-b
 
 echo "[bounds-single-source] the inlined-extractor guard catches a planted copy and the real repo is clean (Verification §2)"
 (
-  # Negative control FIRST: plant a file that DOES inline a `## Touched files`
-  # extractor and assert the guard detects it — proving the guard is real, not a
-  # vacuous always-pass over a repo that happens to be clean.
+  # Negative control FIRST: plant a file that DOES inline an extractor and assert
+  # the guard detects it — proving the guard is real, not a vacuous always-pass.
   TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
   printf '%s\n' '/^## Touched files[[:space:]]*$/ { in_sec=1 }' 'in_sec { if (file != "") print file }' > "$TMP/evil.sh"
   _inlined_tf_extractors "$TMP" | grep -q 'evil.sh' \
@@ -550,9 +560,6 @@ Status: draft
 
 ## Touched files
 - `src/a.txt` (post) — the in-scope file
-
-## Expected diff size
-- src/a.txt — 50 lines
 EOF
   git add -A; git commit -qm "build start" >/dev/null; BS="$(git rev-parse HEAD)"
   mkdir -p src; printf 'l1\nl2\nl3\n' > src/a.txt
@@ -565,11 +572,8 @@ EOF
     || ok "no false structural-finding(a) for the annotated declaration"
 )
 
-# The tdd-lint (_tl_extract_touched_paths) and learnings (_touched_files_of_tdd)
-# wrappers are proven by the 3-way [bounds-parser-agreement] above: [extract-forms]
-# pins tl_extract_touched_paths's exact output and the agreement asserts all three
-# wrappers equal it on the same fixture (so each is transitively correct); the
-# wrapper-preserved `malformed` mode is covered by [bounds-touched-malformed].
+# The tdd-lint + learnings wrappers are proven by [bounds-parser-agreement] (all
+# three equal tl_extract_touched_paths, whose output [extract-forms] pins).
 
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
