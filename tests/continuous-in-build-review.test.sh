@@ -756,6 +756,47 @@ EOF
   fi
 ) || true
 
+# --- TDD 0053 / A15: the protocol-error correction path must COMMIT the elapsed
+# streaming interval into build_active_seconds BEFORE resetting interval_start
+# (the review-verdict and test-first paths already do). Otherwise the active-time
+# watchdog under-counts and a misbehaving build runs past its active-seconds
+# budget (FR-57). Observable surface: the watchdog kill (build-overall-timeout).
+# Timing-based, mirroring the existing [C9] overall-watchdog test: overall_active
+# is 6s; the build streams ~4s, hits a malformed STEP_COMMIT (the protocol-error
+# reset), then streams another ~4s. Pre-fix the first interval is dropped so the
+# accumulated active time stays ~4s (< 6s) and the build reaches BATCH_RESULT;
+# post-fix the committed 4s + the second ~4s exceeds 6s and the watchdog kills it.
+echo "[G1] A15: a malformed STEP_COMMIT does not drop the elapsed active interval (watchdog accounting not under-counted)"
+( D="$ROOT/G1"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  export THROUGHLINE_BUILD_TIMEOUT=6 THROUGHLINE_BUILD_INTER_EVENT_TIMEOUT=20
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  setup_step_repo "$D/repo" || { bad "setup failed"; exit 0; }
+  _write_tdd_fragment 0020-fix 20 docs/tdd/0020-fix.md 1 building build 1000 1000 "feat/0020-fix" "" log "" "" "" "" "" "" "" "" "" "" "" ""
+  cat > "$D/repo/ctl/build_plan" <<'EOF'
+IFS= read -r _init || true   # consume the runner's initial prompt (TDD 0030 §1)
+sleep 4                      # active interval #1 (~4s) BEFORE the protocol error
+echo "STEP_COMMIT: notaninteger badsha"   # malformed: no integer step-id → protocol-error correction path
+IFS= read -r _reply || true  # the protocol-error BLOCK reply (interval_start reset here)
+sleep 4                      # active interval #2 (~4s)
+echo "BATCH_RESULT: OK"
+EOF
+  t0=$(date +%s)
+  _per_step_review_loop 0020-fix docs/tdd/0020-fix.md "$D/g1.log"; rc=$?
+  t1=$(date +%s)
+  [ "$rc" -ne 0 ] && ok "build killed by the active-time watchdog (interval #1 was accounted)" \
+    || bad "pre-reset interval must be committed so the watchdog fires (rc=$rc)"
+  grep -q 'build-overall-timeout' "$D/g1.log" 2>/dev/null \
+    && ok "log records build-overall-timeout (active budget exceeded)" \
+    || bad "log should note build-overall-timeout (got tail: $(tail -2 "$D/g1.log" 2>/dev/null))"
+  ! grep -q 'BATCH_RESULT' "$D/g1.log" 2>/dev/null \
+    && ok "build did not reach BATCH_RESULT (under-counting would have let it finish)" \
+    || bad "build should have been killed before BATCH_RESULT (under-counted active time)"
+  [ $((t1 - t0)) -lt 18 ] && ok "killed near the active cap, not left to the inter-event timeout" \
+    || bad "build should be killed at the active cap, not hang"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
