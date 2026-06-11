@@ -26,3 +26,48 @@
 - Flags: structural=false rework=false
 - Summary: `_tf_sentinel` extracted without `| tail -1`, diverging from the TDD-specified approach and from the step_id/sha extractors, enabling a multi-sentinel bypass
 - Representative evidence: TDD §1 lines 100-103 specify: `grep -aoE 'STEP_COMMIT:[[:space:]]+[0-9]+[[:space:]]+[^[:space:]]+([[:space:]]+TEST_FIRST_SKIPPED:[^[:space:]]+)?' | tail -1`. Implementation (diff line +979): `_tf_sentinel="$(printf '%s' "$text" | grep '^STEP_COMMIT:[[:space:]]')"` — no `| tail -1`. step_id and sha use `| tail -1` (diff +968-969).
+
+## L-004: test-cleanup
+- Pattern class: test-cleanup
+- Recurred across: 0049-touched-files-extractor-unify-and-harden (first observed run 20260610-202344)
+- Severity range: minor–major
+- Subject-area hints: files=[scripts/lib/touched-files.sh, scripts/lib/gates.sh, scripts/lib/tdd-lint.sh, scripts/lib/learnings.sh, tests/bounded-tdd-scope.test.sh] tags=[test-cleanup]
+- Flags: structural=false rework=false
+- Summary: Two new test cases create temp dirs without trap-cleanup; prior-addressed pattern recurs in same diff that has a correct cleanup example
+- Representative evidence: Site 1 — `[extract-forms]` (diff +line, tests/bounded-tdd-scope.test.sh ~line 529): `TMP="$(mktemp -d)"; f="$TMP/forms.md"; make_extract_forms "$f"` — no `trap 'rm -rf "$TMP"' EXIT` before mktemp. Site 2 — `[gates-annotated-membership]` (diff +line, tests/bounded-tdd-scope.test.sh ~line 551): `D="$(mktemp -d)"; cd "$D" 2>/dev/null` — no `trap 'rm -rf "$D"' EXIT`. Counterexample in the SAME diff: `[bounds-single-source]` has `TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT` (diff +line ~line 479). `mktemp-no-cleanup` and `test-cleanup` are both in the build's prior-addressed pattern list. FINDING_KIND: recurrent-pattern mktemp-no-cleanup
+
+## L-005: swallowed-stderr
+- Pattern class: swallowed-stderr
+- Recurred across: 0049-touched-files-extractor-unify-and-harden (first observed run 20260610-202344)
+- Severity range: minor–major
+- Subject-area hints: files=[scripts/lib/touched-files.sh, scripts/lib/gates.sh, scripts/lib/tdd-lint.sh, scripts/lib/learnings.sh, tests/bounded-tdd-scope.test.sh] tags=[swallowed-stderr]
+- Flags: structural=false rework=false
+- Summary: tl_extract_touched_paths does not check awk's exit code; a silently failing awk emits empty output which produces a spurious structural-finding(a) for every changed file
+- Representative evidence: `tl_extract_touched_paths() { local f="$1" mode="${2:-paths}"; [ -f "$f" ] || return 0; awk -v MODE="$mode" '...' "$f"; }` — the function's last statement is the awk call with no exit-code capture. The critical consumer `_rework_pre_pass` calls `_rework_touched_files` via command substitution (`set_list="$(_rework_touched_files "$tdd")"`) without checking rc: an awk failure yields `set_list=""` and every changed file fails membership silently. NOTE: this is a pre-existing pattern carried into the centralized function (the predecessor awk bodies in all three callers were also unchecked); it is not a regression but a quality gap that the new single-definition point is now the right place to fix. `check_touched_file_count` in the same file captures `awk_rc` correctly — the new function breaks that convention.
+
+## L-006: intent-unenforced
+- Pattern class: intent-unenforced
+- Recurred across: 0049-touched-files-extractor-unify-and-harden (first observed run 20260610-202344)
+- Severity range: minor–major
+- Subject-area hints: files=[scripts/lib/touched-files.sh, scripts/lib/gates.sh, scripts/lib/tdd-lint.sh, scripts/lib/learnings.sh, tests/bounded-tdd-scope.test.sh] tags=[intent-unenforced]
+- Flags: structural=false rework=false
+- Summary: `unset _tf_lib` is unreachable on the FATAL path in all three host files; TDD states it IS unset after use
+- Representative evidence: TDD 0049 § Components: "the `_tf_lib` scratch variable in the per-host sourcing block, which IS unset after use". All three sourcing blocks share the same shape where `unset _tf_lib` follows the closing `}` of the FATAL branch — so `return 1 2>/dev/null || exit 1` (gates.sh:33, learnings.sh:41, tdd-lint.sh:36) exits/unwinds before `unset _tf_lib` (gates.sh:35, learnings.sh:43, tdd-lint.sh:38) is reached. Site 1: `scripts/lib/gates.sh:29-35` (diff). Site 2: `scripts/lib/learnings.sh:37-43` (diff). Site 3: `scripts/lib/tdd-lint.sh:29-38` (diff). FINDING_KIND: binding-rule-sweep
+
+## L-007: after-the-fact-test
+- Pattern class: after-the-fact-test
+- Recurred across: 0049-touched-files-extractor-unify-and-harden (first observed run 20260610-202344)
+- Severity range: minor–major
+- Subject-area hints: files=[scripts/lib/touched-files.sh, scripts/lib/gates.sh, scripts/lib/tdd-lint.sh, scripts/lib/learnings.sh, tests/bounded-tdd-scope.test.sh] tags=[after-the-fact-test]
+- Flags: structural=false rework=false
+- Summary: `[bounds-parser-agreement]` 3-way upgrade written after the 3-way implementation was already complete (no test(failing) commit precedes it)
+- Representative evidence: `git log --oneline` shows `37a80e8 step(4): learnings.sh sources touched-files.sh; _touched_files_of_tdd delegates` then `14dda4f step(5): 3-way parser-agreement cross-check + single-source grep` with NO intervening `test(failing):` commit for the 3-way check. After step(4), `_touched_files_of_tdd` already delegated to `tl_extract_touched_paths`, so `[bounds-parser-agreement]`'s 3-way check (tests/bounded-tdd-scope.test.sh:435) would pass immediately when written — the test was written after the implementation.
+
+## L-008: resource-leak
+- Pattern class: resource-leak
+- Recurred across: 0049-touched-files-extractor-unify-and-harden (first observed run 20260610-202344)
+- Severity range: minor–major
+- Subject-area hints: files=[scripts/lib/touched-files.sh, scripts/lib/gates.sh, scripts/lib/tdd-lint.sh, scripts/lib/learnings.sh, tests/bounded-tdd-scope.test.sh] tags=[resource-leak]
+- Flags: structural=false rework=false
+- Summary: `unset _tf_lib` is unreachable on the FATAL error path in all three host libs — TDD states the scratch variable IS unset after use; this invariant is violated on the only path where it would be needed
+- Representative evidence: TDD "Components & interfaces": "unlike the `_tf_lib` scratch variable in the per-host sourcing block, which IS unset after use". gates.sh:29–35 (diff): `_tf_lib` set at :29; FATAL block at :31–34 executes `return 1 2>/dev/null || exit 1` — `unset _tf_lib` at :35 is never reached. Identical pattern at learnings.sh:43 and tdd-lint.sh:38. Three sites, same binding invariant.
