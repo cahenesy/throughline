@@ -558,6 +558,71 @@ echo "[C12] A18: _per_file_coverage_check matches a dispositioned leading-'-' di
     || bad "leading-'-' diff file mis-reported as un-dispositioned (rc=$rc)"
 ) || true
 
+# --- TDD 0053 / A17 (ADR 0006): _diff_vs_narrative_facts must not over-include
+# via the greedy `-a` BATCH_RESULT match. The git-touched-file-count is already
+# structured (tests/severity-honest-reporting.test.sh D1), but a terminal
+# BATCH_RESULT carried INSIDE a JSON event line (the A16 tool-use case) made the
+# `build-verdict-line` extraction bleed the trailing JSON into the verdict the
+# reviewer reads. Bound the match so the verdict-line is clean (and the count
+# stays structured).
+echo "[C13] A17: the BATCH_RESULT verdict-line does not bleed trailing JSON when the sentinel rides in an event line"
+( D="$ROOT/C13"; mkdir -p "$D/state.d"; cd "$D" || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  git init -q -b master; git config user.email t@t.t; git config user.name t
+  printf 'a\n' > f1; printf 'b\n' > f2; git add -A; git commit -qm base >/dev/null
+  BS="$(git rev-parse HEAD)"
+  printf 'a2\n' > f1; printf 'b2\n' > f2; git add -A; git commit -qm change >/dev/null
+  log="$D/c13.log"
+  # The terminal BATCH_RESULT is carried inside a JSON assistant/tool-use event
+  # line (no later plain-text verdict). Pre-fix `grep -aoE 'BATCH_RESULT: .*'`
+  # greedily captures the trailing JSON; the fix bounds the match.
+  printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"BATCH_RESULT: OK"}],"stop_reason":"end_turn"}}' > "$log"
+  out="$(_diff_vs_narrative_facts "$log" "$BS")"
+  vline="$(printf '%s\n' "$out" | grep '^build-verdict-line:' | head -1)"
+  [ "$vline" = "build-verdict-line: BATCH_RESULT: OK" ] \
+    && ok "verdict-line is the clean BATCH_RESULT, no trailing JSON" \
+    || bad "verdict-line bled trailing JSON (got: $vline)"
+  printf '%s\n' "$out" | grep -qE 'git-touched-file-count: *2' \
+    && ok "git-touched-file-count stays structured (2)" \
+    || bad "file count should be the structured git count 2 (got: $(printf '%s\n' "$out" | grep file-count))"
+) || true
+
+# --- TDD 0053 / A19 (FR-67): when a git-diff failure co-occurs with a scope/(a)
+# violation, _rework_pre_pass must route ONE consistent cause + excerpt. The
+# caller derives `cause` by priority (git-diff-failed wins) but takes the excerpt
+# from `head -1`; pre-fix a violation line could precede the git-diff-failed line,
+# so cause(external-blocker) and excerpt(scope/(a)) diverged. The fix emits the
+# lone git-diff-failed line when any diff fails.
+echo "[C14] A19: a git-diff failure co-occurring with an (a) violation → a single consistent git-diff-failed cause/excerpt"
+( D="$ROOT/C14"; mkdir -p "$D/state.d"; cd "$D" || { bad "cd failed"; exit 0; }
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  mk_rework_repo; BS="$(git rev-parse HEAD)"
+  mkdir -p src
+  printf 'x\n' > src/a.txt        # declared, small in-scope edit (drives the (b) per-file diff)
+  printf 'y\n' > src/c.txt        # UNdeclared → would emit structural-finding(a)
+  git add -A; git commit -qm "rework: edits a declared + an out-of-set file" >/dev/null
+  NH="$(git rev-parse HEAD)"
+  # A bad build-start SHA makes ONLY the per-file (b) diff (build_start..new_head)
+  # fail, while the scope/(a) diffs (cleared..new_head) succeed and surface the (a)
+  # violation — the exact co-occurrence A19 must collapse to one cause.
+  BADSHA="0000000000000000000000000000000000000000"
+  out="$(_rework_pre_pass 0099-fix docs/tdd/0099-fix.md "$NH" "$BS" "$BADSHA" 40)"; rc=$?
+  [ "$rc" -ne 0 ] && ok "pre-pass returns non-zero on the git failure" || bad "should be non-zero (rc=$rc)"
+  first="$(printf '%s\n' "$out" | head -1)"
+  printf '%s' "$first" | grep -q 'git-diff-failed' \
+    && ok "excerpt (head -1) is the git-diff-failed line (consistent with the external-blocker cause)" \
+    || bad "head -1 should be git-diff-failed (got: $first)"
+  ! printf '%s\n' "$out" | grep -q 'structural-finding(a)' \
+    && ok "the co-occurring (a) violation is suppressed → one consistent cause" \
+    || bad "git-diff-failed must not co-mingle with structural-finding(a) (got: $out)"
+) || true
+
 # --- §5 / FR-61, FR-62: _rework_one spawns a bounded fix + commits -----------
 echo "[D1] _rework_one substitutes the template, runs the rework model, echoes the new HEAD"
 ( D="$ROOT/D1"; mkdir -p "$D/state.d" "$D/bin"; cd "$D" || { bad "cd failed"; exit 0; }
