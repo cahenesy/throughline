@@ -208,11 +208,13 @@ echo "[§D] rework-default expression: three-site verbatim agreement (gates.sh �
 # expression, the FR-52 verify tier); the skill and the plugin description
 # describe the pairing in tier language so they cannot silently go stale when
 # the binding is moved to the next generation.
-echo "[§D] prose surfaces speak tiers (SKILL.md, plugin.json)"
+echo "[§D] prose surfaces speak tiers (SKILL.md, plugin.json, README.md)"
 ( SK="$REPO/skills/implement/SKILL.md"; PJ="$REPO/.claude-plugin/plugin.json"
+  RM="$REPO/README.md"
   # rc-distinct: an unreadable file is INFRA, not a text-absent failure.
   [ -r "$SK" ] || { bad "INFRA: cannot read $SK"; exit 0; }
   [ -r "$PJ" ] || { bad "INFRA: cannot read $PJ"; exit 0; }
+  [ -r "$RM" ] || { bad "INFRA: cannot read $RM"; exit 0; }
   n="$(grep -ciE 'opus|sonnet|fable|haiku' "$SK")"
   [ "$n" = "0" ] \
     && ok "SKILL.md names no products (tier language only)" \
@@ -230,6 +232,18 @@ echo "[§D] prose surfaces speak tiers (SKILL.md, plugin.json)"
   grep -q 'latest top-tier model' "$PJ" \
     && ok "plugin.json description carries 'latest top-tier model'" \
     || bad "plugin.json description should carry 'latest top-tier model'"
+  # README's model prose must not name the gate-pairing models either. 'sonnet'
+  # has no legitimate README mention (the verify/rework/review prose all speak
+  # tiers); 'Opus' is checked only outside the /fast-mode sentences, which
+  # describe a platform feature of that product, not a pairing default.
+  r="$(grep -ci 'sonnet' "$RM")"
+  [ "$r" = "0" ] \
+    && ok "README.md names no review/verify-tier products (sonnet count 0)" \
+    || bad "README.md still names sonnet on $r line(s): $(grep -in 'sonnet' "$RM" | head -2 | tr '\n' ' ')"
+  o="$(grep -i 'opus' "$RM" | grep -vic '/fast')"
+  [ "$o" = "0" ] \
+    && ok "README.md mentions opus only in /fast-mode prose" \
+    || bad "README.md names opus outside /fast-mode prose on $o line(s): $(grep -in 'opus' "$RM" | grep -vi '/fast' | head -2 | tr '\n' ' ')"
 ) || true
 
 # ===========================================================================
