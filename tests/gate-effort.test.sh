@@ -14,6 +14,8 @@
 #   §2 structural: all six spawn sites in gates.sh append the flag
 #   §3 behavioral: a stubbed `claude` records argv — runtime-verify on a
 #      mechanical plan (model sonnet) receives `--effort high`
+#   §D default-model resolution (TDD 0057): resolve_models pairing,
+#      rollback arm, overrides
 #   §W dogfood: the eval is wired into the aggregator and propagates failure
 #
 # Run: bash tests/gate-effort.test.sh
@@ -123,6 +125,41 @@ EOF
   grep -q 'claude-flags:.*--effort xhigh' "$STUB_LOG" \
     && bad "verify must NOT run xhigh (observation gate)" \
     || ok "no xhigh on the verify gate"
+) || true
+
+# ===========================================================================
+# §D: default model resolution (TDD 0057 / NFR-3, ADR 0009). resolve_models()
+# in implement.sh is the binding-of-record for the default build/review model
+# pairing; these cases pin the pairing, the rollback arm (an explicit opus
+# build derives a sonnet review), and the override precedence (flag > env >
+# default). Each check runs in its own subshell so env never leaks between
+# cases.
+echo "[§D] resolve_models: default build/review model resolution"
+( D="$ROOT/sD"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "INFRA: §D — source guard missing"; exit 0; }
+  command -v resolve_models >/dev/null 2>&1 \
+    || { bad "resolve_models is not defined after sourcing (binding-of-record missing)"; exit 0; }
+
+  # check_resolve <MODEL-in> <BUILD-env|-> <REVIEW-env|-> <want-MODEL> <want-REVIEW> <label>
+  # "-" = unset env knob. MODEL/REVIEW_MODEL enter as the runner's arg-parse
+  # state ("" when the flag was not passed).
+  check_resolve() {
+    ( MODEL="$1"; REVIEW_MODEL=""
+      if [ "$2" != "-" ]; then export THROUGHLINE_BUILD_MODEL="$2"; else unset THROUGHLINE_BUILD_MODEL; fi
+      if [ "$3" != "-" ]; then export THROUGHLINE_REVIEW_MODEL="$3"; else unset THROUGHLINE_REVIEW_MODEL; fi
+      resolve_models
+      [ "$MODEL" = "$4" ] && [ "$REVIEW_MODEL" = "$5" ] \
+        && ok "$6" \
+        || bad "$6 (expected MODEL=$4 REVIEW_MODEL=$5; got MODEL=$MODEL REVIEW_MODEL=$REVIEW_MODEL)"
+    )
+  }
+  check_resolve ""     - - opus sonnet "unset everything → build opus, review sonnet (default pairing)"
+  check_resolve opus   - - opus sonnet "MODEL=opus → review sonnet (rollback pairing)"
+  check_resolve sonnet - - sonnet opus "MODEL=sonnet → review opus (diversity for any non-opus build)"
+  check_resolve ""     opus - opus sonnet "THROUGHLINE_BUILD_MODEL=opus + no flag → opus/sonnet (env binding wins over default)"
+  check_resolve sonnet - haiku sonnet haiku "THROUGHLINE_REVIEW_MODEL=haiku → review haiku (explicit override wins over derivation)"
 ) || true
 
 # ===========================================================================
