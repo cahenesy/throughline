@@ -197,6 +197,41 @@ _pr_coverage_pointer() {  # <prurl> <log>
   return 0
 }
 
+# _publish_pr <branch> <base> <log> (TDD 0052 / FR-16, FR-19, FR-27; bug A8)
+# The ONE publish path all three modes (sequential / combined / parallel) call:
+# push the build branch, open the PR (--fill, never merge per FR-16), post the
+# TDD 0044 coverage pointer. The push/create CLI invocations and their
+# 2>><log> redirections live ONLY here so the three modes cannot re-diverge
+# (reuse #5); callers keep their mode-specific pr_url recording and report
+# wording, and gate on the same gh-presence check as before (HASGH) — "no
+# gh/remote" stays the tolerated documented path, distinct from "publish
+# attempted and failed". Failure contract (the sequential site's diagnostics,
+# now the shared default):
+#   push fails        -> "" on stdout, "push failed" diagnostic on fd 2, rc 1
+#   pr create fails   -> "" on stdout, "PR create failed" diagnostic, rc 2
+#     (a create that exits 0 but prints no url is the same failure: an empty
+#      url recorded as success is exactly the A8 false-success shape)
+#   success           -> the PR url on stdout, _pr_coverage_pointer, rc 0
+# Defined above the SOURCE_ONLY guard so the test suite can drive it in
+# isolation.
+_publish_pr() {  # <branch> <base> <log>
+  local branch="${1:-}" base="${2:-}" log="${3:-/dev/null}" url
+  if ! git push -u origin "$branch" >>"$log" 2>&1; then
+    echo ""
+    echo "_publish_pr: push failed for $branch (see $log)" >&2
+    return 1
+  fi
+  url="$(gh pr create --base "$base" --head "$branch" --fill 2>>"$log")" || url=""
+  if [ -z "$url" ]; then
+    echo ""
+    echo "_publish_pr: PR create failed for $branch (base $base; see $log)" >&2
+    return 2
+  fi
+  printf '%s\n' "$url"
+  _pr_coverage_pointer "$url" "$log"   # TDD 0044 / FR-78 — best-effort, rc 0
+  return 0
+}
+
 # THROUGHLINE_SOURCE_ONLY=1 lets the test suite source this script to call
 # helpers in isolation. Runtime side effects (arg parsing, lock, drivers,
 # report) live below the guard; helpers are defined unconditionally above.
