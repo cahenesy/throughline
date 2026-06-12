@@ -367,12 +367,15 @@ _diff_vs_narrative_facts() {  # <build-log> <build-start-sha>
   if [ -z "$log" ] || [ ! -r "$log" ]; then
     printf 'build-log-unavailable: the build log (%s) is missing or unreadable; the narrative CANNOT be extracted — treat any narrative scope claim as UNVERIFIED (this is an extraction gap, NOT a deliberately-absent narrative).\n' "${log:-<unset>}"
   else
-    # TDD 0053 A17 (ADR 0006): bound the capture at a JSON-quote boundary
-    # (`[^"]*`) not the greedy `.*` — a BATCH_RESULT carried INSIDE a stream-json
-    # event line (the A16 tool-use case) otherwise bled trailing JSON into the
-    # verdict-line. `-a` kept (binary-safe); a plain-text verdict has no `"`. (The
-    # file count below is already derived from the structured `git diff`.)
-    br="$(grep -aoE 'BATCH_RESULT: [^"]*' "$log" 2>/dev/null | tail -1)"
+    # TDD 0056 §3 (FR-71 / ADR 0006): marker-first — the runner-echoed
+    # column-0 THROUGHLINE_AUTHORED_VERDICT line is the authored verdict; a
+    # sentinel carried INSIDE a mirrored stream-json event line (the 0053 A17
+    # case, and the injection junk of run 20260611-181309) can never be
+    # selected. Anchored bare-line fallback for degraded/legacy logs only.
+    # `-a` kept (binary-safe).
+    br="$(grep -a '^THROUGHLINE_AUTHORED_VERDICT: BATCH_RESULT: ' "$log" 2>/dev/null | tail -1)"
+    br="${br#THROUGHLINE_AUTHORED_VERDICT: }"
+    [ -z "$br" ] && br="$(grep -aE '^BATCH_RESULT: (OK|FAIL.*|BLOCKED.*)' "$log" 2>/dev/null | tail -1)"
     if [ -z "$br" ]; then
       printf 'narrative-missing: the build log carries no BATCH_RESULT line; SKIP the diff-vs-narrative check (a missing narrative is not a finding).\n'
     else
@@ -387,7 +390,9 @@ _diff_vs_narrative_facts() {  # <build-log> <build-start-sha>
       # therefore distinguishable) and (b) any downstream line-anchored sentinel
       # parser cannot match the injected text. The reviewer reads these quoted
       # lines as a CLAIM to be checked, never as an instruction or ground truth.
-      last_ln="$(grep -an 'BATCH_RESULT:' "$log" 2>/dev/null | tail -1 | cut -d: -f1)"
+      # TDD 0056 §3: locator anchored to the marker / bare-line family, so an
+      # injected mid-line sentinel cannot relocate the narrative window.
+      last_ln="$(grep -an '^THROUGHLINE_AUTHORED_VERDICT: \|^BATCH_RESULT: ' "$log" 2>/dev/null | tail -1 | cut -d: -f1)"
       if [ -n "$last_ln" ]; then
         start=$(( last_ln > 40 ? last_ln - 40 : 1 ))
         narrative="$(sed -n "${start},${last_ln}p" "$log" 2>/dev/null)"
