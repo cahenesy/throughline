@@ -248,6 +248,34 @@ echo "[drafts-canonical] drafts.sh drops its third escaper; tl_json_escape is th
     || ok "the post-processing third escaper (_tl_json_escape_full) is gone"
 )
 
+# ============================================================================
+# step 6 — gates.sh: sourcing gates.sh binds json.sh (it consumes tl_json_array
+# itself, so it owns its source line — the consumer-sources-it rule), and
+# _step_block_entry's pattern_tags array rides the canonical builder.
+# ============================================================================
+echo "[gates-delegate] gates.sh sources json.sh; _step_block_entry pattern_tags ride tl_json_array (Verification §4, FR-72)"
+(
+  source "$REPO/scripts/lib/gates.sh" 2>/dev/null || { bad "INFRA: could not source gates.sh"; exit 0; }
+  command -v tl_json_escape >/dev/null 2>&1 \
+    && ok "sourcing gates.sh standalone binds tl_json_escape (json.sh pulled in)" \
+    || bad "tl_json_escape undefined after sourcing gates.sh"
+)
+(
+  # _step_block_entry's OTHER string fields ride state.sh's json_escape from
+  # shared scope (the implement.sh sourcing order), so source both here.
+  source "$REPO/scripts/lib/state.sh" 2>/dev/null || { bad "INFRA: could not source state.sh"; exit 0; }
+  source "$REPO/scripts/lib/gates.sh" 2>/dev/null || { bad "INFRA: could not source gates.sh"; exit 0; }
+  tag="$(printf 'tag\001x')"
+  entry="$(_step_block_entry p1 major "$tag,other" "a summary")"
+  printf '%s' "$entry" | jq -e . >/dev/null 2>&1 \
+    && ok "_step_block_entry with a C0-bearing tag is strictly valid" \
+    || bad "step_block entry invalid: [$entry]"
+  [ "$(printf '%s' "$entry" | jq -r '.pattern_tags[0]' 2>/dev/null)" = "$tag" ] \
+    && [ "$(printf '%s' "$entry" | jq -r '.pattern_tags|length' 2>/dev/null)" = "2" ] \
+    && ok "pattern_tags round-trip through the canonical array builder" \
+    || bad "pattern_tags wrong: [$(printf '%s' "$entry" | jq -rc '.pattern_tags' 2>/dev/null)]"
+)
+
 # --- report ----------------------------------------------------------------
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
