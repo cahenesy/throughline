@@ -620,9 +620,25 @@ else
         set_tdd_meta  "$slug" "branch=$cb"
       done
     else
-    git checkout -b "$CHANGE" "$BASE" >>"$REPORT" 2>&1 || git checkout "$CHANGE" >>"$REPORT" 2>&1
-    blocked=0; paused_halt=0
+    # TDD 0052 §3 (A6): the worktree was created --detach, so a failed
+    # checkout here (create, then the resume fallback) would leave the whole
+    # combined build committing onto a detached HEAD — pre-fix the rc was
+    # silently swallowed and the run proceeded. FAIL every queued TDD with a
+    # clear cause and skip the build loop (mirrors the sequential driver's
+    # branch-op guard).
+    co_failed=0
+    if ! git checkout -b "$CHANGE" "$BASE" >>"$REPORT" 2>&1 && ! git checkout "$CHANGE" >>"$REPORT" 2>&1; then
+      co_failed=1
+      echo "- combined — FAIL (combined-checkout-failed: could not create or enter branch '$CHANGE' off '$BASE'; refusing to build on a detached HEAD)" >>"$REPORT"
+      for tdd in "${TDDS[@]}"; do
+        _terminal_state "$(basename "$tdd" .md)" failed "" "combined-checkout-failed: could not create or enter branch $CHANGE"
+      done
+    fi
+    blocked="$co_failed"; paused_halt=0
     for tdd in "${TDDS[@]}"; do slug="$(basename "$tdd" .md)"; log="$LOGDIR/$slug.log"
+      # TDD 0052 §3 (A6): a failed checkout already FAILed the queue above —
+      # never run a gate on a detached HEAD ($blocked=1 suppresses the PR push).
+      [ "$co_failed" -eq 1 ] && break
       # Paused-halt: TDD 0011 / FR-41 — a paused TDD halts the run cleanly
       # but does NOT mark downstream as BLOCKED (which would lie about the
       # downstream's state). Just stop iterating; resume will pick up here.
