@@ -80,7 +80,10 @@ extract_run() {
   local f="$1"
   case "$PARSER" in
     jq)
-      jq -r '[.mode, .integration_branch, (.started_at|tostring), (.updated_at|tostring), .state, (.total|tostring)] | @tsv' "$f" 2>/dev/null \
+      # TDD 0054 A27: `null|tostring` is the literal string "null" — map a null
+      # scalar to empty (`// ""`) BEFORE tostring, matching the sed/python paths,
+      # so downstream numeric tests see a clean empty/0.
+      jq -r '[.mode, .integration_branch, (.started_at // "" | tostring), (.updated_at // "" | tostring), .state, (.total // "" | tostring)] | @tsv' "$f" 2>/dev/null \
         | tr '\t' "$SEP"
       ;;
     python)
@@ -111,7 +114,9 @@ extract_tdd() {
   local f="$1"
   case "$PARSER" in
     jq)
-      jq -r '[(.n|tostring), .slug, .path, (.queue_pos|tostring), .status, (.stage // ""), (.updated_at|tostring), (.branch // ""), (.pr_url // ""), (.note // ""), (.paused_cause // "")] | @tsv' "$f" 2>/dev/null \
+      # TDD 0054 A27: same null -> empty mapping as extract_run for the numeric
+      # scalars (n, queue_pos, updated_at).
+      jq -r '[(.n // "" | tostring), .slug, .path, (.queue_pos // "" | tostring), .status, (.stage // ""), (.updated_at // "" | tostring), (.branch // ""), (.pr_url // ""), (.note // ""), (.paused_cause // "")] | @tsv' "$f" 2>/dev/null \
         | tr '\t' "$SEP"
       ;;
     python)
