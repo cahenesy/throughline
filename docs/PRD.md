@@ -485,15 +485,18 @@ relaxes verdict honesty (NFR-4); both are reversible per-run via env overrides.
 - **FR-52 Verification-gate model tiering.** The runtime-verify gate (FR-25)
   is run on a model the runner picks based on the TDD's verification plan:
   mechanical observations (CLI exit code, log line grep, file presence, HTTP
-  status code) run on `sonnet`; verification plans requiring browser/UI
-  driving, multi-step interactive flows, or judgment about ambiguous outputs
-  run on the build model. The choice is pinnable unconditionally via
-  `THROUGHLINE_RUNTIME_VERIFY_MODEL`. The tiering preserves NFR-4 verdict
+  status code) run on a cost-efficient lower-tier model; verification plans
+  requiring browser/UI driving, multi-step interactive flows, or judgment
+  about ambiguous outputs run on the build model. As in NFR-3, the tier is
+  the requirement and the concrete model binding is an implementation
+  default, pinnable unconditionally via `THROUGHLINE_RUNTIME_VERIFY_MODEL`.
+  The tiering preserves NFR-4 verdict
   honesty unconditionally — neither model is permitted to emit a false PASS
   on a verification it could not actually observe. — Acceptance: the per-TDD
   log records `runtime-verify model=<m> (plan=<cls>)` before each
   runtime-verify `claude` call; for a TDD with a mechanical verification plan
-  `<m>` is `sonnet` (or the env-pinned value); for a TDD with a nontrivial
+  `<m>` is the runner's mechanical-tier default (or the env-pinned value);
+  for a TDD with a nontrivial
   plan `<m>` is the build model; for a TDD whose mechanical plan describes
   an observation the artifact fails, the verdict line is
   `VERIFY_RUNTIME: FAIL` (not a false PASS).
@@ -884,9 +887,13 @@ can use.
   implementation) ends in a PR the human merges; the plugin never merges.
 - **NFR-2 Context hygiene.** Autonomous work runs in subagents / detached processes so
   the interactive session stays clean; the workflow is one fresh session per command.
-- **NFR-3 Model diversity.** Builds run on the best model (opus default); the review
-  gate runs on a different model (sonnet default) so the reviewer does not share the
-  author's blind spots. Overridable via flags/env.
+- **NFR-3 Model diversity.** Builds run on the strongest current-generation model
+  (the latest top-tier model); the review gate runs on a different model — the
+  prior generation's top-tier model by default — so the reviewer does not share
+  the author's blind spots. This requirement names tiers, not products: the
+  concrete model bindings are implementation defaults (overridable via
+  flags/env), so rebinding them when a new model generation ships is a normal
+  implementation change, not a requirements change.
 - **NFR-4 Verdict honesty.** Outcomes — including runtime verification (FR-25) —
   distinguish `PASS` / `FAIL` / `BLOCKED` / `SKIP`: "couldn't observe" (BLOCKED),
   "nothing to observe" (SKIP), and "design-infeasible" are never conflated with
@@ -981,8 +988,10 @@ can use.
   branches to be PR'd manually.
 - The integration branch is auto-detected (`origin`'s default → `main` → `master`);
   override with `THROUGHLINE_INTEGRATION_BRANCH`.
-- Default models: build `opus`, review `sonnet` (override via `--model` /
-  `--review-model` or `THROUGHLINE_BUILD_MODEL` / `THROUGHLINE_REVIEW_MODEL`).
+- Default models: build = the latest top-tier model, review = the prior
+  generation's top tier (NFR-3 tiers; the concrete bindings are implementation
+  defaults in the runner, overridden via `--model` / `--review-model` or
+  `THROUGHLINE_BUILD_MODEL` / `THROUGHLINE_REVIEW_MODEL`).
 - The progress live/follow mode (FR-29) is realized inside the TUI as a read-only,
   interruptible watch over the run-state record (e.g. a foreground `!` command ended
   with Ctrl-C). It neither ends the session nor touches the detached build, which runs
