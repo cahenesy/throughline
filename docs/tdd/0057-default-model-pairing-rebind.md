@@ -1,5 +1,5 @@
 # TDD 0057: Default model pairing rebind — latest top tier builds, prior-gen top tier reviews
-Status: draft
+Status: implemented
 PRD refs: NFR-3 (model diversity, tier-based)
 PRD-rev: d7bc491
 ADR constraints: 0003, 0008, 0009
