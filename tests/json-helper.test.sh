@@ -101,6 +101,90 @@ echo "[field-read] tl_json_field: an embedded escaped quote does not truncate; e
   [ -z "$got" ] && ok 'an absent key reads as empty' || bad "absent key non-empty: [$got]"
 )
 
+# ============================================================================
+# §2 A11 regression — a raw C0 byte in a fragment free-text field must yield a
+# STRICTLY parseable run-state fragment (state.sh's json_escape delegates to
+# the canonical C0-complete escaper; pre-fix the byte landed raw and the
+# fragment violated RFC 8259 §7).
+# ============================================================================
+echo "[a11-regression] a raw C0 byte in a fragment note yields a strictly parseable fragment (Verification §2, FR-27)"
+(
+  D="$(mktemp -d)"; trap 'rm -rf "$D"' EXIT
+  STATE_DIR="$D/state.d"; mkdir -p "$STATE_DIR"
+  source "$REPO/scripts/lib/state.sh" 2>/dev/null || { bad "INFRA: could not source state.sh"; exit 0; }
+  note="$(printf 'subprocess emitted \001 control')"
+  _write_tdd_fragment 0001-alpha 1 docs/tdd/0001-alpha.md 1 building build 100 100 br "" log "$note" \
+    || bad "INFRA: _write_tdd_fragment failed"
+  jq -e . "$STATE_DIR/0001-alpha.json" >/dev/null 2>&1 \
+    && ok "fragment with a raw 0x01 note parses strictly (A11 fixed)" \
+    || bad "fragment JSON invalid (raw control leaked): $(head -c 200 "$STATE_DIR/0001-alpha.json" 2>/dev/null)"
+  [ "$(jq -r '.note' "$STATE_DIR/0001-alpha.json" 2>/dev/null)" = "$note" ] \
+    && ok "the note round-trips byte-for-byte through a strict parser" \
+    || bad "note round-trip mismatch"
+)
+
+# ============================================================================
+# §2 A3 regression — the same C0 gap reached candidate-learnings.json via the
+# learnings.sh write path (finding summaries ride json_escape into the
+# fragment, then are re-embedded verbatim into the candidate file). The
+# escaper consolidation (step 2) is what flips this; step 4 routes
+# _json_str_array through the same canonical lib.
+# ============================================================================
+echo "[a3-regression] a raw C0 byte in a recurring finding summary yields a strictly parseable candidate-learnings.json (Verification §2, FR-72)"
+(
+  D="$(mktemp -d)"; trap 'rm -rf "$D"' EXIT
+  STATE_DIR="$D/state.d"; mkdir -p "$STATE_DIR"
+  export THROUGHLINE_LEARNING_MIN_OCCURRENCES=2
+  source "$REPO/scripts/lib/state.sh"     2>/dev/null || { bad "INFRA: could not source state.sh"; exit 0; }
+  source "$REPO/scripts/lib/learnings.sh" 2>/dev/null || { bad "INFRA: could not source learnings.sh"; exit 0; }
+  summ="$(printf 'unsafe \001 escaping seen')"
+  for slug in 0001-alpha 0002-beta; do
+    _write_tdd_fragment "$slug" 1 "docs/tdd/$slug.md" 1 building build 100 100 br "" log "" \
+      || bad "INFRA: fragment write failed for $slug"
+    _record_finding "$slug" review p1 major false region 10 "unsafe-escaping" "$summ" "evidence line" \
+      || bad "INFRA: _record_finding failed for $slug"
+  done
+  detect_build_learnings "$STATE_DIR" "$D" "$D" >/dev/null 2>&1
+  if [ ! -f "$D/candidate-learnings.json" ]; then
+    bad "candidate-learnings.json not written (recurring class across 2 TDDs expected)"
+  else
+    jq -e . "$D/candidate-learnings.json" >/dev/null 2>&1 \
+      && ok "candidate-learnings.json with a C0-bearing summary parses strictly (A3 fixed)" \
+      || bad "candidate-learnings.json invalid (raw control leaked)"
+  fi
+)
+
+# ============================================================================
+# §6 A10/A5 regression — the PRIMARY reader (_read_fragment_field) must
+# round-trip a quote-bearing free-text value: no truncation at the embedded
+# quote on read, and no dangling-backslash growth across a set_tdd_state
+# carry-forward rewrite.
+# ============================================================================
+echo "[a10-roundtrip] a quote-bearing halt_cause_detail round-trips through _read_fragment_field and a set_tdd_state carry-forward (Verification §6, FR-39)"
+(
+  D="$(mktemp -d)"; trap 'rm -rf "$D"' EXIT
+  STATE_DIR="$D/state.d"; mkdir -p "$STATE_DIR"
+  source "$REPO/scripts/lib/state.sh" 2>/dev/null || { bad "INFRA: could not source state.sh"; exit 0; }
+  detail='gate emitted no verdict: "PASS" expected'
+  _write_tdd_fragment 0001-alpha 1 docs/tdd/0001-alpha.md 1 paused "" 100 100 br "" log note \
+    "transient" "" "" "" "gate-unobservable" "" "" "$detail" \
+    || bad "INFRA: _write_tdd_fragment failed"
+  got="$(_read_fragment_field "$STATE_DIR/0001-alpha.json" halt_cause_detail)"
+  [ "$got" = "$detail" ] \
+    && ok "halt_cause_detail reads back whole (no truncation at the first quote)" \
+    || bad "truncated/garbled read: [$got]"
+  # Carry-forward: a paused->paused set_tdd_state rewrite reads every field and
+  # rewrites the fragment; the quote-bearing value must survive unchanged.
+  set_tdd_state 0001-alpha paused "" "still paused" || bad "INFRA: set_tdd_state failed"
+  got2="$(_read_fragment_field "$STATE_DIR/0001-alpha.json" halt_cause_detail)"
+  [ "$got2" = "$detail" ] \
+    && ok "carry-forward rewrite preserves the full value (no dangling backslash)" \
+    || bad "carry-forward corrupted the value: [$got2]"
+  jq -e . "$STATE_DIR/0001-alpha.json" >/dev/null 2>&1 \
+    && ok "fragment remains strictly valid after the carry-forward" \
+    || bad "fragment invalid after carry-forward"
+)
+
 # --- report ----------------------------------------------------------------
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
