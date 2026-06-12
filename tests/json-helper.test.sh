@@ -276,6 +276,90 @@ echo "[gates-delegate] gates.sh sources json.sh; _step_block_entry pattern_tags 
     || bad "pattern_tags wrong: [$(printf '%s' "$entry" | jq -rc '.pattern_tags' 2>/dev/null)]"
 )
 
+# ============================================================================
+# §4 sourcing-context matrix — every consumer sources cleanly (no FATAL) in
+# its real contexts and binds the canonical escaper; the include guard makes
+# any double-source a no-op.
+# ============================================================================
+echo "[ctx-matrix] consumers source cleanly in all contexts; double-source is a no-op (Verification §4)"
+(
+  D="$(mktemp -d)"; trap 'rm -rf "$D"' EXIT
+  # (a) the implement.sh abs-path context (THROUGHLINE_SOURCE_ONLY eval path).
+  ( STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE=sequential INTEGRATION=master CHANGE=ci LOGDIR="$D"
+    mkdir -p "$STATE_DIR"; TDDS=()
+    THROUGHLINE_SOURCE_ONLY=1 source "$REPO/scripts/implement.sh" >/dev/null 2>&1 || exit 1
+    command -v tl_json_escape >/dev/null 2>&1 ) \
+    && ok "implement.sh SOURCE_ONLY context binds tl_json_escape" \
+    || bad "implement.sh SOURCE_ONLY context: source failed or tl_json_escape missing"
+  # (b) markers.sh executed standalone (minimal-host style) — no FATAL, rc 0.
+  if bash "$REPO/scripts/lib/markers.sh" 2>"$D/err" && ! grep -q FATAL "$D/err"; then
+    ok "bash markers.sh runs standalone with no FATAL (dirname-free resolve)"
+  else
+    bad "markers.sh standalone run failed: $(cat "$D/err")"
+  fi
+  # (c) each consumer standalone-sources and binds the canonical escaper.
+  for lib in state markers learnings drafts gates; do
+    bash -c "set -uo pipefail; source '$REPO/scripts/lib/$lib.sh' 2>/dev/null; command -v tl_json_escape >/dev/null" \
+      && ok "$lib.sh standalone source binds tl_json_escape" \
+      || bad "$lib.sh standalone source does not bind tl_json_escape"
+  done
+  # (d) double-source under one shell is a no-op (the _TL_JSON_SOURCED guard):
+  # state.sh + gates.sh + an explicit re-source all coexist.
+  bash -c "set -uo pipefail; source '$REPO/scripts/lib/state.sh'; source '$REPO/scripts/lib/gates.sh'; source '$REPO/scripts/lib/json.sh'; [ \"\$(tl_json_escape ok)\" = ok ]" 2>/dev/null \
+    && ok "double-source is a no-op (include guard holds)" \
+    || bad "double-source broke the helpers (include guard)"
+)
+
+# ============================================================================
+# §5 single source of truth — no hand-rolled escaper/array body remains
+# outside json.sh (the mutator-inline [^\"]* field reads in state.sh/resume.sh
+# are explicitly deferred to the 0051 carry-forward refactor, so they are NOT
+# in this grep's scope; the escaper/array bodies are).
+# ============================================================================
+echo "[single-source] no escaper/array copy remains outside json.sh (Verification §5)"
+(
+  # The backslash-doubling escape body and the C0 control walk live ONLY in json.sh.
+  hits="$(grep -rlF -- '//\\/\\\\' "$REPO/scripts" | grep -v 'lib/json.sh' || true)"
+  [ -z "$hits" ] && ok "backslash-doubling escaper body only in json.sh" || bad "stray escaper body in: $hits"
+  hits="$(grep -rl 'for cc in 01 02' "$REPO/scripts" | grep -v 'lib/json.sh' || true)"
+  [ -z "$hits" ] && ok "C0 control walk only in json.sh" || bad "stray C0 walk in: $hits"
+  # The deleted third escaper's name appears nowhere in scripts/.
+  grep -rq '_tl_json_escape_full' "$REPO/scripts" \
+    && bad "_tl_json_escape_full still referenced under scripts/" \
+    || ok "the third escaper's name is gone from scripts/"
+  # The canonical helpers are DEFINED exactly once, in json.sh.
+  defs="$(grep -rn '^tl_json_escape()\|^tl_json_array()\|^tl_json_array_ws()\|^tl_json_field()' "$REPO/scripts" | grep -cv 'lib/json.sh')"
+  [ "$defs" -eq 0 ] && ok "tl_json_* defined only in json.sh" || bad "tl_json_* redefined outside json.sh"
+  # The old spaced-array join is gone (markers' ['a', 'b'] cosmetic form).
+  grep -rqF 'out="$out, "' "$REPO/scripts" \
+    && bad "spaced array join still present under scripts/" \
+    || ok "no spaced array join remains"
+)
+
+# ============================================================================
+# §W aggregator wire-in dogfood (TDD 0038 §3): this eval is registered in
+# tests/implement-gate.test.sh and its failure propagates through the final
+# AND-chain — driven by evaluating the chain with JSH_FAIL=1.
+# ============================================================================
+echo "[w-wirein] eval registered in the aggregator; failure propagates through the AND-chain"
+( AGG="$REPO/tests/implement-gate.test.sh"
+  grep -q 'json-helper.test.sh' "$AGG" \
+    && ok "registration present in implement-gate.test.sh" \
+    || bad "json-helper.test.sh not registered in the aggregator"
+  grep -q '\[ "\$JSH_FAIL" -eq 0 \]' "$AGG" \
+    && ok "JSH_FAIL term present in the final AND-chain" \
+    || bad "JSH_FAIL term missing from the aggregator AND-chain"
+  # Drive the chain: with every term passing EXCEPT JSH_FAIL=1, the final
+  # pass/fail expression must evaluate non-zero (the new eval's failure fails
+  # the gate).
+  chain="$(tail -1 "$AGG")"
+  ( eval "$(printf '%s\n' "$chain" | grep -o '[A-Z_]*FAIL' | sort -u | sed 's/$/=0/')"
+    JSH_FAIL=1
+    eval "$chain" ) >/dev/null 2>&1 \
+    && bad "AND-chain still passes with JSH_FAIL=1 (failure does NOT propagate)" \
+    || ok "AND-chain evaluates non-zero when this eval fails"
+)
+
 # --- report ----------------------------------------------------------------
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
