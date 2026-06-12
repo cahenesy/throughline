@@ -250,6 +250,35 @@ echo "[VP8] control: final assistant message ending with the sentinel line still
     || ok "control has no HANG marker"
 ) || true
 
+# --- [VP9] Authored-verdict marker: exactly once, column 0, verbatim -------
+# TDD 0056 §1 (NFR-4 / FR-15): at the moment the authored-verdict rule fires,
+# the runner echoes the observed verdict as a canonical column-0 marker line
+# `THROUGHLINE_AUTHORED_VERDICT: <verbatim final line>`. The stub emits TWO
+# sentinel-bearing events (assistant text + result), so an unguarded write
+# would produce two markers — the _build_stdin_closed latch must bound it to
+# exactly one.
+echo "[VP9] authored verdict echoed once as a column-0 THROUGHLINE_AUTHORED_VERDICT marker"
+( D="$ROOT/vp9"; mkdir -p "$D"
+  setup_repo "$D"
+  install_stub_claude "$D/bin" "BATCH_RESULT: OK"
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  export THROUGHLINE_BUILD_INTER_EVENT_TIMEOUT=5
+  export TMPL="$D/scripts/build-prompt.md"
+  log="$D/build.log"
+  _per_step_review_loop "0001-alpha" "docs/tdd/0001-alpha.md" "$log"; rc=$?
+  [ "$rc" = "0" ] \
+    && ok "loop returns 0 on clean lifecycle" \
+    || bad "loop should return 0 (got rc=$rc)"
+  n="$(grep -ac '^THROUGHLINE_AUTHORED_VERDICT: BATCH_RESULT: OK$' "$log")"
+  [ "$n" = "1" ] \
+    && ok "marker line appears exactly once, at column 0, carrying the verbatim verdict" \
+    || bad "expected exactly one '^THROUGHLINE_AUTHORED_VERDICT: BATCH_RESULT: OK' line (got ${n:-0})"
+  bs="$(build_status "$log")"
+  [ "$bs" = "BATCH_RESULT: OK" ] \
+    && ok "build_status echoes BATCH_RESULT: OK" \
+    || bad "build_status should echo 'BATCH_RESULT: OK' (got '$bs')"
+) || true
+
 # --- report ----------------------------------------------------------------
 # grep -c exits non-zero when there are zero matches; suppress that so the
 # `0 failed` happy path doesn't leak its exit code through pipefail.
