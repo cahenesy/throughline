@@ -232,6 +232,30 @@ _publish_pr() {  # <branch> <base> <log>
   return 0
 }
 
+# resolve_models (TDD 0057 / NFR-3, ADR 0009)
+# Models: build on the latest top-tier model; review on a DIFFERENT model — the
+# prior generation's top tier — for genuine diversity: a same-model reviewer
+# shares the author's blind spots. The reviewer subagents are `model: inherit`,
+# so this choice reaches the analysis, not just the orchestrator. Concrete
+# product names are bound HERE and only here (prose surfaces speak tiers); the
+# derivation keeps author≠reviewer for every build model, and an explicit opus
+# build derives a sonnet review — the legacy pairing stays one flag away.
+# Override via --model / --review-model or THROUGHLINE_BUILD_MODEL /
+# THROUGHLINE_REVIEW_MODEL. Resolves the MODEL / REVIEW_MODEL globals in place
+# from the arg-parse state ("" = no flag passed). Defined above the SOURCE_ONLY
+# guard so the test suite can drive it in isolation; the setup block calls it
+# where the inline block used to sit.
+resolve_models() {
+  [ -z "$MODEL" ] && MODEL="${THROUGHLINE_BUILD_MODEL:-fable}"
+  if [ -z "$REVIEW_MODEL" ]; then
+    REVIEW_MODEL="${THROUGHLINE_REVIEW_MODEL:-}"
+    [ -z "$REVIEW_MODEL" ] && case "$MODEL" in
+      *opus*) REVIEW_MODEL="sonnet" ;;
+      *)      REVIEW_MODEL="opus"   ;;
+    esac
+  fi
+}
+
 # THROUGHLINE_SOURCE_ONLY=1 lets the test suite source this script to call
 # helpers in isolation. Runtime side effects (arg parsing, lock, drivers,
 # report) live below the guard; helpers are defined unconditionally above.
@@ -283,19 +307,9 @@ if [ -z "$INTEGRATION" ]; then
   done
 fi
 
-# Models: build on the best available (opus); review on a DIFFERENT model for
-# genuine diversity — a same-model reviewer shares the author's blind spots. The
-# reviewer subagents are `model: inherit`, so this choice reaches the analysis,
-# not just the orchestrator. Override via --model / --review-model or
-# THROUGHLINE_BUILD_MODEL / THROUGHLINE_REVIEW_MODEL.
-[ -z "$MODEL" ] && MODEL="${THROUGHLINE_BUILD_MODEL:-opus}"
-if [ -z "$REVIEW_MODEL" ]; then
-  REVIEW_MODEL="${THROUGHLINE_REVIEW_MODEL:-}"
-  [ -z "$REVIEW_MODEL" ] && case "$MODEL" in
-    *opus*) REVIEW_MODEL="sonnet" ;;
-    *)      REVIEW_MODEL="opus"   ;;
-  esac
-fi
+# Model defaults: resolved by resolve_models (defined above the SOURCE_ONLY
+# guard — see its comment for the pairing rationale and override surface).
+resolve_models
 
 command -v claude >/dev/null 2>&1 || { echo "claude CLI not found on PATH"; exit 1; }
 HASGH=0; command -v gh >/dev/null 2>&1 && HASGH=1

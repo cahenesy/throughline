@@ -14,6 +14,8 @@
 #   §2 structural: all six spawn sites in gates.sh append the flag
 #   §3 behavioral: a stubbed `claude` records argv — runtime-verify on a
 #      mechanical plan (model sonnet) receives `--effort high`
+#   §D default-model resolution (TDD 0057): resolve_models pairing,
+#      rollback arm, overrides; rework-model chain + cross-site agreement
 #   §W dogfood: the eval is wired into the aggregator and propagates failure
 #
 # Run: bash tests/gate-effort.test.sh
@@ -123,6 +125,125 @@ EOF
   grep -q 'claude-flags:.*--effort xhigh' "$STUB_LOG" \
     && bad "verify must NOT run xhigh (observation gate)" \
     || ok "no xhigh on the verify gate"
+) || true
+
+# ===========================================================================
+# §D: default model resolution (TDD 0057 / NFR-3, ADR 0009). resolve_models()
+# in implement.sh is the binding-of-record for the default build/review model
+# pairing; these cases pin the pairing, the rollback arm (an explicit opus
+# build derives a sonnet review), and the override precedence (flag > env >
+# default). Each check runs in its own subshell so env never leaks between
+# cases.
+echo "[§D] resolve_models: default build/review model resolution"
+( D="$ROOT/sD"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential" INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "INFRA: §D — source guard missing"; exit 0; }
+  command -v resolve_models >/dev/null 2>&1 \
+    || { bad "resolve_models is not defined after sourcing (binding-of-record missing)"; exit 0; }
+
+  # check_resolve <MODEL-in> <BUILD-env|-> <REVIEW-env|-> <want-MODEL> <want-REVIEW> <label>
+  # "-" = unset env knob. MODEL/REVIEW_MODEL enter as the runner's arg-parse
+  # state ("" when the flag was not passed).
+  check_resolve() {
+    ( MODEL="$1"; REVIEW_MODEL=""
+      if [ "$2" != "-" ]; then export THROUGHLINE_BUILD_MODEL="$2"; else unset THROUGHLINE_BUILD_MODEL; fi
+      if [ "$3" != "-" ]; then export THROUGHLINE_REVIEW_MODEL="$3"; else unset THROUGHLINE_REVIEW_MODEL; fi
+      resolve_models
+      [ "$MODEL" = "$4" ] && [ "$REVIEW_MODEL" = "$5" ] \
+        && ok "$6" \
+        || bad "$6 (expected MODEL=$4 REVIEW_MODEL=$5; got MODEL=$MODEL REVIEW_MODEL=$REVIEW_MODEL)"
+    )
+  }
+  check_resolve ""     - - fable opus "unset everything → build fable (latest top tier), review opus (prior-gen top tier)"
+  check_resolve opus   - - opus sonnet "MODEL=opus → review sonnet (rollback pairing)"
+  check_resolve sonnet - - sonnet opus "MODEL=sonnet → review opus (diversity for any non-opus build)"
+  check_resolve ""     opus - opus sonnet "THROUGHLINE_BUILD_MODEL=opus + no flag → opus/sonnet (env binding wins over default)"
+  check_resolve sonnet - haiku sonnet haiku "THROUGHLINE_REVIEW_MODEL=haiku → review haiku (explicit override wins over derivation)"
+
+  # check_rework <MODEL-in|-> <REWORK-env|-> <want-model> <label> — drives the
+  # rework-model resolution chain (override → build model → latest-tier
+  # literal; ADR 0008's substance) at _rework_config_json, the run.json
+  # snapshot site. gates.sh's two usage sites carry the IDENTICAL pinned
+  # expression — the cross-site agreement check below guards that.
+  check_rework() {
+    ( if [ "$1" != "-" ]; then MODEL="$1"; else unset MODEL; fi
+      if [ "$2" != "-" ]; then export THROUGHLINE_REWORK_MODEL="$2"; else unset THROUGHLINE_REWORK_MODEL; fi
+      out="$(_rework_config_json)"
+      printf '%s' "$out" | grep -q "\"model\":\"$3\"" \
+        && ok "$4" || bad "$4 (expected rework model $3; got: $out)"
+    )
+  }
+  check_rework -    -      fable  "rework chain: unset everything → fable (follows the build default)"
+  check_rework opus -      opus   "rework chain: MODEL=opus → opus (rework follows the build model, ADR 0008)"
+  check_rework opus sonnet sonnet "rework chain: THROUGHLINE_REWORK_MODEL=sonnet → sonnet (explicit override wins)"
+) || true
+
+# The rework default is rebound at THREE sites that must carry the IDENTICAL
+# expression by design (a shared helper across the two independently-sourced
+# libs would couple their load order for two literals); this mechanical
+# agreement check guards the drift shape (TDD 0057, the TDD 0049
+# parser-agreement pattern).
+echo "[§D] rework-default expression: three-site verbatim agreement (gates.sh ×2, state.sh ×1)"
+( G="$REPO/scripts/lib/gates.sh"; S="$REPO/scripts/lib/state.sh"
+  # rc-distinct: an unreadable file is INFRA, not a text-absent failure.
+  [ -r "$G" ] || { bad "INFRA: cannot read $G"; exit 0; }
+  [ -r "$S" ] || { bad "INFRA: cannot read $S"; exit 0; }
+  EXPR='${THROUGHLINE_REWORK_MODEL:-${MODEL:-fable}}'
+  ng="$(grep -cF -- "$EXPR" "$G")"
+  ns="$(grep -cF -- "$EXPR" "$S")"
+  [ "$ng" = "2" ] && ok "gates.sh carries the pinned expression at exactly its 2 usage sites" \
+    || bad "gates.sh: expected the pinned rework-default expression at exactly 2 sites, got $ng"
+  [ "$ns" = "1" ] && ok "state.sh carries the pinned expression at exactly its 1 snapshot site" \
+    || bad "state.sh: expected the pinned rework-default expression at exactly 1 site, got $ns"
+  if grep -qF -- 'THROUGHLINE_REWORK_MODEL:-opus' "$G" "$S"; then
+    bad "a stale product-literal rework default (:-opus) remains in gates.sh/state.sh"
+  else
+    ok "no stale product-literal rework default remains"
+  fi
+) || true
+
+# Prose surfaces speak tiers (TDD 0057 / ADR 0009): concrete product names
+# live ONLY at the runner's resolution points (resolve_models, the rework
+# expression, the FR-52 verify tier); the skill and the plugin description
+# describe the pairing in tier language so they cannot silently go stale when
+# the binding is moved to the next generation.
+echo "[§D] prose surfaces speak tiers (SKILL.md, plugin.json, README.md)"
+( SK="$REPO/skills/implement/SKILL.md"; PJ="$REPO/.claude-plugin/plugin.json"
+  RM="$REPO/README.md"
+  # rc-distinct: an unreadable file is INFRA, not a text-absent failure.
+  [ -r "$SK" ] || { bad "INFRA: cannot read $SK"; exit 0; }
+  [ -r "$PJ" ] || { bad "INFRA: cannot read $PJ"; exit 0; }
+  [ -r "$RM" ] || { bad "INFRA: cannot read $RM"; exit 0; }
+  n="$(grep -ciE 'opus|sonnet|fable|haiku' "$SK")"
+  [ "$n" = "0" ] \
+    && ok "SKILL.md names no products (tier language only)" \
+    || bad "SKILL.md still names products on $n line(s): $(grep -inE 'opus|sonnet|fable|haiku' "$SK" | head -2 | tr '\n' ' ')"
+  grep -q 'latest top-tier model' "$SK" \
+    && ok "SKILL.md anchors the build tier (latest top-tier model)" \
+    || bad "SKILL.md is missing the 'latest top-tier model' anchor phrase"
+  grep -q "prior generation's top tier" "$SK" \
+    && ok "SKILL.md anchors the review tier (prior generation's top tier)" \
+    || bad "SKILL.md is missing the prior generation's top tier anchor phrase"
+  m="$(grep -ciE 'opus|sonnet|fable|haiku' "$PJ")"
+  [ "$m" = "0" ] \
+    && ok "plugin.json names no products" \
+    || bad "plugin.json still names products ($m line(s))"
+  grep -q 'latest top-tier model' "$PJ" \
+    && ok "plugin.json description carries 'latest top-tier model'" \
+    || bad "plugin.json description should carry 'latest top-tier model'"
+  # README's model prose must not name the gate-pairing models either. 'sonnet'
+  # has no legitimate README mention (the verify/rework/review prose all speak
+  # tiers); 'Opus' is checked only outside the /fast-mode sentences, which
+  # describe a platform feature of that product, not a pairing default.
+  r="$(grep -ci 'sonnet' "$RM")"
+  [ "$r" = "0" ] \
+    && ok "README.md names no review/verify-tier products (sonnet count 0)" \
+    || bad "README.md still names sonnet on $r line(s): $(grep -in 'sonnet' "$RM" | head -2 | tr '\n' ' ')"
+  o="$(grep -i 'opus' "$RM" | grep -vic '/fast')"
+  [ "$o" = "0" ] \
+    && ok "README.md mentions opus only in /fast-mode prose" \
+    || bad "README.md names opus outside /fast-mode prose on $o line(s): $(grep -in 'opus' "$RM" | grep -vi '/fast' | head -2 | tr '\n' ' ')"
 ) || true
 
 # ===========================================================================

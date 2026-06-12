@@ -387,8 +387,9 @@ to `implemented`, the runner enforces four independent gates:
   throughline ships NO bundled harness (FR-26 / [ADR
   0004](../../docs/adr/0004-verification-is-observation-governed-not-bundled.md)).
 - **review** — a SEPARATE `claude -p` process on a DIFFERENT model than the build
-  (default sonnet vs an opus build) for genuine reviewer diversity (not a subagent
-  of the author), that must end `REVIEW_RESULT: PASS`.
+  (the prior generation's top tier by default; the runner's `resolve_models`
+  binds the concrete names — ADR 0009) for genuine reviewer diversity (not a
+  subagent of the author), that must end `REVIEW_RESULT: PASS`.
 Only when all four pass does the runner flip the TDD and open the PR(s) per the
 mode. It NEVER merges — merging is your approval gate.
 
@@ -396,10 +397,10 @@ Bounded rework loop (TDD 0019 / ADR 0007): a review `BLOCK` no longer halts on
 first failure. A halting finding (`blocker`/`major`) triggers a bounded
 automatic rework loop **inside the same `/implement` invocation** — you are kept
 informed but are NOT asked to drive between a finding and convergence. Each
-attempt runs on the rework model (the build model, `opus`, by default — so Opus
-authors all code, build AND rework, and Sonnet is reserved for the review gates:
+attempt runs on the rework model (the build model by default — so one model
+authors all code, build AND rework, and the review gates run a different one:
 the reviewer never shares the rework author's model/blind spots — NFR-3
-author↔reviewer diversity, TDD 0043 / ADR 0008; `THROUGHLINE_REWORK_MODEL`
+author↔reviewer diversity, ADR 0008/0009; `THROUGHLINE_REWORK_MODEL`
 still overrides), fixes only the cited finding,
 and faces a mechanical pre-pass before it ships: a per-attempt scope cap
 (`max(THROUGHLINE_REWORK_SCOPE_FLOOR=60, THROUGHLINE_REWORK_SCOPE_FACTOR=3 ×
@@ -464,19 +465,22 @@ for the set instead.
   `/implement` from that branch, so it matches what you have checked out.
 - The runner sets `--permission-mode auto` for unattended runs; for tighter
   control add a tool allowlist or use OS sandboxing.
-- Models: the build runs on the best model (opus by default); the review gate runs
-  on a DIFFERENT model (sonnet by default) for diversity. Override with `--model` /
-  `--review-model`, or `THROUGHLINE_BUILD_MODEL` / `THROUGHLINE_REVIEW_MODEL`.
+- Models: the build runs on the latest top-tier model; the review gate runs on a
+  DIFFERENT model (the prior generation's top tier by default) for diversity. The
+  concrete names are bound in the runner's `resolve_models` only (ADR 0009).
+  Override with `--model` / `--review-model`, or `THROUGHLINE_BUILD_MODEL` /
+  `THROUGHLINE_REVIEW_MODEL`.
 - `THROUGHLINE_REQUIRE_TEST_FIRST=0` disables the failing-test-first gate (e.g. a
   batch of pure refactors); leave it on (default) for feature work.
 - `THROUGHLINE_RUNTIME_VERIFY_MODEL` pins the runtime-verify gate's model
-  unconditionally (default is heuristic: sonnet for mechanical plans, build
-  model otherwise — TDD 0013 / FR-52).
+  unconditionally (default is heuristic: a cost-efficient lower-tier model for
+  mechanical plans, the build model otherwise — TDD 0013 / FR-52; the binding
+  lives in the runner).
 - `THROUGHLINE_REQUIRE_RUNTIME_VERIFY=0` disables the runtime-verification gate
   the same way (the documented escape hatch — e.g. a batch of pure refactors
   whose TDDs all declare `SKIP`); leave it on (default) for feature work.
-- Bounded-rework knobs (TDD 0019): `THROUGHLINE_REWORK_MODEL` (default `opus`,
-  the build model — TDD 0043 / ADR 0008),
+- Bounded-rework knobs (TDD 0019): `THROUGHLINE_REWORK_MODEL` (defaults to the
+  build model — ADR 0008/0009),
   `THROUGHLINE_REWORK_MAX` (per-gate-step attempt cap, default 3),
   `THROUGHLINE_REWORK_SCOPE_FLOOR` (default 60) and
   `THROUGHLINE_REWORK_SCOPE_FACTOR` (default 3) for the per-attempt scope cap

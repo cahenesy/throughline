@@ -71,13 +71,13 @@ loses:
 | The author reviews itself — same context, same blind spots, polite agreement. | The review gate runs in a separate `claude -p` on a **different model**, fanning out to specialized subagents (code review, silent-failure-hunter, security review). Different opinions, not an echo chamber. |
 | Verification means "the tests passed." | Verification means **driving the real artifact** to where a user meets it (CLI output, HTTP response, log line, DOM, file write) and confirming the TDD's named observations hold. Tests-green is necessary, never sufficient. |
 | Scope creeps. A "small fix" turns into a 540-line PR with 11 manual review-fix iterations. | Every TDD declares its **expected diff size + touched-file set** at design time. The design-critique gate refuses over-ambitious designs before any build runs. throughline's own scripts comply with the same bounds it enforces on yours. |
-| Review is end-of-build — when something's wrong, you re-do the whole build. | Review runs **continuously, per step**, against the diff range since the last cleared pass. Cleared code is never re-evaluated. A halting finding triggers a **bounded automatic rework loop** on the build model (opus, scope-capped) inside the same `/implement` invocation — not a manual fix-loop you babysit. |
+| Review is end-of-build — when something's wrong, you re-do the whole build. | Review runs **continuously, per step**, against the diff range since the last cleared pass. Cleared code is never re-evaluated. A halting finding triggers a **bounded automatic rework loop** on the build model (scope-capped) inside the same `/implement` invocation — not a manual fix-loop you babysit. |
 | Findings are flat — every comment looks equally severe; the human reads all of them. | Every finding carries `severity: blocker | major | minor | nit` and a `structural: true|false` tag. The runner halts only on `{blocker, major}`. Minors and nits ship in the report but don't gate. |
 | Reports are narrative. "I refactored the auth module to be cleaner." | Reports are **diff-grounded**: actual file list, line counts, traceability check, scope-bound check. The author's own self-review runs first (cheaper) and is then independently checked. |
 | When work pauses for you, you guess why. "Did it crash? Hit a rate limit? Need a decision?" | A **closed halt taxonomy** of `human-needed` causes (rate-limit, structural-finding, rework-budget-exhausted, design-escalation, external-blocker, …) plus a **one-screen halt context** that names the cause, the artifact, and exactly what you need to do. |
 | Lose the session, lose your work. A network drop mid-interview erases your elicitation; a rate-limit kills the build. | Interviews write a **draft file to disk** after every substantive elicitation — kill, reboot, or compaction resumes from where you left off. Builds run **detached + resumable** — rate-limit hits pause the run; you `/implement --resume` after the window. |
 | Re-running setup either re-does everything (slow) or skips silently (drift). | **Two markers, queried independently**: repo state in the committed `docs/.throughline-bootstrap.json`, per-developer environment in `${CLAUDE_PLUGIN_DATA}/<repo-id>/local.json`. Bootstrap is mechanically idempotent; a SessionStart hook auto-reconciles plugin updates without launching Claude. |
-| Token spend is "whatever the model picked." | The runtime-verify gate **tiers models by plan complexity**: mechanical observations (exit codes, log greps) run on sonnet; nontrivial plans (browser, judgment, multi-step) run on the build model. Mechanical pre-pass lint runs before the LLM design-reviewer, so the reviewer never spends tokens on what `grep` already proved. |
+| Token spend is "whatever the model picked." | The runtime-verify gate **tiers models by plan complexity**: mechanical observations (exit codes, log greps) run on a cost-efficient lower-tier model; nontrivial plans (browser, judgment, multi-step) run on the build model. Mechanical pre-pass lint runs before the LLM design-reviewer, so the reviewer never spends tokens on what `grep` already proved. |
 | Engineering basics (TDD, worktrees, code review) are either reinvented per session or skipped. | Delegated **once** to the official plugins (superpowers, pr-review-toolkit). throughline owns the design-of-record and the gates; the plugins own the discipline that gates them. |
 | The same class of bug recurs build after build; nothing remembers. | Per-build findings are mined at run-end for **recurring categorical patterns** (a finding class that appeared across more than one TDD or build step). One batched accept/discard prompt; accepted classes persist to `docs/tdd/LEARNINGS.md` and surface as **advisory context** in future `/tdd-author` sessions whose scope intersects the learning's `files=[…]` / `tags=[…]` hints. |
 
@@ -281,8 +281,8 @@ process:
    delegating to `superpowers:verification-before-completion` / `/verify`
    ([ADR 0004](docs/adr/0004-verification-is-observation-governed-not-bundled.md)).
    The runner **tiers models** by plan complexity: mechanical observations run
-   on sonnet; nontrivial plans (browser, judgment, multi-step) run on the build
-   model.
+   on a cost-efficient lower-tier model; nontrivial plans (browser, judgment,
+   multi-step) run on the build model.
 4. **Independent review** — runs **continuously per step** during the build
    (not only at the end), in a separate `claude -p` on a **different model**
    from the author. Each per-step pass reads only the diff range since the
@@ -341,8 +341,8 @@ before a flip — but *when* it runs is split:
   surfaced to the step-(N+1) reviewer as context, so the same class of bug
   isn't re-introduced one step later.
 - **Halting finding → bounded automatic rework.** A `{blocker, major}` with
-  `structural: false` triggers a rework attempt on the build model (opus —
-  Sonnet is reserved for the review gates, so the reviewer never shares the
+  `structural: false` triggers a rework attempt on the build model (the review
+  gates run a different model, so the reviewer never shares the
   rework author's blind spots): the model gets the
   finding, the scope bounds, and the cleared-code map. Its commit faces the
   mechanical pre-pass first; on clear it ships and the next per-step review
