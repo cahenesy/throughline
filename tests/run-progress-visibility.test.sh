@@ -306,6 +306,28 @@ echo "[Q] status.sh: --logdir/--max-seconds with no value -> exit 2 + usage, no 
   done
 ) || true
 
+echo "[R] status.sh: jq parser maps a null scalar to empty — sed-path parity, no integer-test crash (TDD 0054 A27 / FR-28)"
+( if command -v jq >/dev/null 2>&1; then
+    D="$ROOT/r"; mkdir -p "$D/state.d"
+    cat > "$D/state.d/run.json" <<EOF
+{"schema":1,"started_at":null,"updated_at":null,"pid":123,"integration_branch":"main","mode":"sequential","change":"ci","logdir":"$D","total":null,"state":"running"}
+EOF
+    cat > "$D/state.d/0001-alpha.json" <<EOF
+{"n":null,"slug":"0001-alpha","path":"docs/tdd/0001-alpha.md","queue_pos":null,"status":"building","stage":"build","started_at":1000,"updated_at":null,"branch":"","pr_url":"","note":""}
+EOF
+    out="$(bash "$STATUS" --logdir "$D" 2>&1)"
+    printf '%s\n' "$out" | grep -qE 'integer (expression )?expected|unbound variable|invalid number' \
+      && bad "jq null scalar leaked into a numeric context ($(printf '%s' "$out" | head -1))" \
+      || ok "no integer-test / set -u / printf crash on null scalars"
+    printf '%s\n' "$out" | grep -qE '0 done */ *0' \
+      && ok "null total renders as 0 (sed-path parity)" || bad "null total should render '0 done / 0'"
+    printf '%s\n' "$out" | grep -qw 'null' \
+      && bad "literal 'null' leaked into the rendered view" || ok "no literal 'null' in the rendered view"
+  else
+    ok "jq absent on this host — A27 is the jq path; sed/python already map null to empty"
+  fi
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
