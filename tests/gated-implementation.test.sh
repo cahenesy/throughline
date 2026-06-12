@@ -23,6 +23,8 @@
 #   §4 A7: a total install_deps failure FAILs the affected TDD(s) with a
 #      deps-install-failed cause (sequential shared worktree + parallel
 #      per-TDD worktree) instead of building against missing deps
+#   §W dogfood: wiring this eval into the aggregator makes the aggregator's
+#      final AND-chain go non-zero when this eval fails (TDD 0038 §3 rule)
 #
 # Run: bash tests/gated-implementation.test.sh
 set -uo pipefail
@@ -293,6 +295,38 @@ EOF
   [ -e "$D/claude.log" ] \
     && bad "parallel: build gate ran despite the deps failure" \
     || ok "parallel: no build gate ran against missing deps"
+) || true
+
+# ===========================================================================
+# §W: dogfood (TDD 0038 §3 wire-in rule) — registering this eval in the
+# aggregator adds a GIM_FAIL accumulator to its final AND-chain, so the
+# aggregator now exits non-zero on a new condition. Drive the REAL extracted
+# chain with every accumulator green EXCEPT this eval's, stubbed to fail:
+# before the wire-in the chain never references GIM_FAIL and evaluates true
+# (RED); after, it includes the term and evaluates false (GREEN).
+echo "[§W] dogfood: wiring this eval into the aggregator makes its exit go non-zero when the eval fails"
+( AGG="$REPO/tests/implement-gate.test.sh"
+  if [ ! -r "$AGG" ]; then bad "INFRA: §W — aggregator unreadable: $AGG"; exit 0; fi
+  # Structural: the new eval is registered (run) in the aggregator. Anchored on
+  # the eval filename so an unwired aggregator is RED.
+  grep -q 'gated-implementation\.test\.sh' "$AGG" 2>/dev/null \
+    && ok "the new eval is wired into the aggregator (registration present)" \
+    || bad "the new eval must be registered in the aggregator"
+  # Behavioral: extract the aggregator's real final AND-chain verbatim and
+  # evaluate it against stub integers (no recursion into the sub-evals).
+  chain="$(grep -aE '^\[ "\$FAIL" -eq 0 \] &&' "$AGG" | tail -1)"
+  if [ -z "$chain" ]; then bad "INFRA: §W — could not locate the aggregator final AND-chain"; exit 0; fi
+  drive_rc="$(
+    set +u
+    for v in $(printf '%s' "$chain" | grep -aoE '\$[A-Za-z_][A-Za-z0-9_]*' | tr -d '$' | sort -u); do
+      eval "$v=0"
+    done
+    GIM_FAIL=1
+    eval "$chain"; echo $?
+  )"
+  [ "$drive_rc" != "0" ] \
+    && ok "aggregator final AND-chain goes non-zero when the new eval fails (wire-in propagates)" \
+    || bad "aggregator AND-chain must be non-zero with GIM_FAIL=1 (got rc=$drive_rc)"
 ) || true
 
 echo
