@@ -209,6 +209,28 @@ echo "[markers-delegate] markers.sh sources json.sh; _tl_csv_to_json_array compa
     || bad "_tl_json_escape delegation broke C0 escaping (esc='$esc')"
 )
 
+# ============================================================================
+# step 4 — learnings.sh delegation: sourcing learnings.sh ALONE binds json.sh
+# (the consumer sources it itself — no state.sh prerequisite for the escaper),
+# and _json_str_array is a thin tl_json_array_ws delegate, so the
+# candidate-learnings field writes ride the canonical C0-safe escaper (A3).
+# ============================================================================
+echo "[learnings-delegate] learnings.sh sources json.sh; _json_str_array delegates to tl_json_array_ws standalone (Verification §4, FR-72)"
+(
+  source "$REPO/scripts/lib/learnings.sh" 2>/dev/null || { bad "INFRA: could not source learnings.sh"; exit 0; }
+  command -v tl_json_array_ws >/dev/null 2>&1 \
+    && ok "sourcing learnings.sh binds tl_json_array_ws (json.sh pulled in)" \
+    || bad "tl_json_array_ws undefined after sourcing learnings.sh"
+  [ "$(_json_str_array 'a b' 2>/dev/null)" = '["a","b"]' ] \
+    && ok "_json_str_array works standalone (no state.sh prerequisite) with the canonical shape" \
+    || bad "_json_str_array standalone wrong: [$(_json_str_array 'a b' 2>/dev/null)]"
+  it="$(printf 'pa\001th')"
+  out="$(_json_str_array "$it" 2>/dev/null)"
+  printf '%s' "$out" | jq -e . >/dev/null 2>&1 && [ "$(printf '%s' "$out" | jq -r '.[0]')" = "$it" ] \
+    && ok "a C0-bearing item is escaped through the canonical escaper (A3 path)" \
+    || bad "C0 item not safely escaped: [$out]"
+)
+
 # --- report ----------------------------------------------------------------
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
