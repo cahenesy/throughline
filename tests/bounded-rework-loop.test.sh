@@ -558,14 +558,15 @@ echo "[C12] A18: _per_file_coverage_check matches a dispositioned leading-'-' di
     || bad "leading-'-' diff file mis-reported as un-dispositioned (rc=$rc)"
 ) || true
 
-# --- TDD 0053 / A17 (ADR 0006): _diff_vs_narrative_facts must not over-include
-# via the greedy `-a` BATCH_RESULT match. The git-touched-file-count is already
-# structured (tests/severity-honest-reporting.test.sh D1), but a terminal
-# BATCH_RESULT carried INSIDE a JSON event line (the A16 tool-use case) made the
-# `build-verdict-line` extraction bleed the trailing JSON into the verdict the
-# reviewer reads. Bound the match so the verdict-line is clean (and the count
-# stays structured).
-echo "[C13] A17: the BATCH_RESULT verdict-line does not bleed trailing JSON when the sentinel rides in an event line"
+# --- TDD 0053 / A17, superseded by TDD 0056 §3 (ADR 0006): a terminal
+# BATCH_RESULT carried INSIDE a JSON event line used to be extracted with a
+# quote-bounded match (A17's fix for the trailing-JSON bleed). Post-0056 the
+# `build-verdict-line` extraction is marker-first and column-0 anchored, so a
+# JSON-carried-ONLY log yields NO verdict at all — narrative-missing → SKIP,
+# the honest no-verdict outcome. The A17 bleed is impossible by construction
+# (a verdict-line is never derived from inside an event line), and the count
+# stays structured.
+echo "[C13] A17/0056: a sentinel riding ONLY inside a JSON event line yields narrative-missing, never a bled verdict-line"
 ( D="$ROOT/C13"; mkdir -p "$D/state.d"; cd "$D" || { bad "cd failed"; exit 0; }
   export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
   export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
@@ -576,15 +577,17 @@ echo "[C13] A17: the BATCH_RESULT verdict-line does not bleed trailing JSON when
   BS="$(git rev-parse HEAD)"
   printf 'a2\n' > f1; printf 'b2\n' > f2; git add -A; git commit -qm change >/dev/null
   log="$D/c13.log"
-  # The terminal BATCH_RESULT is carried inside a JSON assistant/tool-use event
-  # line (no later plain-text verdict). Pre-fix `grep -aoE 'BATCH_RESULT: .*'`
-  # greedily captures the trailing JSON; the fix bounds the match.
+  # The terminal BATCH_RESULT is carried ONLY inside a JSON assistant event
+  # line — no marker, no bare-line sentinel. Post-0056 the anchored extraction
+  # never reads inside an event line: no verdict-line fact, narrative-missing.
   printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"BATCH_RESULT: OK"}],"stop_reason":"end_turn"}}' > "$log"
   out="$(_diff_vs_narrative_facts "$log" "$BS")"
-  vline="$(printf '%s\n' "$out" | grep '^build-verdict-line:' | head -1)"
-  [ "$vline" = "build-verdict-line: BATCH_RESULT: OK" ] \
-    && ok "verdict-line is the clean BATCH_RESULT, no trailing JSON" \
-    || bad "verdict-line bled trailing JSON (got: $vline)"
+  printf '%s\n' "$out" | grep -q '^narrative-missing:' \
+    && ok "JSON-carried-only log reads as narrative-missing (honest no-verdict)" \
+    || bad "expected narrative-missing for a JSON-carried-only log (got: $(printf '%s\n' "$out" | sed -n 2p))"
+  printf '%s\n' "$out" | grep -q '^build-verdict-line:' \
+    && bad "a verdict-line was derived from inside a JSON event line (got: $(printf '%s\n' "$out" | grep '^build-verdict-line:' | head -1))" \
+    || ok "no verdict-line derived from the JSON event line (bleed impossible by construction)"
   printf '%s\n' "$out" | grep -qE 'git-touched-file-count: *2' \
     && ok "git-touched-file-count stays structured (2)" \
     || bad "file count should be the structured git count 2 (got: $(printf '%s\n' "$out" | grep file-count))"
