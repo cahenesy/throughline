@@ -802,4 +802,20 @@ if [ -f "$JSH" ]; then
   bash "$JSH" || JSH_FAIL=1
 fi
 
-[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ] && [ "$SMS_FAIL" -eq 0 ] && [ "$PRM_FAIL" -eq 0 ] && [ "$GRM_FAIL" -eq 0 ] && [ "$BRL_FAIL" -eq 0 ] && [ "$SCB_FAIL" -eq 0 ] && [ "$RR_FAIL" -eq 0 ] && [ "$BCL_FAIL" -eq 0 ] && [ "$BO_FAIL" -eq 0 ] && [ "$IDP_FAIL" -eq 0 ] && [ "$RES_FAIL" -eq 0 ] && [ "$CVR_FAIL" -eq 0 ] && [ "$HRS_FAIL" -eq 0 ] && [ "$SHR_FAIL" -eq 0 ] && [ "$BPL_FAIL" -eq 0 ] && [ "$BDN_FAIL" -eq 0 ] && [ "$IDISC_FAIL" -eq 0 ] && [ "$ERC_FAIL" -eq 0 ] && [ "$SCP_FAIL" -eq 0 ] && [ "$IMR_FAIL" -eq 0 ] && [ "$RVR_FAIL" -eq 0 ] && [ "$WIC_FAIL" -eq 0 ] && [ "$RTH_FAIL" -eq 0 ] && [ "$TFP_FAIL" -eq 0 ] && [ "$TGR_FAIL" -eq 0 ] && [ "$BRC_FAIL" -eq 0 ] && [ "$CMAP_FAIL" -eq 0 ] && [ "$RLNS_FAIL" -eq 0 ] && [ "$SRG_FAIL" -eq 0 ] && [ "$RTM_FAIL" -eq 0 ] && [ "$MDP_FAIL" -eq 0 ] && [ "$GEF_FAIL" -eq 0 ] && [ "$DRR_FAIL" -eq 0 ] && [ "$JSH_FAIL" -eq 0 ]
+# TDD 0052 (FR-16/FR-19/FR-27/FR-69; bugs A8/A6/A7): the gated-implementation
+# eval pins the single _publish_pr publish path (push/create CLI lives only in
+# the helper; loud rc 1/2 + fd-2 diagnostics surfaced in all three modes) and
+# the loud combined-checkout (A6) + install_deps (A7) precondition failures.
+# Registered here so the publish/precondition regressions are gated by
+# ci-checks, not orphaned from the aggregator. Per the TDD 0038 §3 wire-in
+# rule this registration is new gating behavior — its failing wire-in test
+# (the eval's §W dogfood) drove the AND-chain term below red→green before
+# this block landed.
+GIM="$(dirname "$0")/gated-implementation.test.sh"
+GIM_FAIL=0
+if [ -f "$GIM" ]; then
+  echo
+  bash "$GIM" || GIM_FAIL=1
+fi
+
+[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ] && [ "$SMS_FAIL" -eq 0 ] && [ "$PRM_FAIL" -eq 0 ] && [ "$GRM_FAIL" -eq 0 ] && [ "$BRL_FAIL" -eq 0 ] && [ "$SCB_FAIL" -eq 0 ] && [ "$RR_FAIL" -eq 0 ] && [ "$BCL_FAIL" -eq 0 ] && [ "$BO_FAIL" -eq 0 ] && [ "$IDP_FAIL" -eq 0 ] && [ "$RES_FAIL" -eq 0 ] && [ "$CVR_FAIL" -eq 0 ] && [ "$HRS_FAIL" -eq 0 ] && [ "$SHR_FAIL" -eq 0 ] && [ "$BPL_FAIL" -eq 0 ] && [ "$BDN_FAIL" -eq 0 ] && [ "$IDISC_FAIL" -eq 0 ] && [ "$ERC_FAIL" -eq 0 ] && [ "$SCP_FAIL" -eq 0 ] && [ "$IMR_FAIL" -eq 0 ] && [ "$RVR_FAIL" -eq 0 ] && [ "$WIC_FAIL" -eq 0 ] && [ "$RTH_FAIL" -eq 0 ] && [ "$TFP_FAIL" -eq 0 ] && [ "$TGR_FAIL" -eq 0 ] && [ "$BRC_FAIL" -eq 0 ] && [ "$CMAP_FAIL" -eq 0 ] && [ "$RLNS_FAIL" -eq 0 ] && [ "$SRG_FAIL" -eq 0 ] && [ "$RTM_FAIL" -eq 0 ] && [ "$MDP_FAIL" -eq 0 ] && [ "$GEF_FAIL" -eq 0 ] && [ "$DRR_FAIL" -eq 0 ] && [ "$JSH_FAIL" -eq 0 ] && [ "$GIM_FAIL" -eq 0 ]
