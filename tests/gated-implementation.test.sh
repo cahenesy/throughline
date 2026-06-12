@@ -14,6 +14,10 @@
 #   §2 A8: push failure → rc 1 + "push failed" diagnostic on fd 2; create
 #      failure (non-zero OR empty url) → rc 2 + "PR create failed"; stdout
 #      stays empty; CLI stderr lands in <log>; never a silent success
+#   §2b wiring: the push/create CLI invocations live ONLY in _publish_pr; the
+#      three mode sites are thin delegates keeping mode-specific bookkeeping
+#      (sequential rc→wording, combined loud report lines, parallel
+#      PARPUBLISH:: marker + render, stacked base stripped at the caller)
 #
 # Run: bash tests/gated-implementation.test.sh
 set -uo pipefail
@@ -141,6 +145,45 @@ echo "[§2] A8: push/create failures are loud — empty stdout, fd-2 diagnostic,
   [ "$rc" -eq 2 ] && [ -z "$out" ] && grep -q 'PR create failed' "$D/err" 2>/dev/null \
     && ok "rc-0-but-empty-url create surfaces as a create failure" \
     || bad "empty-url create must fail loud (rc=$rc, out=[$out], err: $(cat "$D/err" 2>/dev/null))"
+) || true
+
+# ===========================================================================
+# §2b: single-source-of-truth wiring (FR-69, reuse #5) — the push/create CLI
+# invocations live ONLY in _publish_pr; all three mode sites delegate to it
+# and keep their mode-specific bookkeeping: sequential report wording derived
+# from the helper's rc (the shared contract), combined loud report lines,
+# the parallel subshell's PARPUBLISH:: marker rendered by the reporting loop,
+# and the stacked-PR base still origin/-stripped at the sequential call site
+# (the TDD's elephant — the helper stays mode-agnostic).
+echo "[§2b] wiring: one publish CLI site; three thin _publish_pr callers with mode wording"
+( cnt() { grep -cF "$1" "$IMPL"; }
+  [ "$(cnt 'git push -u origin')" = "1" ] \
+    && ok "git push CLI appears exactly once (inside _publish_pr)" \
+    || bad "expected exactly 1 'git push -u origin' in implement.sh (got $(cnt 'git push -u origin'))"
+  [ "$(cnt 'gh pr create --base')" = "1" ] \
+    && ok "gh pr create CLI appears exactly once (inside _publish_pr)" \
+    || bad "expected exactly 1 'gh pr create --base' in implement.sh (got $(cnt 'gh pr create --base'))"
+  [ "$(cnt '$(_publish_pr ')" = "3" ] \
+    && ok "all three mode sites call _publish_pr" \
+    || bad "expected 3 _publish_pr call sites (got $(cnt '$(_publish_pr '))"
+  grep -qF 'pbase="${prev#origin/}"' "$IMPL" \
+    && ok "sequential caller still strips origin/ from the stacked base" \
+    || bad "the origin/ strip must stay at the sequential call site"
+  grep -qF '_publish_pr "$branch" "$pbase" "$log"' "$IMPL" \
+    && ok "sequential site passes the stripped base to the helper" \
+    || bad "sequential site must pass \$pbase to _publish_pr"
+  grep -qF 'pr=", push failed (see log)"' "$IMPL" && grep -qF 'pr=", PR create failed (see log)"' "$IMPL" \
+    && ok "sequential report wording derives from the helper's rc" \
+    || bad "sequential push/create failure wording missing"
+  grep -qF 'Combined PR NOT opened: push failed' "$IMPL" && grep -qF 'Combined PR NOT opened: PR create failed' "$IMPL" \
+    && ok "combined mode reports a publish failure loudly (A8: was swallowed)" \
+    || bad "combined publish-failure report wording missing"
+  grep -qF 'PARPUBLISH::push failed (see log)' "$IMPL" && grep -qF 'PARPUBLISH::PR create failed (see log)' "$IMPL" \
+    && ok "parallel subshell records a publish-failure marker (A8: was swallowed)" \
+    || bad "parallel PARPUBLISH:: failure markers missing"
+  grep -qF "sed -n 's/^PARPUBLISH:://p'" "$IMPL" \
+    && ok "parallel reporting loop renders the publish-failure marker" \
+    || bad "the reporting loop must read PARPUBLISH:: from the log"
 ) || true
 
 echo
