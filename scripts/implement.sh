@@ -197,6 +197,41 @@ _pr_coverage_pointer() {  # <prurl> <log>
   return 0
 }
 
+# _publish_pr <branch> <base> <log> (TDD 0052 / FR-16, FR-19, FR-27; bug A8)
+# The ONE publish path all three modes (sequential / combined / parallel) call:
+# push the build branch, open the PR (--fill, never merge per FR-16), post the
+# TDD 0044 coverage pointer. The push/create CLI invocations and their
+# 2>><log> redirections live ONLY here so the three modes cannot re-diverge
+# (reuse #5); callers keep their mode-specific pr_url recording and report
+# wording, and gate on the same gh-presence check as before (HASGH) — "no
+# gh/remote" stays the tolerated documented path, distinct from "publish
+# attempted and failed". Failure contract (the sequential site's diagnostics,
+# now the shared default):
+#   push fails        -> "" on stdout, "push failed" diagnostic on fd 2, rc 1
+#   pr create fails   -> "" on stdout, "PR create failed" diagnostic, rc 2
+#     (a create that exits 0 but prints no url is the same failure: an empty
+#      url recorded as success is exactly the A8 false-success shape)
+#   success           -> the PR url on stdout, _pr_coverage_pointer, rc 0
+# Defined above the SOURCE_ONLY guard so the test suite can drive it in
+# isolation.
+_publish_pr() {  # <branch> <base> <log>
+  local branch="${1:-}" base="${2:-}" log="${3:-/dev/null}" url
+  if ! git push -u origin "$branch" >>"$log" 2>&1; then
+    echo ""
+    echo "_publish_pr: push failed for $branch (see $log)" >&2
+    return 1
+  fi
+  url="$(gh pr create --base "$base" --head "$branch" --fill 2>>"$log")" || url=""
+  if [ -z "$url" ]; then
+    echo ""
+    echo "_publish_pr: PR create failed for $branch (base $base; see $log)" >&2
+    return 2
+  fi
+  printf '%s\n' "$url"
+  _pr_coverage_pointer "$url" "$log"   # TDD 0044 / FR-78 — best-effort, rc 0
+  return 0
+}
+
 # THROUGHLINE_SOURCE_ONLY=1 lets the test suite source this script to call
 # helpers in isolation. Runtime side effects (arg parsing, lock, drivers,
 # report) live below the guard; helpers are defined unconditionally above.
@@ -508,7 +543,15 @@ if [ "$PARALLEL" -eq 1 ]; then
       export "${_rkey_export?}"
     fi
     ( cd "$wt" || exit 1
-      install_deps "$abslog"
+      # TDD 0052 §4 (A7): install_deps returns non-zero ONLY on a total
+      # failure (locked AND plain installs both failed) — pre-fix the rc was
+      # discarded and the build ran against missing deps, failing opaquely
+      # downstream. FAIL this TDD loudly (PARSTATUS renders into the report).
+      if ! install_deps "$abslog"; then
+        printf 'PARSTATUS::FAIL (deps-install-failed)\n' >>"$abslog"
+        _terminal_state "$slug" failed "" "deps-install-failed: dependency install failed in the build worktree (see log)"
+        exit 1
+      fi
       # TDD 0011 / BLOCKER-1: resume inside the subshell so git context is
       # the worktree. BLOCKER-2: refuse-to-resume returns rc=3; emit a
       # report line and skip gate_one for this TDD.
@@ -528,14 +571,17 @@ if [ "$PARALLEL" -eq 1 ]; then
       pre="$(_review_base "$BASE")"
       st="$(gate_one "$tdd" "$pre" "$abslog")"; rc=$?
       printf 'PARSTATUS::%s\n' "$st" >>"$abslog"
+      # TDD 0052 §2 (A8): publish via the single _publish_pr path. A push or
+      # PR-create failure writes a PARPUBLISH:: marker the reporting loop
+      # renders into the per-TDD report line — pre-fix this mode silently
+      # swallowed both failures (a feature whose PR never opened read as OK).
       if [ "$rc" -eq 0 ] && [ "$HASGH" -eq 1 ]; then
-        if git push -u origin "feat/$slug" >>"$abslog" 2>&1; then
-          prurl="$(gh pr create --base "$BASE" --head "feat/$slug" --fill 2>>"$abslog")"
-          if [ -n "$prurl" ]; then
-            set_tdd_meta "$slug" "pr_url=$prurl"
-            _pr_coverage_pointer "$prurl" "$abslog"   # TDD 0044 / FR-78
-          fi
-        fi
+        prurl="$(_publish_pr "feat/$slug" "$BASE" "$abslog" 2>>"$abslog")"; prc=$?
+        case "$prc" in
+          0) set_tdd_meta "$slug" "pr_url=$prurl" ;;
+          1) printf 'PARPUBLISH::push failed (see log)\n' >>"$abslog" ;;
+          *) printf 'PARPUBLISH::PR create failed (see log)\n' >>"$abslog" ;;
+        esac
       fi ) &
     pids+=("$!")
   done
@@ -548,7 +594,9 @@ if [ "$PARALLEL" -eq 1 ]; then
     # a duplicate UNKNOWN line (no subshell ran, so no PARSTATUS exists).
     [ -n "${BRANCH_MISSING[$slug]:-}" ] && continue
     st="$(sed -n 's/^PARSTATUS:://p' "$log" 2>/dev/null | tail -1)"
-    echo "- $slug — ${st:-UNKNOWN (see log)} (branch feat/$slug, log: $log)" >>"$REPORT"; done
+    # TDD 0052 §2 (A8): surface a publish failure the subshell recorded.
+    pub="$(sed -n 's/^PARPUBLISH:://p' "$log" 2>/dev/null | tail -1)"
+    echo "- $slug — ${st:-UNKNOWN (see log)} (branch feat/$slug${pub:+, $pub}, log: $log)" >>"$REPORT"; done
   { echo; echo "Parallel: one PR per feat/* (if gh+remote). Review & merge each, then 'git worktree remove'."; } >>"$REPORT"
 
 else
@@ -568,9 +616,19 @@ else
     exit 1
   fi
   cd "$WORKROOT" || { echo "FATAL: cannot enter worktree $WORKROOT" | tee -a "$REPORT" >&2; exit 1; }
-  install_deps "$LOGDIR/worktree-setup.log"
 
-  if [ "$COMBINED" -eq 1 ]; then
+  if ! install_deps "$LOGDIR/worktree-setup.log"; then
+    # TDD 0052 §4 (A7): a total dependency-install failure (locked AND plain
+    # installs both failed) used to be discarded here; the build then ran
+    # against missing deps and failed opaquely downstream. The shared worktree
+    # serves every queued TDD, so FAIL them all with a clear cause and skip
+    # both mode drivers — control falls through to the worktree removal and
+    # run-state finalization below.
+    echo "- run — FAIL (deps-install-failed: dependency install failed in the build worktree; log: $LOGDIR/worktree-setup.log)" >>"$REPORT"
+    for tdd in "${TDDS[@]}"; do
+      _terminal_state "$(basename "$tdd" .md)" failed "" "deps-install-failed: dependency install failed in the build worktree (see worktree-setup.log)"
+    done
+  elif [ "$COMBINED" -eq 1 ]; then
     cb="$(combined_built_branch)"
     if [ -n "$cb" ]; then
       echo "- combined set already built on $cb (awaiting your merge); skipped. Use --rebuild to force." >>"$REPORT"
@@ -580,9 +638,25 @@ else
         set_tdd_meta  "$slug" "branch=$cb"
       done
     else
-    git checkout -b "$CHANGE" "$BASE" >>"$REPORT" 2>&1 || git checkout "$CHANGE" >>"$REPORT" 2>&1
-    blocked=0; paused_halt=0
+    # TDD 0052 §3 (A6): the worktree was created --detach, so a failed
+    # checkout here (create, then the resume fallback) would leave the whole
+    # combined build committing onto a detached HEAD — pre-fix the rc was
+    # silently swallowed and the run proceeded. FAIL every queued TDD with a
+    # clear cause and skip the build loop (mirrors the sequential driver's
+    # branch-op guard).
+    co_failed=0
+    if ! git checkout -b "$CHANGE" "$BASE" >>"$REPORT" 2>&1 && ! git checkout "$CHANGE" >>"$REPORT" 2>&1; then
+      co_failed=1
+      echo "- combined — FAIL (combined-checkout-failed: could not create or enter branch '$CHANGE' off '$BASE'; refusing to build on a detached HEAD)" >>"$REPORT"
+      for tdd in "${TDDS[@]}"; do
+        _terminal_state "$(basename "$tdd" .md)" failed "" "combined-checkout-failed: could not create or enter branch $CHANGE"
+      done
+    fi
+    blocked="$co_failed"; paused_halt=0
     for tdd in "${TDDS[@]}"; do slug="$(basename "$tdd" .md)"; log="$LOGDIR/$slug.log"
+      # TDD 0052 §3 (A6): a failed checkout already FAILed the queue above —
+      # never run a gate on a detached HEAD ($blocked=1 suppresses the PR push).
+      [ "$co_failed" -eq 1 ] && break
       # Paused-halt: TDD 0011 / FR-41 — a paused TDD halts the run cleanly
       # but does NOT mark downstream as BLOCKED (which would lie about the
       # downstream's state). Just stop iterating; resume will pick up here.
@@ -629,14 +703,17 @@ else
     if [ "${paused_halt:-0}" -eq 1 ]; then
       echo "Combined run paused (≥1 TDD halted at a recoverable gate). NOT pushing and NOT opening a PR; resume with /implement." >>"$REPORT"
     elif [ "$blocked" -eq 0 ] && [ "$HASGH" -eq 1 ]; then
-      if git push -u origin "$CHANGE" >>"$REPORT" 2>&1; then
-        prurl="$(gh pr create --base "$BASE" --head "$CHANGE" --fill 2>>"$REPORT")"
-        if [ -n "$prurl" ]; then
+      # TDD 0052 §2 (A8): publish via the single _publish_pr path — pre-fix a
+      # push/create failure here was silently swallowed (success reported).
+      prurl="$(_publish_pr "$CHANGE" "$BASE" "$REPORT" 2>>"$REPORT")"; prc=$?
+      case "$prc" in
+        0)
           echo "Opened ONE combined PR: $prurl (not merged — merging is your gate)." >>"$REPORT"
           for tdd in "${TDDS[@]}"; do set_tdd_meta "$(basename "$tdd" .md)" "pr_url=$prurl"; done
-          _pr_coverage_pointer "$prurl" "$REPORT"   # TDD 0044 / FR-78
-        fi
-      fi
+          ;;
+        1) echo "Combined PR NOT opened: push failed (see output above) — commits are on branch '$CHANGE'; push and open a PR manually." >>"$REPORT" ;;
+        *) echo "Combined PR NOT opened: PR create failed (see output above) — branch '$CHANGE' is pushed; open a PR manually." >>"$REPORT" ;;
+      esac
     elif [ "$HASGH" -ne 1 ]; then echo "gh/remote not available: commits are on branch '$CHANGE'; open a PR manually." >>"$REPORT"; fi
     fi
 
@@ -705,13 +782,15 @@ else
         0)
           pr=""; pbase="${prev#origin/}"   # PR base is a branch name, never origin/<name>
           if [ "$HASGH" -eq 1 ]; then
-            if git push -u origin "$branch" >>"$log" 2>&1; then
-              prurl="$(gh pr create --base "$pbase" --head "$branch" --fill 2>>"$log")"
-              if [ -n "$prurl" ]; then pr=", $prurl"; PR_PLAN+=("$prurl  (base $pbase)")
-                set_tdd_meta "$slug" "pr_url=$prurl"
-                _pr_coverage_pointer "$prurl" "$log"   # TDD 0044 / FR-78
-              else pr=", PR create failed (see log)"; fi
-            else pr=", push failed (see log)"; fi
+            # TDD 0052 §2 (A8): publish via the single _publish_pr path; this
+            # site's failure wording is the contract all three modes share.
+            prurl="$(_publish_pr "$branch" "$pbase" "$log" 2>>"$log")"; prc=$?
+            case "$prc" in
+              0) pr=", $prurl"; PR_PLAN+=("$prurl  (base $pbase)")
+                 set_tdd_meta "$slug" "pr_url=$prurl" ;;
+              1) pr=", push failed (see log)" ;;
+              *) pr=", PR create failed (see log)" ;;
+            esac
           fi
           echo "- $slug — $st (branch $branch$pr, log: $log)" >>"$REPORT"
           prev="$branch"
