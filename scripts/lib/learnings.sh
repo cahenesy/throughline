@@ -3,8 +3,8 @@
 #
 # Two public entry points, both pure functions with no top-level side effects so
 # this module is SOURCED (by implement.sh, after state.sh — it reuses state.sh's
-# _read_fragment_findings reader and json_escape writer) and is independently
-# sourceable by the test suite:
+# _read_fragment_findings reader) and is independently sourceable by the test
+# suite:
 #
 #   detect_build_learnings <state_dir> <logdir> <mainrepo>
 #       Mine the per-TDD findings[] (TDD 0021 §6) for RECURRING categorical
@@ -24,8 +24,9 @@
 #       are additive and default to false, so the documented 9-arg call still
 #       works while the skill can pass real flags for TDD 0023.
 #
-# No external dependencies: bash + state.sh readers; JSON via state.sh's
-# json_escape (no jq requirement, matching status.sh's sed-fallback posture).
+# No external dependencies: bash + state.sh readers; JSON via the canonical
+# scripts/lib/json.sh helpers (TDD 0050 — no jq requirement, matching
+# status.sh's sed-fallback posture).
 
 # Source the single source of truth for `## Touched files` parsing (TDD 0049 /
 # FR-53) by its SIBLING path. learnings.sh sources standalone (the test suite
@@ -41,6 +42,20 @@ _tf_lib="${BASH_SOURCE[0]%/*}/touched-files.sh"
   return 1 2>/dev/null || exit 1
 }
 unset _tf_lib
+
+# Source the canonical JSON helpers (TDD 0050) the same way: learnings.sh
+# consumes tl_json_array_ws (and, through it, the C0-complete escaper — the A3
+# fix for candidate-learnings.json), so it owns its own source line rather than
+# relying on state.sh having been sourced first. Same FATAL-on-missing + dual
+# `return||exit` idiom; json.sh's include guard makes the double-source under
+# one implement.sh a no-op.
+_jlib="${BASH_SOURCE[0]%/*}/json.sh"
+# shellcheck source=scripts/lib/json.sh
+{ [ -r "$_jlib" ] && . "$_jlib"; } || {
+  echo "FATAL: cannot source $_jlib (partial install or perms)" >&2
+  return 1 2>/dev/null || exit 1
+}
+unset _jlib
 
 # --- small helpers ------------------------------------------------------------
 
@@ -72,18 +87,12 @@ _clip_evidence() {
   printf '%s' "$s" | awk '{ n=split($0,a,/\\n/); out=a[1]; for(i=2;i<=n&&i<=4;i++) out=out "\\n" a[i]; printf "%s", out }'
 }
 
-# Emit a JSON string-array from a space-separated item list. Each item is
-# json_escaped (safe for the raw `## Touched files` paths; a no-op for the
-# already-escaped slugs).
+# Emit a JSON string-array from a space-separated item list. Thin delegate to
+# json.sh's canonical builder (TDD 0050): each item rides the C0-complete
+# escaper (safe for the raw `## Touched files` paths — the A3 fix; a no-op for
+# the already-escaped slugs). Name kept so every caller and test is untouched.
 _json_str_array() {  # <space-separated items>
-  local -a items; read -ra items <<< "${1:-}"
-  local out='[' first=1 it
-  for it in ${items[@]+"${items[@]}"}; do
-    [ -z "$it" ] && continue
-    if [ "$first" -eq 1 ]; then out="$out\"$(json_escape "$it")\""; first=0
-    else out="$out,\"$(json_escape "$it")\""; fi
-  done
-  printf '%s]' "$out"
+  tl_json_array_ws "${1:-}"
 }
 
 # Read one object-per-line out of a findings array literal. Every finding object
