@@ -467,7 +467,11 @@ fi
 ACTIVE=0
 LOCK="$IMPL_ROOT/.run.lock"
 if [ -f "$LOCK" ]; then
-  PID="$(cat "$LOCK" 2>/dev/null)"
+  # TDD 0054 A25: the lock line is `PID <start-token>` — liveness keys on the
+  # FIRST field (a pre-0054 PID-only lock parses identically). `|| true`: a
+  # no-trailing-newline lock still populates PID.
+  PID=""
+  IFS=' ' read -r PID _ < "$LOCK" 2>/dev/null || true
   [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null && ACTIVE=1
 fi
 
