@@ -582,7 +582,20 @@ verify_runtime_one() {  # <tdd> <base-ref> <log>
   record_session_pointer "$log" "$start"
   return "$_rc"   # TDD 0011 / BL-2: preserve claude's exit code
 }
-build_status()          { grep -aoE 'BATCH_RESULT: (OK|FAIL.*|BLOCKED.*)' "$1" 2>/dev/null | tail -1; }
+# build_status — TDD 0056 §2 (NFR-4 / FR-15): read the runner-echoed authored-
+# verdict marker first (column-0, unforgeable — a mirrored stream-json event is
+# a single line starting with `{`, so no tool_result/prose can produce it);
+# fall back to a LINE-ANCHORED bare sentinel for degraded/legacy logs only.
+# The old whole-log substring grep let junk INSIDE a mirrored JSON event win
+# `tail -1` whenever it arrived after the genuine verdict (sentinel-injection
+# incident, run 20260611-181309). Return shape unchanged: a `BATCH_RESULT: …`
+# line or empty.
+build_status() {
+  local m
+  m="$(grep -a '^THROUGHLINE_AUTHORED_VERDICT: BATCH_RESULT: ' "$1" 2>/dev/null | tail -1)"
+  [ -n "$m" ] && { printf '%s\n' "${m#THROUGHLINE_AUTHORED_VERDICT: }"; return 0; }
+  grep -aE '^BATCH_RESULT: (OK|FAIL.*|BLOCKED.*)' "$1" 2>/dev/null | tail -1
+}
 review_status()         { grep -aoE 'REVIEW_RESULT: (PASS|BLOCK.*)' "$1" 2>/dev/null | tail -1; }
 verify_runtime_status() { grep -aoE 'VERIFY_RUNTIME: (PASS|FAIL.*|BLOCKED.*|SKIP.*)' "$1" 2>/dev/null | tail -1; }
 
