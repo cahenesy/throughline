@@ -1307,6 +1307,17 @@ _per_step_review_loop() {  # <slug> <tdd> <log>
             case "$_tail_line" in
               "BATCH_RESULT: "*)
                 if [ "$_build_stdin_closed" -eq 0 ]; then
+                  # TDD 0056 §1 (NFR-4 / FR-15): the loop is the SOLE verdict
+                  # observer — echo the authored verdict it just observed as a
+                  # canonical column-0 marker, verbatim, exactly once (this
+                  # latch), BEFORE the fd closes. Mirrored stream-json events
+                  # are single lines starting with `{` (embedded newlines stay
+                  # JSON-escaped), so no tool_result, prose, or model output
+                  # can ever produce a column-0 marker line — downstream
+                  # consumers (build_status, the narrative-facts extractor)
+                  # read this unforgeable channel line-anchored instead of
+                  # substring-grepping the whole log.
+                  printf 'THROUGHLINE_AUTHORED_VERDICT: %s\n' "$_tail_line" >> "$log"
                   # TDD 0030 §5: commit the final active interval and STOP the clock.
                   build_active_seconds=$((build_active_seconds + $(date +%s) - interval_start))
                   clock_active=0
