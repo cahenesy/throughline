@@ -47,6 +47,20 @@ _md_lib="${BASH_SOURCE[0]%/*}/md.sh"
 }
 unset _md_lib
 
+# Source the canonical JSON helpers DIRECTLY (TDD 0050) — gates.sh consumes
+# tl_json_array itself (_step_block_entry's pattern_tags), so it owns its
+# source line (the same consumer-sources-it rule as md.sh above), not
+# transitively via state.sh. Same SIBLING-path + FATAL-on-missing + dual
+# `return||exit` idiom; json.sh's include guard makes this a no-op when
+# state.sh already pulled it in.
+_jlib="${BASH_SOURCE[0]%/*}/json.sh"
+# shellcheck source=scripts/lib/json.sh
+{ [ -r "$_jlib" ] && . "$_jlib"; } || {
+  echo "FATAL: cannot source $_jlib (partial install or perms)" >&2
+  return 1 2>/dev/null || exit 1
+}
+unset _jlib
+
 # _claude_call <log> <args...> — run a single-shot `claude` call under the child
 # watchdog (TDD 0027 §1 / FR-42). On timeout, GNU `timeout` SIGTERMs the child
 # and ITSELF exits 124 — a code _classify_cause's signal arm does NOT handle (it
@@ -848,19 +862,9 @@ _coproc_write() {  # <fd> <text>
 # site, the _extract_pattern_tags harvest at the model site.
 _step_block_entry() {  # <pass_id> <severity> <tags_csv> <summary>
   local pass_id="$1" severity="$2" tags_csv="${3:-}" summary="${4:-}"
-  local tags_lit t first=1
-  if [ -z "$tags_csv" ]; then
-    tags_lit='[]'
-  else
-    tags_lit='['
-    local IFS=','
-    for t in $tags_csv; do
-      [ -n "$t" ] || continue
-      if [ "$first" -eq 1 ]; then tags_lit+="\"$(json_escape "$t")\""; first=0
-      else tags_lit+=",\"$(json_escape "$t")\""; fi
-    done
-    tags_lit+=']'
-  fi
+  # pattern_tags CSV → array via the canonical builder (TDD 0050).
+  local tags_lit
+  tags_lit="$(tl_json_array "$tags_csv")"
   printf '{"pass_id":"%s","severity":"%s","pattern_tags":%s,"summary":"%s","skipped":false}' \
     "$(json_escape "$pass_id")" "$(json_escape "$severity")" "$tags_lit" "$(json_escape "$summary")"
 }

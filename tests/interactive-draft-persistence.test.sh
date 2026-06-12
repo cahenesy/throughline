@@ -327,11 +327,12 @@ sys.exit(0 if ok else 1)' "$P" \
 ) || true
 
 # --- [R] bash fallback escapes C0 control chars -> valid JSON (equivalence) ----
-# json_escape only handles \ " \n \r \t; other U+0000–U+001F bytes (e.g. 0x01
-# SOH, 0x0b VTAB, 0x0c FF, 0x08 BS) are forbidden raw in a JSON string. The
-# python3-less path must escape them so the cascade stays equivalent: the parsed
-# draft must round-trip the original bytes (a raw 0x7f is legal JSON, so it may
-# stay raw — equivalence is at the parsed-value level, like python's json).
+# U+0000–U+001F bytes (e.g. 0x01 SOH, 0x0b VTAB, 0x0c FF, 0x08 BS) are
+# forbidden raw in a JSON string; the python3-less path escapes them via the
+# canonical C0-complete tl_json_escape (scripts/lib/json.sh, TDD 0050) so the
+# cascade stays equivalent: the parsed draft must round-trip the original
+# bytes (a raw 0x7f is legal JSON, so it may stay raw — equivalence is at the
+# parsed-value level, like python's json).
 echo "[R] bash fallback escapes C0 control characters to valid JSON"
 ( NOPY="$(mk_nopy "$ROOT/nopyR")"
   ctrl="$(printf 'a\001b\013c\014d\010e\177f')"   # SOH VTAB FF BS + a raw DEL

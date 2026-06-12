@@ -16,6 +16,22 @@
 # slice; a future change that wants state.sh as a standalone library would
 # parameterize those instead.
 
+# Source the canonical JSON helpers (TDD 0050): tl_json_escape backs
+# json_escape (the A11 C0 fix), tl_json_array the array literals, and
+# tl_json_field the quote-aware fragment read (A10/A5). Sibling-path resolve is
+# dirname-free (parameter expansion); FATAL on missing per ADR 0006 — a run
+# that continued with the escaper undefined would write exactly the corrupted
+# state this lib exists to prevent. json.sh's include guard makes the
+# double-source under one implement.sh (state.sh + gates.sh + ...) a no-op;
+# the dual `return||exit` idiom is correct sourced or executed (TDD 0049).
+_jlib="${BASH_SOURCE[0]%/*}/json.sh"
+# shellcheck source=scripts/lib/json.sh
+{ [ -r "$_jlib" ] && . "$_jlib"; } || {
+  echo "FATAL: cannot source $_jlib (partial install or perms)" >&2
+  return 1 2>/dev/null || exit 1
+}
+unset _jlib
+
 # --- run-state record (FR-27) --------------------------------------------------
 # A per-run directory of atomic JSON fragments at $LOGDIR/state.d/:
 #   run.json       — run-level rollup + identity
@@ -45,16 +61,20 @@ _validate_field_name() {  # <field-name> — return 0 if safe, 1 otherwise
 _read_fragment_field() {  # <file> <field-name>  -> echoes the value (no quotes)
   local f="$1" k="$2"
   _validate_field_name "$k" || { echo "error: _read_fragment_field rejected unsafe field name '$k'" >&2; return 1; }
-  if grep -q "\"$k\":null" "$f" 2>/dev/null; then printf ''; return 0; fi
   local v
-  v="$(sed -n "s/.*\"$k\":\"\\([^\"]*\\)\".*/\\1/p" "$f" | head -1)"
+  # Quote-aware, unescaping read via the canonical reader (TDD 0050 — the
+  # A10/A5 fix): an embedded \" no longer truncates the value, and the stored
+  # escapes decode back to the original bytes instead of compounding into \\
+  # on the next json_escape write. A null or absent field reads as empty,
+  # matching the old early-return contract.
+  v="$(tl_json_field "$k" < "$f")"
   # TDD 0018 backward-compat shim (§Data): a TDD-0008/0011-shape fragment has no
   # halt_cause field at all. When a new reader asks for halt_cause on such a
   # fragment, fall back to paused_cause so the unified taxonomy still surfaces
   # the carried cause. Only applies when halt_cause is genuinely ABSENT (an
-  # explicit halt_cause:null is honored as empty, matching the early return).
+  # explicit halt_cause:null is honored as empty, matching the null contract).
   if [ -z "$v" ] && [ "$k" = "halt_cause" ] && ! grep -q '"halt_cause":' "$f" 2>/dev/null; then
-    v="$(sed -n 's/.*"paused_cause":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+    v="$(tl_json_field paused_cause < "$f")"
   fi
   printf '%s' "$v"
 }
@@ -135,16 +155,11 @@ _read_fragment_step_blocks() {  # <file>
 
 # Escape a string for safe inclusion as a JSON string value. Free-text fields
 # (note/branch/pr_url/log) ride through this; structural fields are integers or
-# enums so they don't need it.
-json_escape() {
-  local s="${1:-}"
-  s=${s//\\/\\\\}
-  s=${s//\"/\\\"}
-  s=${s//$'\n'/\\n}
-  s=${s//$'\r'/\\r}
-  s=${s//$'\t'/\\t}
-  printf '%s' "$s"
-}
+# enums so they don't need it. Thin delegate to json.sh's canonical C0-complete
+# escaper (TDD 0050 — the A11 fix: the old body passed U+0001–U+001F controls
+# through raw, invalidating the fragment). Name kept so every caller and test
+# is untouched.
+json_escape() { tl_json_escape "${1:-}"; }
 
 # _write_tdd_fragment <slug> <n> <path> <qp> <status> <stage> <started> <updated>
 #                     <branch> <pr_url> <log> <note>
@@ -242,37 +257,11 @@ _write_tdd_fragment() {
   else halt_finding_lit="\"$(json_escape "$halt_finding")\""; fi
   if [ -z "$halt_detail" ]; then halt_detail_lit='null'
   else halt_detail_lit="\"$(json_escape "$halt_detail")\""; fi
-  if [ -z "$gates_csv" ]; then
-    gates_lit='[]'
-  else
-    # Split CSV → JSON string array. Each entry is JSON-escaped.
-    local g entry first=1
-    gates_lit='['
-    local IFS=','; for g in $gates_csv; do
-      if [ -n "$g" ]; then
-        entry="\"$(json_escape "$g")\""
-        if [ "$first" -eq 1 ]; then gates_lit+="$entry"; first=0
-        else gates_lit+=",$entry"; fi
-      fi
-    done
-    gates_lit+=']'
-  fi
-  if [ -z "$halt_actions_csv" ]; then
-    halt_actions_lit='[]'
-  else
-    # Same CSV→array split as gates_completed. Next-action labels are comma-free
-    # by construction (see _next_actions_for_cause), so the split is unambiguous.
-    local a aentry afirst=1
-    halt_actions_lit='['
-    local IFS=','; for a in $halt_actions_csv; do
-      if [ -n "$a" ]; then
-        aentry="\"$(json_escape "$a")\""
-        if [ "$afirst" -eq 1 ]; then halt_actions_lit+="$aentry"; afirst=0
-        else halt_actions_lit+=",$aentry"; fi
-      fi
-    done
-    halt_actions_lit+=']'
-  fi
+  # CSV → JSON string array via the canonical builder (TDD 0050); each entry is
+  # escaped, empty → []. Next-action labels are comma-free by construction (see
+  # _next_actions_for_cause), so the split is unambiguous.
+  gates_lit="$(tl_json_array "$gates_csv")"
+  halt_actions_lit="$(tl_json_array "$halt_actions_csv")"
   if [ -z "$retries_json" ]; then retries_lit='[]'
   else retries_lit="$retries_json"; fi
   # TDD 0019 rework telemetry literals: object → {} default, array → [] default,
@@ -1404,21 +1393,11 @@ _record_cleared_step() {  # <slug> <step-id> <base-sha> <head-sha> <pattern-tags
   # step_id is numeric (the Sequencing item index); guard it so a malformed
   # value cannot corrupt the JSON literal. An empty/non-numeric id collapses to 0.
   case "$step_id" in ''|*[!0-9]*) step_id=0 ;; esac
-  # Build the pattern_tags JSON array from the CSV (comma-free tags by
-  # construction — the reviewer emits short categorical labels).
-  local tags_lit t first=1
-  if [ -z "$tags_csv" ]; then
-    tags_lit='[]'
-  else
-    tags_lit='['
-    local IFS=','; for t in $tags_csv; do
-      if [ -n "$t" ]; then
-        if [ "$first" -eq 1 ]; then tags_lit+="\"$(json_escape "$t")\""; first=0
-        else tags_lit+=",\"$(json_escape "$t")\""; fi
-      fi
-    done
-    tags_lit+=']'
-  fi
+  # Build the pattern_tags JSON array from the CSV via the canonical builder
+  # (TDD 0050; comma-free tags by construction — the reviewer emits short
+  # categorical labels).
+  local tags_lit
+  tags_lit="$(tl_json_array "$tags_csv")"
   local now entry; now=$(date +%s)
   entry="{\"step_id\":$step_id,\"base_sha\":\"$(json_escape "$base_sha")\",\"head_sha\":\"$(json_escape "$head_sha")\",\"pattern_tags\":$tags_lit,\"cleared_at\":$now}"
   # Append to the existing log (bounded; §Data). Splice before the closing
@@ -1620,18 +1599,9 @@ _record_finding() {  # <slug> <source> <pass_id> <severity> <structural> <region
   fi
   case "$region_lines" in ''|*[!0-9]*) region_lines=0 ;; esac
   local struct_lit='false'; [ "$structural" = "true" ] && struct_lit='true'
-  local tags_lit t first=1
-  if [ -z "$tags_csv" ]; then tags_lit='[]'
-  else
-    tags_lit='['
-    local IFS=','; for t in $tags_csv; do
-      if [ -n "$t" ]; then
-        if [ "$first" -eq 1 ]; then tags_lit+="\"$(json_escape "$t")\""; first=0
-        else tags_lit+=",\"$(json_escape "$t")\""; fi
-      fi
-    done
-    tags_lit+=']'
-  fi
+  # pattern_tags CSV → array via the canonical builder (TDD 0050).
+  local tags_lit
+  tags_lit="$(tl_json_array "$tags_csv")"
   local entry
   entry="{\"source\":\"$(json_escape "$source")\",\"pass_id\":\"$(json_escape "$pass_id")\",\"severity\":\"$(json_escape "$severity")\",\"structural\":$struct_lit,\"region\":\"$(json_escape "$region")\",\"region_lines\":$region_lines,\"pattern_tags\":$tags_lit,\"summary\":\"$(json_escape "$summary")\",\"evidence\":\"$(json_escape "$evidence")\",\"addressed_at\":null,\"addressed_by_sha\":null}"
   local existing new
