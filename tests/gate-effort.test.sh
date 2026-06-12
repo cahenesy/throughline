@@ -155,7 +155,7 @@ echo "[§D] resolve_models: default build/review model resolution"
         || bad "$6 (expected MODEL=$4 REVIEW_MODEL=$5; got MODEL=$MODEL REVIEW_MODEL=$REVIEW_MODEL)"
     )
   }
-  check_resolve ""     - - opus sonnet "unset everything → build opus, review sonnet (default pairing)"
+  check_resolve ""     - - fable opus "unset everything → build fable (latest top tier), review opus (prior-gen top tier)"
   check_resolve opus   - - opus sonnet "MODEL=opus → review sonnet (rollback pairing)"
   check_resolve sonnet - - sonnet opus "MODEL=sonnet → review opus (diversity for any non-opus build)"
   check_resolve ""     opus - opus sonnet "THROUGHLINE_BUILD_MODEL=opus + no flag → opus/sonnet (env binding wins over default)"
