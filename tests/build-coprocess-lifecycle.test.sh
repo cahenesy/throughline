@@ -326,6 +326,62 @@ echo "[VP11] bare-line sentinel in a marker-less degraded log parses via the anc
     || bad "fallback should parse the bare-line sentinel (got '$bs')"
 ) || true
 
+# --- [VP12] Clean-exit-no-verdict → return 1; synth-OK fallback is gone ----
+# TDD 0056 §4 (NFR-4 / ADR 0006): a build that exits rc=0 WITHOUT an authored
+# verdict (injection-only log, the VP6 event shape, but a stub that exits
+# instead of blocking) must read as "build did not return OK" — return 1, no
+# fabricated `BATCH_RESULT: OK (synthesized: ...)` line. The harness arms the
+# old fallback's every precondition (STATE_DIR fragment with
+# last_cleared_review_sha == HEAD, clean working tree) to prove the fabricated-
+# verdict path is REMOVED, not merely unarmed.
+
+# install_stub_claude_raw_noblock <bindir> <events-file>
+# Like install_stub_claude_raw but exits 0 immediately after replaying the
+# events (no blocking read) — the clean-exit-no-verdict shape synth-OK guarded.
+install_stub_claude_raw_noblock() {
+  local bindir="$1" events="$2"
+  mkdir -p "$bindir"
+  cat > "$bindir/claude" <<EOF
+#!/usr/bin/env bash
+# Stub claude (clean-exit-no-verdict case). Replays canned events; exits 0.
+cat "$events"
+exit 0
+EOF
+  chmod +x "$bindir/claude"
+  export PATH="$bindir:$PATH"
+}
+
+echo "[VP12] clean exit without an authored verdict → _build_one_gated returns 1, nothing synthesized"
+( D="$ROOT/vp12"; mkdir -p "$D"
+  # Repo in a SUBDIR so the harness's aux files (events, state.d, log) stay
+  # outside the working tree — the old fallback required `git status
+  # --porcelain` empty, and untracked aux files would unarm it vacuously.
+  setup_repo "$D/repo"
+  cat > "$D/events.jsonl" <<'EVENTS'
+{"type":"system","subtype":"init"}
+{"type":"user","message":{"role":"user","content":[{"tool_use_id":"t1","type":"tool_result","content":"# ci-checks.sh — gates the flip on a real check rather than the model's own `BATCH_RESULT: OK`. Done is verified, not asserted."}]}}
+EVENTS
+  install_stub_claude_raw_noblock "$D/bin" "$D/events.jsonl"
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  export THROUGHLINE_BUILD_INTER_EVENT_TIMEOUT=5
+  export TMPL="$D/repo/scripts/build-prompt.md"
+  export STATE_DIR="$D/state.d"; mkdir -p "$STATE_DIR"
+  printf '{"slug":"0001-alpha","last_cleared_review_sha":"%s","cleared_step_log":[]}\n' \
+    "$(git rev-parse HEAD)" > "$STATE_DIR/0001-alpha.json"
+  log="$D/build.log"
+  _build_one_gated "docs/tdd/0001-alpha.md" "$log"; rc=$?
+  bs="$(build_status "$log")"
+  [ -z "$bs" ] \
+    && ok "build_status returns empty on the injection-only log" \
+    || bad "build_status should return empty (got '$bs')"
+  [ "$rc" = "1" ] \
+    && ok "_build_one_gated returns 1 (no verdict = not OK)" \
+    || bad "_build_one_gated should return 1 (got rc=$rc)"
+  grep -aq 'synthesized' "$log" \
+    && bad "log contains a synthesized verdict line (synth-OK fallback still present)" \
+    || ok "log contains NO synthesized line (synth-OK gone)"
+) || true
+
 # --- [VP13] Narrative facts: marker wins the build-verdict-line fact -------
 # TDD 0056 §3 (FR-71 / ADR 0006): _diff_vs_narrative_facts' br extraction is
 # marker-first with the same anchored fallback, so an injected JSON-carried
