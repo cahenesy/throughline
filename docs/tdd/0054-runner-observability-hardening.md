@@ -193,7 +193,7 @@ reviewed work.)
 
 ## Expected diff size
 - `scripts/implement-watch.sh` — 30 lines (WATCH_START gate + unknown emit; ×1.4 shell-script).
-- `scripts/implement.sh` — 35 lines (lock PID+token write + validation + fallback; ×1.4).
+- `scripts/implement.sh` — 72 lines (lock PID+token write + validation + fallback, incl. the fail-safe rationale comments; measured ground truth per FR-71 — the original 35-line estimate priced the logic, not the §Failure-modes commentary).
 - `scripts/status.sh` — 25 lines (arg guards + null map; ×1.4).
 - `scripts/lib/learnings.sh` — 12 lines (numeric guard; ×1.4).
 - `tests/watcher-inactivity-completion.test.sh` — 90 lines (A9 + control; ×1.6 test).
@@ -203,4 +203,4 @@ reviewed work.)
 - `tests/implement-gate.test.sh` — 16 lines (eval registration + AND-chain term; ×1.6 test).
 - `skills/implement/SKILL.md` — 6 lines (first-field lock-read instruction).
 - `.claude-plugin/plugin.json` — 2 lines (version bump).
-Total expected diff: ~409 lines across 11 files. No per-file exception needed.
+Total expected diff: ~448 lines across 11 files. No per-file exception needed.
