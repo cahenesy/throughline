@@ -185,6 +185,30 @@ echo "[a10-roundtrip] a quote-bearing halt_cause_detail round-trips through _rea
     || bad "fragment invalid after carry-forward"
 )
 
+# ============================================================================
+# step 3 — markers.sh delegation: sourcing markers.sh binds json.sh (its
+# minimal-host contract intact — the source is dirname-free), and its two
+# named one-offs are thin delegates: _tl_csv_to_json_array now emits the
+# canonical COMPACT array (the cosmetic ["a", "b"] vs ["a","b"] split ends),
+# _tl_json_escape stays C0-correct through the delegation.
+# ============================================================================
+echo "[markers-delegate] markers.sh sources json.sh; _tl_csv_to_json_array compact; _tl_json_escape C0-safe (Verification §4)"
+(
+  source "$REPO/scripts/lib/markers.sh" 2>/dev/null || { bad "INFRA: could not source markers.sh"; exit 0; }
+  command -v tl_json_escape >/dev/null 2>&1 \
+    && ok "sourcing markers.sh binds tl_json_escape (json.sh pulled in)" \
+    || bad "tl_json_escape undefined after sourcing markers.sh"
+  [ "$(_tl_csv_to_json_array 'a,b')" = '["a","b"]' ] \
+    && ok '_tl_csv_to_json_array emits the canonical compact array' \
+    || bad "_tl_csv_to_json_array not the compact canonical form: $(_tl_csv_to_json_array 'a,b')"
+  val="$(printf 'a\001b')"
+  esc="$(_tl_json_escape "$val")"
+  obj="{\"x\":\"$esc\"}"
+  printf '%s' "$obj" | jq -e . >/dev/null 2>&1 && [ "$(printf '%s' "$obj" | jq -r '.x')" = "$val" ] \
+    && ok "_tl_json_escape stays C0-correct through the delegation" \
+    || bad "_tl_json_escape delegation broke C0 escaping (esc='$esc')"
+)
+
 # --- report ----------------------------------------------------------------
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
