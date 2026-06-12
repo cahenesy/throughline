@@ -294,6 +294,40 @@ echo "[P] /implement skill cross-links /implement-status (TDD 0008 §5 docs)"
     || bad "implement skill should cross-link /implement-status"
 ) || true
 
+echo "[Q] status.sh: --logdir/--max-seconds with no value -> exit 2 + usage, no set -u crash (TDD 0054 A26 / FR-28)"
+( D="$ROOT/q"; mkdir -p "$D"; cd "$D"
+  for flag in --logdir --max-seconds; do
+    out="$(bash "$STATUS" "$flag" 2>&1)"; rc=$?
+    [ "$rc" -eq 2 ] && ok "$flag with no value exits 2" || bad "$flag with no value should exit 2 (got $rc)"
+    printf '%s\n' "$out" | grep -qi 'unbound variable' \
+      && bad "$flag with no value crashed under set -u ($out)" || ok "$flag: no set -u crash"
+    printf '%s\n' "$out" | grep -qi 'usage' \
+      && ok "$flag: diagnostic carries a usage line" || bad "$flag: expected a usage line (got: $out)"
+  done
+) || true
+
+echo "[R] status.sh: jq parser maps a null scalar to empty — sed-path parity, no integer-test crash (TDD 0054 A27 / FR-28)"
+( if command -v jq >/dev/null 2>&1; then
+    D="$ROOT/r"; mkdir -p "$D/state.d"
+    cat > "$D/state.d/run.json" <<EOF
+{"schema":1,"started_at":null,"updated_at":null,"pid":123,"integration_branch":"main","mode":"sequential","change":"ci","logdir":"$D","total":null,"state":"running"}
+EOF
+    cat > "$D/state.d/0001-alpha.json" <<EOF
+{"n":null,"slug":"0001-alpha","path":"docs/tdd/0001-alpha.md","queue_pos":null,"status":"building","stage":"build","started_at":1000,"updated_at":null,"branch":"","pr_url":"","note":""}
+EOF
+    out="$(bash "$STATUS" --logdir "$D" 2>&1)"
+    printf '%s\n' "$out" | grep -qE 'integer (expression )?expected|unbound variable|invalid number' \
+      && bad "jq null scalar leaked into a numeric context ($(printf '%s' "$out" | head -1))" \
+      || ok "no integer-test / set -u / printf crash on null scalars"
+    printf '%s\n' "$out" | grep -qE '0 done */ *0' \
+      && ok "null total renders as 0 (sed-path parity)" || bad "null total should render '0 done / 0'"
+    printf '%s\n' "$out" | grep -qw 'null' \
+      && bad "literal 'null' leaked into the rendered view" || ok "no literal 'null' in the rendered view"
+  else
+    ok "jq absent on this host — A27 is the jq path; sed/python already map null to empty"
+  fi
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"

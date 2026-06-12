@@ -504,7 +504,16 @@ append_accepted_learning() {  # <mainrepo> <class> <files_csv> <tags_csv> <tdds_
   if [ -f "$lm" ]; then
     while IFS=$'\t' read -r bid bcls bfiles; do
       [ -z "$bid" ] && continue
-      bn=$((10#$bid)) 2>/dev/null || bn=0
+      # TDD 0054 A2: guard the id with the numeric predicate BEFORE the 10#
+      # arithmetic — a malformed (non-numeric) id is a bash expansion ABORT that
+      # `|| bn=0` cannot catch (it kills the whole function mid-scan, so accept
+      # fails outright and dedup never reaches later blocks). A malformed id
+      # contributes nothing to numbering; the idempotency match still runs so
+      # the rest of the scan behaves as if the junk block were well-formed.
+      case "$bid" in
+        *[!0-9]*) bn=0 ;;
+        *) bn=$((10#$bid)) ;;
+      esac
       [ "$bn" -gt "$maxnum" ] && maxnum="$bn"
       if [ "$bcls" = "$class" ] && _files_intersect "$bfiles" "$files_space"; then match_id="$bid"; fi
     done <<< "$(_learning_blocks "$lm")"

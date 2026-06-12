@@ -713,6 +713,40 @@ echo "[S33] step_block_log: a skipped:true entry is excluded from mining (a just
   [ ! -f "$D/candidate-learnings.json" ] && ok "skipped:true entry excluded -> class stays below threshold (no surface)" || bad "skipped:true must NOT count toward a class (got: $(cat "$D/candidate-learnings.json" 2>/dev/null))"
 ) || true
 
+echo "[S34] malformed L- id: numbering/idempotency scan skips it, never aborts (TDD 0054 A2 / FR-72)"
+( D="$ROOT/S22"; mkdir -p "$D/docs/tdd"
+  . "$STATE_LIB"; . "$LEARN_LIB"
+  LM="$D/docs/tdd/LEARNINGS.md"
+  cat > "$LM" <<'EOF'
+# Build-phase learnings (accepted) — recurring quality patterns.
+
+## L-xx: hand-edited-junk
+- Pattern class: hand-edited-junk
+- Subject-area hints: files=[src/zz.sh] tags=[junk]
+
+## L-007: evidence-not-grounded
+- Pattern class: evidence-not-grounded
+- Recurred across: 0010-a (first observed run run-000)
+- Subject-area hints: files=[src/old.sh] tags=[evidence-not-grounded]
+EOF
+  # Each append runs in its OWN subshell: the pre-fix defect is a bash
+  # arithmetic-expansion ABORT that would otherwise kill this whole test body
+  # before any bad/ok is recorded (the abort is the bug under test).
+  ( append_accepted_learning "$D" "new-class" "src/n.sh" "new-class" \
+      "0020-n" "major–major" "summary" "evidence" "run-333" ) 2>/dev/null \
+    || bad "append must not abort on a malformed L- id"
+  grep -q '## L-008: new-class' "$LM" 2>/dev/null \
+    && ok "fresh entry numbered after the highest VALID id (L-008)" \
+    || bad "expected ## L-008 (headings: $(grep '^## L-' "$LM" 2>/dev/null | tr '\n' ' '))"
+  ( append_accepted_learning "$D" "evidence-not-grounded" "src/old.sh" "evidence-not-grounded" \
+      "0021-x" "major–major" "summary" "evidence" "run-444" ) 2>/dev/null \
+    || bad "reinforce must not abort on a malformed L- id"
+  n="$(grep -c '^## L-' "$LM" 2>/dev/null)"; n="${n:-0}"
+  [ "$n" = "3" ] && grep -q 'run-444' "$LM" 2>/dev/null \
+    && ok "idempotency dedup still reaches the valid block PAST the malformed one (3 headings, L-007 reinforced)" \
+    || bad "expected 3 headings + run-444 reinforce (got $n: $(grep '^## L-' "$LM" 2>/dev/null | tr '\n' ' '))"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"

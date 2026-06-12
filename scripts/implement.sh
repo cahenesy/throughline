@@ -118,6 +118,67 @@ _reclaim_stale_worktree() {  # <workroot> <report>
   git worktree prune >>"$report" 2>&1
 }
 
+# --- single-run lock identity (TDD 0054 A25 / FR-39) -------------------------
+# The lock stored a bare PID, and staleness was decided by `kill -0` alone — if
+# an unrelated live process had REUSED the dead runner's PID, the lock read as
+# "alive" and wedged ALL future runs until manually removed. The lock line is
+# now `PID <start-token>`; a PID-alive lock whose token MISMATCHES the live
+# process's resolved token is a provably-reused PID -> stale, safe to break.
+# Every can't-verify case fails SAFE (alive): token absent (pre-0054 lock) or
+# no resolver on this host — breaking a legitimately-held lock (two concurrent
+# runs) is the dangerous direction (TDD 0054 §Failure modes). Defined above the
+# SOURCE_ONLY guard so the test suite can drive the decision table in isolation.
+
+# _lock_start_token <pid> — print a stable identity token for a live pid, or
+# nothing when none can be resolved. Fixed priority (deterministic, no new
+# dependency): (1) /proc/<pid>/stat field 22 — start-time jiffies, Linux;
+# (2) `ps -o lstart=` — macOS/BSD, whitespace-stripped to one field; (3) empty.
+_lock_start_token() {  # <pid>
+  local pid="${1:-}" stat token
+  _valid_watch_pid "$pid" || return 0
+  if [ -r "/proc/$pid/stat" ]; then
+    # Read once (norm #6). comm (field 2) may contain spaces/parens — strip
+    # through the LAST ')', then starttime (field 22) is field 20 of the rest.
+    stat="$(cat "/proc/$pid/stat" 2>/dev/null)" || stat=""
+    token="$(printf '%s' "${stat##*)}" | awk '{print $20}')"
+    [ -n "$token" ] && { printf '%s' "$token"; return 0; }
+  fi
+  if command -v ps >/dev/null 2>&1; then
+    token="$(ps -o lstart= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+    [ -n "$token" ] && { printf '%s' "$token"; return 0; }
+  fi
+  return 0
+}
+
+# _run_lock_owner <lockfile> — rc 0 + the owning PID on stdout when the lock is
+# held by a live runner (identity confirmed or unverifiable); rc 1 when it is
+# absent, malformed, dead, or provably reused. The single read feeds BOTH the
+# decision and the caller's refusal message (norm #6).
+_run_lock_owner() {  # <lockfile>
+  local lockfile="${1:-}" pid="" token="" live_token
+  [ -f "$lockfile" ] || return 1
+  # `|| true`: a no-trailing-newline lock still populates pid/token (read rc!=0).
+  IFS=' ' read -r pid token < "$lockfile" 2>/dev/null || true
+  _valid_watch_pid "$pid" || return 1     # empty/garbage/0 -> stale (matches the old `kill -0 ""` reclaim)
+  kill -0 "$pid" 2>/dev/null || return 1  # dead owner -> stale (today's behavior)
+  if [ -n "$token" ]; then
+    live_token="$(_lock_start_token "$pid")"
+    if [ -n "$live_token" ] && [ "$live_token" != "$token" ]; then
+      return 1                            # PID alive but identity differs -> provably reused -> stale
+    fi
+  fi
+  printf '%s' "$pid"                      # match / token absent / no resolver -> fail SAFE: held
+  return 0
+}
+
+# _write_run_lock <lockfile> — stamp this runner's identity (`PID <token>`), or
+# PID-only when no resolver is available (readers fall back to PID liveness).
+_write_run_lock() {  # <lockfile>
+  local lockfile="${1:-}" token
+  token="$(_lock_start_token "$$")"
+  printf '%s%s\n' "$$" "${token:+ $token}" > "$lockfile"
+}
+
 # _pr_coverage_pointer <prurl> <log> (TDD 0044 / FR-78)
 # After a successful `gh pr create --fill`, post a one-line PR COMMENT pointing
 # the human reviewer at the run report's `## Per-requirement coverage` section.
@@ -301,16 +362,17 @@ BLOCKERS_LINES_AT_START="${BLOCKERS_LINES_AT_START:-0}"
 # Single-run lock: a second /implement on the same repo would double-build, so refuse
 # to start while another run is live. This is what lets you keep authoring PRDs/TDDs
 # in your session while a build runs detached — you can't accidentally launch a rival
-# run. The lock is the runner's PID; a dead PID (e.g. after kill -9) is treated as
-# stale and reclaimed. Released on exit (any cause) via the trap.
+# run. The lock is the runner's `PID <start-token>` (TDD 0054 A25); a dead PID
+# (e.g. after kill -9) — or a live PID whose start-token mismatches (a reused
+# PID) — is treated as stale and reclaimed. Released on exit (any cause) via the trap.
 LOCK="$MAINREPO/docs/tdd/.implement-logs/.run.lock"
-if [ -f "$LOCK" ] && kill -0 "$(cat "$LOCK" 2>/dev/null)" 2>/dev/null; then
-  { echo "An /implement run is already in progress (PID $(cat "$LOCK")). Refusing to"
+if _lockpid="$(_run_lock_owner "$LOCK")"; then
+  { echo "An /implement run is already in progress (PID $_lockpid). Refusing to"
     echo "start a second — it would double-build. Wait for it, or if it's stale remove"
     echo "$LOCK and re-run."; } | tee -a "$REPORT" >&2
   exit 1
 fi
-echo "$$" > "$LOCK"
+_write_run_lock "$LOCK" || { echo "FATAL: cannot write the run lock $LOCK" >&2; exit 1; }
 trap 'rm -f "$LOCK"' EXIT
 
 if [ -n "$ONE" ]; then TDDS=("$ONE")

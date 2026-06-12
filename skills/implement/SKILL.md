@@ -108,7 +108,10 @@ that asks.
    would tell the user to resume while the prior runner is still alive,
    and the next launch would be rejected by the single-run lock.
 
-   - Read the lock PID: `LOCKPID="$(cat docs/tdd/.implement-logs/.run.lock 2>/dev/null)"`.
+   - Read the lock PID — the FIRST field only: the lock line is
+     `PID <start-token>` (TDD 0054 A25; a pre-0054 lock is PID-only and
+     parses the same):
+     `LOCKPID="$(awk 'NR==1{print $1}' docs/tdd/.implement-logs/.run.lock 2>/dev/null)"`.
    - If `LOCKPID` is set and `kill -0 "$LOCKPID" 2>/dev/null` succeeds
      (lock alive) AND `--check-paused` still reports a paused fragment,
      wait 2 seconds and re-check. Cap at 3 iterations (total 6 seconds).

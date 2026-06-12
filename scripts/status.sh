@@ -34,13 +34,23 @@
 set -uo pipefail
 
 LOGDIR_ARG=""; FOLLOW=0; FOLLOW_INTERVAL=3; CHECK_PAUSED=0; MAX_SECONDS=""
+# TDD 0054 A26: a value-taking flag with no following value is a clean exit-2
+# usage error, never a `set -u` crash on the unset $2.
+usage_value_error() {  # <flag>
+  echo "status.sh: $1 requires a value argument" >&2
+  echo "usage: status.sh [--logdir <dir>] [--follow [secs]] [--max-seconds <N>] [--check-paused]" >&2
+  exit 2
+}
 while [ $# -gt 0 ]; do case "$1" in
-  --logdir) LOGDIR_ARG="$2"; shift 2 ;;
+  --logdir)
+    [ $# -ge 2 ] || usage_value_error --logdir
+    LOGDIR_ARG="$2"; shift 2 ;;
   --follow)
     FOLLOW=1; shift
     if [ $# -gt 0 ] && printf '%s' "$1" | grep -qE '^[0-9]+$'; then
       FOLLOW_INTERVAL="$1"; shift; fi ;;
   --max-seconds)
+    [ $# -ge 2 ] || usage_value_error --max-seconds
     MAX_SECONDS="$2"
     case "$MAX_SECONDS" in
       ''|*[!0-9]*) echo "status.sh: --max-seconds requires a non-negative integer" >&2; exit 2 ;;
@@ -70,7 +80,10 @@ extract_run() {
   local f="$1"
   case "$PARSER" in
     jq)
-      jq -r '[.mode, .integration_branch, (.started_at|tostring), (.updated_at|tostring), .state, (.total|tostring)] | @tsv' "$f" 2>/dev/null \
+      # TDD 0054 A27: `null|tostring` is the literal string "null" — map a null
+      # scalar to empty (`// ""`) BEFORE tostring, matching the sed/python paths,
+      # so downstream numeric tests see a clean empty/0.
+      jq -r '[.mode, .integration_branch, (.started_at // "" | tostring), (.updated_at // "" | tostring), .state, (.total // "" | tostring)] | @tsv' "$f" 2>/dev/null \
         | tr '\t' "$SEP"
       ;;
     python)
@@ -101,7 +114,9 @@ extract_tdd() {
   local f="$1"
   case "$PARSER" in
     jq)
-      jq -r '[(.n|tostring), .slug, .path, (.queue_pos|tostring), .status, (.stage // ""), (.updated_at|tostring), (.branch // ""), (.pr_url // ""), (.note // ""), (.paused_cause // "")] | @tsv' "$f" 2>/dev/null \
+      # TDD 0054 A27: same null -> empty mapping as extract_run for the numeric
+      # scalars (n, queue_pos, updated_at).
+      jq -r '[(.n // "" | tostring), .slug, .path, (.queue_pos // "" | tostring), .status, (.stage // ""), (.updated_at // "" | tostring), (.branch // ""), (.pr_url // ""), (.note // ""), (.paused_cause // "")] | @tsv' "$f" 2>/dev/null \
         | tr '\t' "$SEP"
       ;;
     python)
@@ -467,7 +482,11 @@ fi
 ACTIVE=0
 LOCK="$IMPL_ROOT/.run.lock"
 if [ -f "$LOCK" ]; then
-  PID="$(cat "$LOCK" 2>/dev/null)"
+  # TDD 0054 A25: the lock line is `PID <start-token>` — liveness keys on the
+  # FIRST field (a pre-0054 PID-only lock parses identically). `|| true`: a
+  # no-trailing-newline lock still populates PID.
+  PID=""
+  IFS=' ' read -r PID _ < "$LOCK" 2>/dev/null || true
   [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null && ACTIVE=1
 fi
 
