@@ -20,6 +20,9 @@
 #      PARPUBLISH:: marker + render, stacked base stripped at the caller)
 #   §3 A6: a combined-mode checkout failure FAILs every queued TDD with a
 #      combined-checkout-failed cause and never builds on the detached HEAD
+#   §4 A7: a total install_deps failure FAILs the affected TDD(s) with a
+#      deps-install-failed cause (sequential shared worktree + parallel
+#      per-TDD worktree) instead of building against missing deps
 #
 # Run: bash tests/gated-implementation.test.sh
 set -uo pipefail
@@ -232,6 +235,64 @@ EOF
   grep -q 'Opened ONE combined PR' "${RPT:-/nonexistent}" 2>/dev/null \
     && bad "a PR must not be opened after a checkout failure" \
     || ok "no PR opened after the checkout failure"
+) || true
+
+# ===========================================================================
+# §4: A7 regression (full runner, npm/claude stubbed) — install_deps returns
+# non-zero ONLY on a total failure (locked AND plain install both failed);
+# pre-fix both drivers discarded that rc and built against missing deps,
+# failing opaquely downstream. The affected TDD(s) must FAIL with a
+# deps-install-failed cause and no build gate may start. THROUGHLINE_SKIP_DEPS
+# is pinned to 0 so an ambient skip cannot mask the install (env-leak guard).
+echo "[§4] A7: total install_deps failure FAILs the TDD with deps-install-failed (both drivers)"
+( D="$ROOT/s4"; mkdir -p "$D/repo/docs/tdd" "$D/bin"
+  cd "$D/repo" || { bad "INFRA: §4 — cd failed"; exit 0; }
+  git init -q; git config user.email t@t.t; git config user.name t
+  printf '# TDD 0001: alpha\nStatus: ready\nPRD refs: 1\nPRD-rev: deadbee\nADR constraints: none\n\n## Approach\nstub\n' > docs/tdd/0001-alpha.md
+  printf '{ "name": "x", "private": true, "version": "0.0.0" }\n' > package.json
+  git add -A; git commit -qm init
+  cat > "$D/bin/npm" <<'EOF'
+#!/usr/bin/env bash
+echo "stub: npm install refused" >&2
+exit 1
+EOF
+  cat > "$D/bin/claude" <<EOF
+#!/usr/bin/env bash
+echo invoked >> "$D/claude.log"
+echo "BATCH_RESULT: FAIL stub build must never run"
+EOF
+  chmod +x "$D/bin/npm" "$D/bin/claude"
+
+  # sequential driver: the shared worktree's install fails -> queue FAILs.
+  THROUGHLINE_SKIP_DEPS=0 PATH="$D/bin:$PATH" CI_CHECKS_TEST_CMD="true" CI_CHECKS_TYPECHECK_CMD="" CI_CHECKS_LINT_CMD="" \
+    bash "$IMPL" --change ci >/dev/null 2>&1
+  RPT="$(ls -t docs/tdd/.implement-logs/*/report.md 2>/dev/null | head -1)"
+  SD="$(dirname "${RPT:-/nonexistent}")/state.d"
+  grep -q 'deps-install-failed' "${RPT:-/nonexistent}" 2>/dev/null \
+    && ok "sequential: report names the deps failure (clear cause)" \
+    || bad "sequential: report must carry deps-install-failed (tail: $(tail -3 "${RPT:-/nonexistent}" 2>/dev/null))"
+  grep -q '"status":"failed"' "$SD/0001-alpha.json" 2>/dev/null && grep -q 'deps-install-failed' "$SD/0001-alpha.json" 2>/dev/null \
+    && ok "sequential: TDD FAILed with the deps-install-failed cause" \
+    || bad "sequential: fragment must be failed + deps-install-failed (got: $(cat "$SD/0001-alpha.json" 2>/dev/null))"
+  [ -e "$D/claude.log" ] \
+    && bad "sequential: build gate ran despite the deps failure" \
+    || ok "sequential: no build gate ran against missing deps"
+
+  # parallel driver: the per-TDD worktree's install fails -> that TDD FAILs.
+  sleep 1   # second-granularity LOGDIR timestamps: force a fresh run dir
+  THROUGHLINE_SKIP_DEPS=0 PATH="$D/bin:$PATH" CI_CHECKS_TEST_CMD="true" CI_CHECKS_TYPECHECK_CMD="" CI_CHECKS_LINT_CMD="" \
+    bash "$IMPL" --parallel --change ci2 >/dev/null 2>&1
+  RPT="$(ls -t docs/tdd/.implement-logs/*/report.md 2>/dev/null | head -1)"
+  SD="$(dirname "${RPT:-/nonexistent}")/state.d"
+  grep -q 'FAIL (deps-install-failed)' "${RPT:-/nonexistent}" 2>/dev/null \
+    && ok "parallel: report line renders the deps failure" \
+    || bad "parallel: report must render FAIL (deps-install-failed) (tail: $(tail -3 "${RPT:-/nonexistent}" 2>/dev/null))"
+  grep -q '"status":"failed"' "$SD/0001-alpha.json" 2>/dev/null && grep -q 'deps-install-failed' "$SD/0001-alpha.json" 2>/dev/null \
+    && ok "parallel: TDD FAILed with the deps-install-failed cause" \
+    || bad "parallel: fragment must be failed + deps-install-failed (got: $(cat "$SD/0001-alpha.json" 2>/dev/null))"
+  [ -e "$D/claude.log" ] \
+    && bad "parallel: build gate ran despite the deps failure" \
+    || ok "parallel: no build gate ran against missing deps"
 ) || true
 
 echo
