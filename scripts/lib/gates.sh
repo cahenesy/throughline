@@ -1430,26 +1430,9 @@ _build_one_gated() {  # <tdd> <log>
   [ "$_rc" -ne 0 ] && return "$_rc"
   bs="$(build_status "$log")"
   case "$bs" in *OK*) return 0 ;; esac
-  # Resume-completion fallback. On resume, when {{CLEARED_STEPS}} already
-  # covers every Sequencing item, the build's reasoning model sometimes treats
-  # the work as already-done and exits with a prose summary instead of emitting
-  # `BATCH_RESULT: OK`. The per-step review path has already vetted every
-  # commit up to last_cleared_review_sha — if that matches the branch HEAD
-  # and the working tree is clean, trust the objective state over the missing
-  # sentinel and synthesize a verdict. Build-prompt's RESUME-COMPLETION CASE
-  # is the belt; this is the suspenders. Empty $bs is the trigger (no FAIL /
-  # BLOCKED sentinel either) — we only synthesize the missing-sentinel case,
-  # never overwrite an explicit FAIL.
-  if [ -z "$bs" ] && [ -n "${STATE_DIR:-}" ] && [ -f "$STATE_DIR/$slug.json" ]; then
-    local cleared_sha head_sha tree_status
-    cleared_sha="$(_read_fragment_field "$STATE_DIR/$slug.json" last_cleared_review_sha 2>/dev/null || true)"
-    head_sha="$(git rev-parse HEAD 2>/dev/null || true)"
-    tree_status="$(git status --porcelain 2>/dev/null || true)"
-    if [ -n "$cleared_sha" ] && [ "$cleared_sha" = "$head_sha" ] && [ -z "$tree_status" ]; then
-      printf 'BATCH_RESULT: OK (synthesized: build exited cleanly without sentinel; last_cleared_review_sha=%s == HEAD, working tree clean)\n' "$cleared_sha" >> "$log"
-      return 0
-    fi
-  fi
+  # Synth-OK fallback removed (TDD 0056 §4): it fabricated a verdict the model
+  # never authored (NFR-4 / ADR 0006) and is unreachable post-#152 — rc=0
+  # requires stdin EOF, which the loop grants only after an authored verdict.
   return 1
 }
 # TDD 0027 §4 / NFR-4: parse the verdict from the log FIRST; only a verdict-less
