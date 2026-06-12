@@ -231,6 +231,23 @@ echo "[learnings-delegate] learnings.sh sources json.sh; _json_str_array delegat
     || bad "C0 item not safely escaped: [$out]"
 )
 
+# ============================================================================
+# step 5 — drafts.sh: the post-processing third escaper (_tl_json_escape_full,
+# which existed only to paper over json_escape's C0 gap) is DELETED; callers
+# use the canonical tl_json_escape directly. The fallback writers' behavior is
+# pinned by the interactive-draft-persistence eval (its [R] C0 case).
+# ============================================================================
+echo "[drafts-canonical] drafts.sh drops its third escaper; tl_json_escape is the one escaper (Verification §5, FR-46)"
+(
+  source "$REPO/scripts/lib/drafts.sh" 2>/dev/null || { bad "INFRA: could not source drafts.sh"; exit 0; }
+  command -v tl_json_escape >/dev/null 2>&1 \
+    && ok "sourcing drafts.sh binds tl_json_escape (json.sh in the chain)" \
+    || bad "tl_json_escape undefined after sourcing drafts.sh"
+  command -v _tl_json_escape_full >/dev/null 2>&1 \
+    && bad "_tl_json_escape_full still defined (third escaper not deleted)" \
+    || ok "the post-processing third escaper (_tl_json_escape_full) is gone"
+)
+
 # --- report ----------------------------------------------------------------
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
