@@ -786,4 +786,20 @@ if [ -f "$DRR" ]; then
   bash "$DRR" || DRR_FAIL=1
 fi
 
-[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ] && [ "$SMS_FAIL" -eq 0 ] && [ "$PRM_FAIL" -eq 0 ] && [ "$GRM_FAIL" -eq 0 ] && [ "$BRL_FAIL" -eq 0 ] && [ "$SCB_FAIL" -eq 0 ] && [ "$RR_FAIL" -eq 0 ] && [ "$BCL_FAIL" -eq 0 ] && [ "$BO_FAIL" -eq 0 ] && [ "$IDP_FAIL" -eq 0 ] && [ "$RES_FAIL" -eq 0 ] && [ "$CVR_FAIL" -eq 0 ] && [ "$HRS_FAIL" -eq 0 ] && [ "$SHR_FAIL" -eq 0 ] && [ "$BPL_FAIL" -eq 0 ] && [ "$BDN_FAIL" -eq 0 ] && [ "$IDISC_FAIL" -eq 0 ] && [ "$ERC_FAIL" -eq 0 ] && [ "$SCP_FAIL" -eq 0 ] && [ "$IMR_FAIL" -eq 0 ] && [ "$RVR_FAIL" -eq 0 ] && [ "$WIC_FAIL" -eq 0 ] && [ "$RTH_FAIL" -eq 0 ] && [ "$TFP_FAIL" -eq 0 ] && [ "$TGR_FAIL" -eq 0 ] && [ "$BRC_FAIL" -eq 0 ] && [ "$CMAP_FAIL" -eq 0 ] && [ "$RLNS_FAIL" -eq 0 ] && [ "$SRG_FAIL" -eq 0 ] && [ "$RTM_FAIL" -eq 0 ] && [ "$MDP_FAIL" -eq 0 ] && [ "$GEF_FAIL" -eq 0 ] && [ "$DRR_FAIL" -eq 0 ]
+# Run the json-helper eval (TDD 0050 / FR-27, FR-39, FR-46, FR-69, FR-72) as
+# part of the same suite so the canonical scripts/lib/json.sh helpers
+# (tl_json_escape C0-complete escaper, tl_json_array/_ws compact builders,
+# tl_json_field quote-aware reader), the five consumers' delegation wiring,
+# and the A11/A3/A10/A5 regressions are regression-gated by ci-checks, not
+# orphaned from the aggregator. Per the TDD 0038 §3 wire-in rule this
+# registration is new gating behavior — its failing wire-in test (the eval's
+# §W dogfood) drove the AND-chain term below red→green before this block
+# landed.
+JSH="$(dirname "$0")/json-helper.test.sh"
+JSH_FAIL=0
+if [ -f "$JSH" ]; then
+  echo
+  bash "$JSH" || JSH_FAIL=1
+fi
+
+[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ] && [ "$SMS_FAIL" -eq 0 ] && [ "$PRM_FAIL" -eq 0 ] && [ "$GRM_FAIL" -eq 0 ] && [ "$BRL_FAIL" -eq 0 ] && [ "$SCB_FAIL" -eq 0 ] && [ "$RR_FAIL" -eq 0 ] && [ "$BCL_FAIL" -eq 0 ] && [ "$BO_FAIL" -eq 0 ] && [ "$IDP_FAIL" -eq 0 ] && [ "$RES_FAIL" -eq 0 ] && [ "$CVR_FAIL" -eq 0 ] && [ "$HRS_FAIL" -eq 0 ] && [ "$SHR_FAIL" -eq 0 ] && [ "$BPL_FAIL" -eq 0 ] && [ "$BDN_FAIL" -eq 0 ] && [ "$IDISC_FAIL" -eq 0 ] && [ "$ERC_FAIL" -eq 0 ] && [ "$SCP_FAIL" -eq 0 ] && [ "$IMR_FAIL" -eq 0 ] && [ "$RVR_FAIL" -eq 0 ] && [ "$WIC_FAIL" -eq 0 ] && [ "$RTH_FAIL" -eq 0 ] && [ "$TFP_FAIL" -eq 0 ] && [ "$TGR_FAIL" -eq 0 ] && [ "$BRC_FAIL" -eq 0 ] && [ "$CMAP_FAIL" -eq 0 ] && [ "$RLNS_FAIL" -eq 0 ] && [ "$SRG_FAIL" -eq 0 ] && [ "$RTM_FAIL" -eq 0 ] && [ "$MDP_FAIL" -eq 0 ] && [ "$GEF_FAIL" -eq 0 ] && [ "$DRR_FAIL" -eq 0 ] && [ "$JSH_FAIL" -eq 0 ]

@@ -128,12 +128,12 @@ tl_draft_read() {
   cat "$p"
 }
 
-# The C0-completion escaper that used to live here (_tl_json_escape_full,
-# layered over json_escape's pre-TDD-0050 gap) is DELETED: tl_json_escape
-# (scripts/lib/json.sh) is C0-complete, so the python3-less fallback writers
-# below call it directly and stay equivalent (at the parsed-value level) to
-# what the python3 path's json.dump emits. DEL (0x7f) is legal raw in JSON and
-# both leave it raw, so content still round-trips byte-for-byte.
+# The C0-completion escaper that used to live here (layered over the escaper
+# gap json.sh closed in TDD 0050) is DELETED: tl_json_escape is C0-complete,
+# so the python3-less fallback writers below call it directly and stay
+# equivalent (at the parsed-value level) to what the python3 path's json.dump
+# emits. DEL (0x7f) is legal raw in JSON and both leave it raw, so content
+# still round-trips byte-for-byte.
 
 # tl_draft_append_elicit <skill-name> <kind> <header> <question> <answer>
 # — atomically append one entry to interview[] with the current epoch as ts and
