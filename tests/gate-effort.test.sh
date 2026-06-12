@@ -15,7 +15,7 @@
 #   §3 behavioral: a stubbed `claude` records argv — runtime-verify on a
 #      mechanical plan (model sonnet) receives `--effort high`
 #   §D default-model resolution (TDD 0057): resolve_models pairing,
-#      rollback arm, overrides
+#      rollback arm, overrides; rework-model chain + cross-site agreement
 #   §W dogfood: the eval is wired into the aggregator and propagates failure
 #
 # Run: bash tests/gate-effort.test.sh
@@ -160,6 +160,47 @@ echo "[§D] resolve_models: default build/review model resolution"
   check_resolve sonnet - - sonnet opus "MODEL=sonnet → review opus (diversity for any non-opus build)"
   check_resolve ""     opus - opus sonnet "THROUGHLINE_BUILD_MODEL=opus + no flag → opus/sonnet (env binding wins over default)"
   check_resolve sonnet - haiku sonnet haiku "THROUGHLINE_REVIEW_MODEL=haiku → review haiku (explicit override wins over derivation)"
+
+  # check_rework <MODEL-in|-> <REWORK-env|-> <want-model> <label> — drives the
+  # rework-model resolution chain (override → build model → latest-tier
+  # literal; ADR 0008's substance) at _rework_config_json, the run.json
+  # snapshot site. gates.sh's two usage sites carry the IDENTICAL pinned
+  # expression — the cross-site agreement check below guards that.
+  check_rework() {
+    ( if [ "$1" != "-" ]; then MODEL="$1"; else unset MODEL; fi
+      if [ "$2" != "-" ]; then export THROUGHLINE_REWORK_MODEL="$2"; else unset THROUGHLINE_REWORK_MODEL; fi
+      out="$(_rework_config_json)"
+      printf '%s' "$out" | grep -q "\"model\":\"$3\"" \
+        && ok "$4" || bad "$4 (expected rework model $3; got: $out)"
+    )
+  }
+  check_rework -    -      fable  "rework chain: unset everything → fable (follows the build default)"
+  check_rework opus -      opus   "rework chain: MODEL=opus → opus (rework follows the build model, ADR 0008)"
+  check_rework opus sonnet sonnet "rework chain: THROUGHLINE_REWORK_MODEL=sonnet → sonnet (explicit override wins)"
+) || true
+
+# The rework default is rebound at THREE sites that must carry the IDENTICAL
+# expression by design (a shared helper across the two independently-sourced
+# libs would couple their load order for two literals); this mechanical
+# agreement check guards the drift shape (TDD 0057, the TDD 0049
+# parser-agreement pattern).
+echo "[§D] rework-default expression: three-site verbatim agreement (gates.sh ×2, state.sh ×1)"
+( G="$REPO/scripts/lib/gates.sh"; S="$REPO/scripts/lib/state.sh"
+  # rc-distinct: an unreadable file is INFRA, not a text-absent failure.
+  [ -r "$G" ] || { bad "INFRA: cannot read $G"; exit 0; }
+  [ -r "$S" ] || { bad "INFRA: cannot read $S"; exit 0; }
+  EXPR='${THROUGHLINE_REWORK_MODEL:-${MODEL:-fable}}'
+  ng="$(grep -cF -- "$EXPR" "$G")"
+  ns="$(grep -cF -- "$EXPR" "$S")"
+  [ "$ng" = "2" ] && ok "gates.sh carries the pinned expression at exactly its 2 usage sites" \
+    || bad "gates.sh: expected the pinned rework-default expression at exactly 2 sites, got $ng"
+  [ "$ns" = "1" ] && ok "state.sh carries the pinned expression at exactly its 1 snapshot site" \
+    || bad "state.sh: expected the pinned rework-default expression at exactly 1 site, got $ns"
+  if grep -qF -- 'THROUGHLINE_REWORK_MODEL:-opus' "$G" "$S"; then
+    bad "a stale product-literal rework default (:-opus) remains in gates.sh/state.sh"
+  else
+    ok "no stale product-literal rework default remains"
+  fi
 ) || true
 
 # ===========================================================================

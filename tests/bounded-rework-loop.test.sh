@@ -38,14 +38,28 @@ echo "[A1] _rework_config_json emits the four §6 knobs with defaults"
 ( D="$ROOT/A1"; mkdir -p "$D/state.d"
   export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
   export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
-  # This case observes the DEFAULT resolution (TDD 0043 §1); a runner-inherited
-  # THROUGHLINE_REWORK_MODEL override would poison it, so drop it explicitly.
-  unset THROUGHLINE_REWORK_MODEL
+  # This case observes the DEFAULT resolution chain (override → build model →
+  # latest-tier literal; ADR 0008 / TDD 0057); a runner-inherited
+  # THROUGHLINE_REWORK_MODEL override or a leaked MODEL would poison it, so
+  # drop both explicitly.
+  unset THROUGHLINE_REWORK_MODEL MODEL
   TDDS=()
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
   out="$(_rework_config_json)"
-  printf '%s' "$out" | grep -q '"model":"opus"' \
-    && ok "default model=opus (build model, TDD 0043)" || bad "default rework model should be opus (got: $out)"
+  printf '%s' "$out" | grep -q '"model":"fable"' \
+    && ok "unset everything → model=fable (latest top tier, TDD 0057)" || bad "default rework model should be fable (got: $out)"
+  ( MODEL=opus; unset THROUGHLINE_REWORK_MODEL
+    o="$(_rework_config_json)"
+    printf '%s' "$o" | grep -q '"model":"opus"' \
+      && ok "MODEL=opus → rework on opus (follows the build model, ADR 0008)" \
+      || bad "rework model should follow the build model opus (got: $o)"
+  )
+  ( MODEL=opus; export THROUGHLINE_REWORK_MODEL=sonnet
+    o="$(_rework_config_json)"
+    printf '%s' "$o" | grep -q '"model":"sonnet"' \
+      && ok "THROUGHLINE_REWORK_MODEL=sonnet → sonnet (explicit override wins over the build model)" \
+      || bad "explicit rework-model override should win (got: $o)"
+  )
   printf '%s' "$out" | grep -q '"max":3' \
     && ok "default max=3" || bad "default rework max should be 3 (got: $out)"
   printf '%s' "$out" | grep -q '"scope_floor":60' \
@@ -797,9 +811,11 @@ echo "[E1] single fixable finding → rework ships → re-review PASS → flippe
 ( D="$ROOT/E1"; mkdir -p "$D/state.d"
   export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
   export INTEGRATION="master" CHANGE="ci" LOGDIR="$D" MAINREPO="$D/repo"
-  # Drives the DEFAULT rework model (TDD 0043 §1); drop any runner-inherited
-  # THROUGHLINE_REWORK_MODEL override so the default is what gets observed.
+  # Pin the build model explicitly: this case tests "rework follows the build
+  # model" (ADR 0008 / TDD 0057) without depending on the default literal.
+  # Drop any runner-inherited THROUGHLINE_REWORK_MODEL override.
   unset THROUGHLINE_REWORK_MODEL
+  MODEL=opus
   TDDS=()
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
   setup_loop_repo "$D/repo" || { bad "setup failed"; exit 0; }
@@ -824,16 +840,18 @@ EOF
   F="$STATE_DIR/0099-fix.json"
   [ "$rc" -eq 0 ] && ok "gate_one returns 0 (converged + flipped)" || bad "gate_one should converge (rc=$rc, st=$st)"
   grep -q '"outcome":"shipped"' "$F" 2>/dev/null && ok "rework_log records a shipped attempt" || bad "rework_log should record shipped (got: $(_read_fragment_raw_array "$F" rework_log))"
-  grep -q '"model":"opus"' "$F" 2>/dev/null && ok "rework ran on opus (build model, TDD 0043)" || bad "rework attempt should be model opus"
+  grep -q '"model":"opus"' "$F" 2>/dev/null && ok "rework followed the build model (MODEL=opus, ADR 0008)" || bad "rework attempt should follow the build model (opus)"
 ) || true
 
 echo "[E2] legacy single-line structural=true carries no reason → routes to rework (TDD 0034)"
 ( D="$ROOT/E2"; mkdir -p "$D/state.d"
   export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
   export INTEGRATION="master" CHANGE="ci" LOGDIR="$D" MAINREPO="$D/repo"
-  # Drives the DEFAULT rework model (TDD 0043 §1); drop any runner-inherited
-  # THROUGHLINE_REWORK_MODEL override so the default is what gets observed.
+  # Pin the build model explicitly: this case tests "rework follows the build
+  # model" (ADR 0008 / TDD 0057) without depending on the default literal.
+  # Drop any runner-inherited THROUGHLINE_REWORK_MODEL override.
   unset THROUGHLINE_REWORK_MODEL
+  MODEL=opus
   TDDS=()
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
   setup_loop_repo "$D/repo" || { bad "setup failed"; exit 0; }
@@ -861,7 +879,7 @@ EOF
   F="$STATE_DIR/0099-fix.json"
   [ "$rc" -eq 0 ] && ok "gate_one converges (no-reason structural reworked + flipped)" || bad "no-reason structural should rework + converge (rc=$rc, st=$st)"
   grep -q '"outcome":"shipped"' "$F" 2>/dev/null && ok "rework_log records a shipped attempt" || bad "rework_log should record shipped (got: $(_read_fragment_raw_array "$F" rework_log))"
-  grep -q '"model":"opus"' "$F" 2>/dev/null && ok "rework ran on opus (build model, TDD 0043)" || bad "rework attempt should be model opus"
+  grep -q '"model":"opus"' "$F" 2>/dev/null && ok "rework followed the build model (MODEL=opus, ADR 0008)" || bad "rework attempt should follow the build model (opus)"
   ! grep -q '"halt_cause":"structural-finding"' "$F" 2>/dev/null && ok "did NOT escalate structural-finding (no named reason)" || bad "no-reason structural must not escalate (got halt_cause structural-finding)"
 ) || true
 
