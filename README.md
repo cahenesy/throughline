@@ -210,13 +210,19 @@ throughline/
 │   ├── lib/
 │   │   ├── state.sh             # per-TDD / per-run JSON state-fragment I/O
 │   │   ├── pause-retry.sh       # pause/retry classification (rate-limit, transient, usage-limit)
-│   │   ├── gates.sh             # gate executors: build / verify / runtime-verify / review
+│   │   ├── gates.sh             # gate executors: build / verify / runtime-verify / review (+ the authored-verdict channel)
 │   │   ├── resume.sh            # resume orchestration: re-enter paused state, pick gates to re-run
 │   │   ├── tdd-lint.sh          # mechanical pre-pass: structural lint + placeholder + traceability; --bounds runs the TDD-scope checks (doc size / per-file diff / touched-file count)
 │   │   ├── plan-classifier.sh   # mechanical / nontrivial verification-plan heuristic (model tiering)
-│   │   └── learnings.sh         # recurring-pattern detection over per-TDD findings + accepted-learning persistence to docs/tdd/LEARNINGS.md
+│   │   ├── learnings.sh         # recurring-pattern detection over per-TDD findings + accepted-learning persistence to docs/tdd/LEARNINGS.md
+│   │   ├── json.sh              # single-source JSON helpers: tl_json_escape + tl_json_field (quote-aware reads)
+│   │   ├── md.sh                # unified fence-aware markdown section/bullet parsers
+│   │   ├── touched-files.sh     # the one Touched-files extractor every consumer delegates to
+│   │   ├── drafts.sh            # interview draft persistence (per-elicitation crash safety)
+│   │   └── markers.sh / repo-id.sh / gitignore.sh   # bootstrap markers + repo identity + managed ignore rules
 │   ├── build-prompt.md          # build discipline; delegates to superpowers:test-driven-development
 │   ├── build-norms.md           # enumerated FR-74 defensive-coding norms; rendered into the build prompt + reinforced on a per-step BLOCK
+│   ├── rework-prompt.md         # bounded-rework authoring prompt (single-finding scope)
 │   ├── review-prompt.md         # review gate: pr-review-toolkit + security-reviewer, separate process/model
 │   ├── ci-checks.sh                # mechanical gate: tests + typecheck + lint (CI's job)
 │   ├── verify-runtime-prompt.md # runtime-verification gate: drive + observe the real artifact
@@ -236,8 +242,10 @@ throughline/
 │   ├── bounded-rework-loop.test.sh        # eval: in-invocation rework + budget
 │   ├── halt-taxonomy.test.sh              # eval: closed cause enum + one-screen context
 │   ├── severity-honest-reporting.test.sh  # eval: severity tags + diff-grounded report + author self-review + per-file coverage
-│   ├── build-phase-learnings.test.sh      # eval: recurring-pattern detection + watcher liveness + LEARNINGS.md persistence
-│   └── accepted-learnings-inform-tdd-author.test.sh # eval: /tdd-author reads LEARNINGS.md + scope-matched advisory surfacing
+│   ├── build-phase-learning-capture.test.sh # eval: recurring-pattern detection + watcher liveness + LEARNINGS.md persistence
+│   ├── learnings-inform-tdd-author.test.sh  # eval: /tdd-author reads LEARNINGS.md + scope-matched advisory surfacing
+│   ├── build-coprocess-lifecycle.test.sh    # eval: authored-verdict channel — injected/prose sentinels never end a build or pass the gate
+│   └── … (a selection — ~49 eval files total; implement-gate.test.sh is the aggregator that runs them all)
 └── hooks/{hooks.json, format-and-lint.sh, throughline-session-reconcile.sh}
 ```
 
@@ -258,9 +266,13 @@ On-demand code review is delegated to the official plugins — use the built-in
 
 ## How the build gate works
 
-`/implement` does **not** trust a build's self-reported `BATCH_RESULT: OK`. A TDD
-flips to `implemented` only after **four independent gates**, each in its own
-process:
+`/implement` does **not** trust a build's self-reported `BATCH_RESULT: OK`. The
+verdict itself is **authenticated**: the runner honors only an assistant-authored,
+final-line sentinel — observed once and echoed to a runner-written, line-anchored
+marker that downstream parsing reads — so sentinel text that merely appears inside
+a file the build read, a tool's output, or mid-message prose can neither end the
+build nor pass the gate. On top of that, a TDD flips to `implemented` only after
+**four independent gates**, each in its own process:
 
 1. **Failing-test-first** — a `test(failing):` commit must precede the
    implementation (mechanical, read straight from git history; the build follows
@@ -373,6 +385,12 @@ Findings are graded and reports are grounded:
   carries actual file list, line counts, the scope-bound check result, and the
   per-TDD verdict trail (every gate outcome, every rework attempt). What
   changed is what the diff says changed.
+- **Per-requirement coverage map.** The report (and the PR body) maps every
+  requirement in the TDD's scope to its delivery evidence — `pinned` with a
+  test citation, or an honest `unverified-gap` naming what's missing. It is
+  advisory for the *human* reviewer (the four gates stay the sole automatic
+  flip authority), and it is the net that catches what gates structurally
+  can't — e.g. scope that was designed but never delivered.
 
 ## Build-phase learning capture
 
