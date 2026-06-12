@@ -543,7 +543,15 @@ if [ "$PARALLEL" -eq 1 ]; then
       export "${_rkey_export?}"
     fi
     ( cd "$wt" || exit 1
-      install_deps "$abslog"
+      # TDD 0052 §4 (A7): install_deps returns non-zero ONLY on a total
+      # failure (locked AND plain installs both failed) — pre-fix the rc was
+      # discarded and the build ran against missing deps, failing opaquely
+      # downstream. FAIL this TDD loudly (PARSTATUS renders into the report).
+      if ! install_deps "$abslog"; then
+        printf 'PARSTATUS::FAIL (deps-install-failed)\n' >>"$abslog"
+        _terminal_state "$slug" failed "" "deps-install-failed: dependency install failed in the build worktree (see log)"
+        exit 1
+      fi
       # TDD 0011 / BLOCKER-1: resume inside the subshell so git context is
       # the worktree. BLOCKER-2: refuse-to-resume returns rc=3; emit a
       # report line and skip gate_one for this TDD.
@@ -608,9 +616,19 @@ else
     exit 1
   fi
   cd "$WORKROOT" || { echo "FATAL: cannot enter worktree $WORKROOT" | tee -a "$REPORT" >&2; exit 1; }
-  install_deps "$LOGDIR/worktree-setup.log"
 
-  if [ "$COMBINED" -eq 1 ]; then
+  if ! install_deps "$LOGDIR/worktree-setup.log"; then
+    # TDD 0052 §4 (A7): a total dependency-install failure (locked AND plain
+    # installs both failed) used to be discarded here; the build then ran
+    # against missing deps and failed opaquely downstream. The shared worktree
+    # serves every queued TDD, so FAIL them all with a clear cause and skip
+    # both mode drivers — control falls through to the worktree removal and
+    # run-state finalization below.
+    echo "- run — FAIL (deps-install-failed: dependency install failed in the build worktree; log: $LOGDIR/worktree-setup.log)" >>"$REPORT"
+    for tdd in "${TDDS[@]}"; do
+      _terminal_state "$(basename "$tdd" .md)" failed "" "deps-install-failed: dependency install failed in the build worktree (see worktree-setup.log)"
+    done
+  elif [ "$COMBINED" -eq 1 ]; then
     cb="$(combined_built_branch)"
     if [ -n "$cb" ]; then
       echo "- combined set already built on $cb (awaiting your merge); skipped. Use --rebuild to force." >>"$REPORT"
