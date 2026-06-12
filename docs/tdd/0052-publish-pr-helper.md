@@ -164,10 +164,12 @@ None. An in-file driver helper is not a durable cross-cutting decision.
 ## Touched files
 - `scripts/implement.sh` — `_publish_pr` helper; repoint 3 publish sites (A8); check combined-mode checkout rc (A6); capture install_deps rc (A7).
 - `tests/gated-implementation.test.sh` — publish-failure-surfaced + checkout-fail + deps-fail regressions.
+- `tests/coverage-map.test.sh` — §7 wiring assertion repointed to the consolidated publish path (the pointer is invoked once inside `_publish_pr`, reached from all three sites) — a consolidation side-effect: the old assertion pinned 3 direct pointer call sites.
 - `.claude-plugin/plugin.json` — version bump (build-applied housekeeping).
 
 ## Expected diff size
 - `scripts/implement.sh` — 90 lines (helper ~30 + 3 site rewrites + checkout/deps rc checks; ×1.4 shell-script).
-- `tests/gated-implementation.test.sh` — 110 lines (3 publish-mode cases + checkout + deps regressions, with git/gh stubs; ×1.6 test).
+- `tests/gated-implementation.test.sh` — 330 lines (helper-contract + wiring cases plus full-runner checkout-fail/deps-fail drives needing git/gh/npm/claude stub fixtures; the original 110 underestimated the stub fixtures the runner drives need; ×1.6 test).
+- `tests/coverage-map.test.sh` — 12 lines (§7 wiring assertion repointed; consolidation side-effect).
 - `.claude-plugin/plugin.json` — 2 lines (version bump).
-Total expected diff: ~202 lines across 3 files. No per-file exception needed.
+Total expected diff: ~434 lines across 4 files. No per-file exception needed.
