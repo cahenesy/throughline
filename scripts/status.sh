@@ -34,13 +34,23 @@
 set -uo pipefail
 
 LOGDIR_ARG=""; FOLLOW=0; FOLLOW_INTERVAL=3; CHECK_PAUSED=0; MAX_SECONDS=""
+# TDD 0054 A26: a value-taking flag with no following value is a clean exit-2
+# usage error, never a `set -u` crash on the unset $2.
+usage_value_error() {  # <flag>
+  echo "status.sh: $1 requires a value argument" >&2
+  echo "usage: status.sh [--logdir <dir>] [--follow [secs]] [--max-seconds <N>] [--check-paused]" >&2
+  exit 2
+}
 while [ $# -gt 0 ]; do case "$1" in
-  --logdir) LOGDIR_ARG="$2"; shift 2 ;;
+  --logdir)
+    [ $# -ge 2 ] || usage_value_error --logdir
+    LOGDIR_ARG="$2"; shift 2 ;;
   --follow)
     FOLLOW=1; shift
     if [ $# -gt 0 ] && printf '%s' "$1" | grep -qE '^[0-9]+$'; then
       FOLLOW_INTERVAL="$1"; shift; fi ;;
   --max-seconds)
+    [ $# -ge 2 ] || usage_value_error --max-seconds
     MAX_SECONDS="$2"
     case "$MAX_SECONDS" in
       ''|*[!0-9]*) echo "status.sh: --max-seconds requires a non-negative integer" >&2; exit 2 ;;
