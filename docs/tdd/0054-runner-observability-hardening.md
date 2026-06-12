@@ -177,7 +177,19 @@ None — localized hardening across the runner surface.
 - `scripts/lib/learnings.sh` — numeric-guard the `L-` id numbering scan (A2).
 - `tests/watcher-inactivity-completion.test.sh` — A9 stale-latest + control regressions.
 - `tests/detached-run-recovery.test.sh` — A25 reused-PID + control regressions.
+- `tests/run-progress-visibility.test.sh` — A26/A27 status regressions (the status eval named by Sequencing step 6).
+- `tests/build-phase-learning-capture.test.sh` — A2 malformed `L-` id regression (the learnings eval named by Sequencing step 6).
+- `tests/implement-gate.test.sh` — registration of the new detached-run-recovery eval (Sequencing step 6 "register if new"; TDD 0038 §3 wire-in).
+- `skills/implement/SKILL.md` — the lock-alive race guard reads the lock's FIRST field (A25 lock-format follow-through; the skill is a lock reader).
 - `.claude-plugin/plugin.json` — version bump (build-applied housekeeping).
+
+(Build-applied reconciliation, 2026-06-11: the four entries above the version
+bump were named by Sequencing step 6 / forced by the A25 lock-format change but
+omitted here; declared post-hoc per the per-step review's scope-declaration-gap
+finding. 11 entries exceeds the FR-53 design-time count bound of 8 — justified
+under FR-53's escape clause: five one-bullet folded fixes sharing one theme,
+each touching its own regression suite; splitting now would discard delivered,
+reviewed work.)
 
 ## Expected diff size
 - `scripts/implement-watch.sh` — 30 lines (WATCH_START gate + unknown emit; ×1.4 shell-script).
@@ -185,6 +197,10 @@ None — localized hardening across the runner surface.
 - `scripts/status.sh` — 25 lines (arg guards + null map; ×1.4).
 - `scripts/lib/learnings.sh` — 12 lines (numeric guard; ×1.4).
 - `tests/watcher-inactivity-completion.test.sh` — 90 lines (A9 + control; ×1.6 test).
-- `tests/detached-run-recovery.test.sh` — 90 lines (A25 + controls; ×1.6 test).
+- `tests/detached-run-recovery.test.sh` — 140 lines (A25 + controls + launch-outcome + format/§W sections; ×1.6 test).
+- `tests/run-progress-visibility.test.sh` — 30 lines (A26 + A27 sections; ×1.6 test).
+- `tests/build-phase-learning-capture.test.sh` — 25 lines (A2 regression; ×1.6 test).
+- `tests/implement-gate.test.sh` — 16 lines (eval registration + AND-chain term; ×1.6 test).
+- `skills/implement/SKILL.md` — 6 lines (first-field lock-read instruction).
 - `.claude-plugin/plugin.json` — 2 lines (version bump).
-Total expected diff: ~282 lines across 7 files. No per-file exception needed.
+Total expected diff: ~409 lines across 11 files. No per-file exception needed.
