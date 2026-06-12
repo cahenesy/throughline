@@ -18,6 +18,27 @@ ADR constraints: 0006
 > (state.sh:701, 782, … and resume.sh) through the same `tl_json_field` reader 0050
 > introduced. Re-scope/re-author at that time; the text below is the original
 > full-refactor design.
+>
+> **REVIVAL PREREQUISITES (2026-06-12, post 0050/0052/0054/0056 builds):** the
+> design below is now STALE in three specific ways a full in-place re-author
+> (the sanctioned path for a never-built draft — NOT supersession) must fix:
+> (1) **single-source constraint** — the `_json_field`-in-state.sh component
+> below now CONTRADICTS the json.sh single-source convention 0050 shipped;
+> `tests/json-helper.test.sh` `[single-source]` mechanically fails any
+> `tl_json_*` definition or escaper copy outside `scripts/lib/json.sh`. The
+> re-author must REUSE `tl_json_field` (json.sh), not define a new extractor
+> (and confirm it satisfies this TDD's jq-free parser requirement).
+> (2) **stale survey** — every cited line range (state.sh:688-759 …,
+> resume.sh:32-87, pause-retry.sh:95-141) shifted under 0050's ~114-line
+> state.sh churn (and 0057's state.sh:358 touch); the residual `[^"]*` reader
+> count measured 87 (61 state.sh / 13 resume.sh / 13 pause-retry.sh) on
+> 2026-06-12 vs the 75 documented below. Re-survey mechanically before
+> declaring scope. (3) **PRD-rev** — the PRD has advanced (tier-language pass,
+> d7bc491); bump on revision. UNCHANGED and verified still true on 2026-06-12:
+> `_write_tdd_fragment` still takes 29 positional params, the nine mutators
+> are untouched, and the mutator-inline readers were knowingly left out of
+> 0050's scope — the remaining payoff is intact, and so is the risk calculus
+> that deferred it.
 
 The per-TDD run-state fragment (`state.d/<slug>.json`) is mutated by **nine
 functions** that each open-code the same block: read EVERY carry-forward field
