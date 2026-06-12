@@ -20,44 +20,34 @@ _TL_MARKERS_DIR="$(d="${BASH_SOURCE[0]%/*}"; [ "$d" = "${BASH_SOURCE[0]}" ] && d
 # shellcheck source=./repo-id.sh
 . "$_TL_MARKERS_DIR/repo-id.sh"
 
-# _tl_json_escape <str> — escape <str> into a VALID JSON string body for
-# embedding between the quotes of a JSON string literal. Pure bash, no jq/no
-# external process (the marker WRITE path is contractually jq-free, markers.sh:8).
-# Handles backslash, double-quote, and every C0 control U+0001–U+001F (the five
-# named ones to their short escapes, the rest to \u00XX) so control-char values
-# round-trip instead of corrupting the JSON (FR-74 escaping norm; NFR-4). NUL
-# (U+0000) cannot occur — bash strings cannot hold it — so it needs no handling.
-_tl_json_escape() {
-  local s="$1" cc lit
-  # Backslash FIRST (so pre-existing backslashes are doubled before any escape
-  # sequence below introduces its own), then double-quote.
-  s="${s//\\/\\\\}"
-  s="${s//\"/\\\"}"
-  # The five named C0 controls -> their short JSON escapes.
-  s="${s//$'\b'/\\b}"
-  s="${s//$'\t'/\\t}"
-  s="${s//$'\n'/\\n}"
-  s="${s//$'\f'/\\f}"
-  s="${s//$'\r'/\\r}"
-  # Every remaining C0 control (U+0001–U+001F minus the five above) -> \u00XX.
-  for cc in 01 02 03 04 05 06 07 0b 0e 0f 10 11 12 13 14 15 16 17 18 19 1a 1b 1c 1d 1e 1f; do
-    printf -v lit '%b' "\\x$cc"
-    s="${s//$lit/\\u00$cc}"
-  done
-  printf '%s' "$s"
+# Source the canonical JSON helpers (TDD 0050) from the same sibling dir.
+# json.sh is dependency-free and dirname-free (pure bash + awk), so the
+# minimal-host contract above is preserved — and $_TL_MARKERS_DIR is already
+# resolved without dirname. FATAL on missing per ADR 0006 (running with the
+# escaper undefined would write corrupt markers); the dual `return||exit`
+# idiom is correct sourced or executed (TDD 0049). json.sh's include guard
+# makes a double-source a no-op.
+_jlib="$_TL_MARKERS_DIR/json.sh"
+# shellcheck source=./json.sh
+{ [ -r "$_jlib" ] && . "$_jlib"; } || {
+  echo "FATAL: cannot source $_jlib (partial install or perms)" >&2
+  return 1 2>/dev/null || exit 1
 }
+unset _jlib
 
-# _tl_csv_to_json_array <csv> — turn "a,b,c" into ["a", "b", "c"] (empty -> []).
-_tl_csv_to_json_array() {
-  local csv="$1" out="" first=1 tok
-  [ -n "$csv" ] || { printf '[]'; return 0; }
-  while IFS= read -r tok; do
-    [ -n "$tok" ] || continue
-    if [ "$first" -eq 1 ]; then first=0; else out="$out, "; fi
-    out="$out\"$(_tl_json_escape "$tok")\""
-  done < <(printf '%s\n' "$csv" | tr ',' '\n')   # trailing \n so `read` keeps the last token
-  printf '[%s]' "$out"
-}
+# _tl_json_escape <str> — escape <str> into a VALID JSON string body for
+# embedding between the quotes of a JSON string literal. Thin delegate to
+# json.sh's canonical C0-complete escaper (TDD 0050; its body originated
+# here). Pure bash, no jq/no external process, so the marker WRITE path stays
+# contractually jq-free (markers.sh:8; FR-74 escaping norm; NFR-4). Name kept
+# so every caller and test is untouched.
+_tl_json_escape() { tl_json_escape "${1:-}"; }
+
+# _tl_csv_to_json_array <csv> — turn "a,b,c" into ["a","b","c"] (empty -> []).
+# Thin delegate to json.sh's canonical builder (TDD 0050): output is now the
+# canonical COMPACT form — no space after commas (the parsed value is
+# unchanged; only the cosmetic ["a", "b"] spacing ends here).
+_tl_csv_to_json_array() { tl_json_array "${1:-}"; }
 
 # _tl_now_iso — current time as ISO-8601 UTC, e.g. 2026-05-26T20:30:00Z.
 _tl_now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }

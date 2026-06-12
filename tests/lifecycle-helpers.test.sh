@@ -133,7 +133,7 @@ echo "[markers] repo + local marker read/write"
   grep -Fq '"plugin_version_applied": "3.11.2"' "$f" && grep -Fq '"language": "shell"' "$f" \
     && ok "repo marker records plugin_version_applied + language" \
     || bad "repo marker missing version/language fields"
-  grep -Fq '"repo_steps_applied": ["scaffold", "gitignore", "git_init"]' "$f" \
+  grep -Fq '"repo_steps_applied": ["scaffold","gitignore","git_init"]' "$f" \
     && ok "repo_steps_applied is a JSON array of the csv steps in order" \
     || bad "repo_steps_applied wrong (got: $(grep repo_steps_applied "$f"))"
   grep -Fq '"schema": 1' "$f" && ok "repo marker has integer schema == 1" || bad "repo marker schema wrong"
