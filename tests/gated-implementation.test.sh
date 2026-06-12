@@ -18,6 +18,8 @@
 #      three mode sites are thin delegates keeping mode-specific bookkeeping
 #      (sequential rc→wording, combined loud report lines, parallel
 #      PARPUBLISH:: marker + render, stacked base stripped at the caller)
+#   §3 A6: a combined-mode checkout failure FAILs every queued TDD with a
+#      combined-checkout-failed cause and never builds on the detached HEAD
 #
 # Run: bash tests/gated-implementation.test.sh
 set -uo pipefail
@@ -184,6 +186,52 @@ echo "[§2b] wiring: one publish CLI site; three thin _publish_pr callers with m
   grep -qF "sed -n 's/^PARPUBLISH:://p'" "$IMPL" \
     && ok "parallel reporting loop renders the publish-failure marker" \
     || bad "the reporting loop must read PARPUBLISH:: from the log"
+) || true
+
+# ===========================================================================
+# §3: A6 regression (full runner, git/claude stubbed) — the combined-mode
+# worktree is created --detach, so a failed `git checkout -b $CHANGE` (and its
+# resume fallback) pre-fix left the whole combined build committing onto a
+# detached HEAD, silently. The runner must FAIL every queued TDD with a
+# combined-checkout-failed cause, surface it in the report, and never start a
+# build gate on the detached HEAD.
+echo "[§3] A6: combined checkout failure FAILs the queue; no build on a detached HEAD"
+( D="$ROOT/s3"; mkdir -p "$D/repo/docs/tdd" "$D/bin"
+  cd "$D/repo" || { bad "INFRA: §3 — cd failed"; exit 0; }
+  git init -q; git config user.email t@t.t; git config user.name t
+  for s in 0001-alpha 0002-beta; do
+    printf '# TDD %s\nStatus: ready\nPRD refs: 1\nPRD-rev: deadbee\nADR constraints: none\n\n## Approach\nstub\n' "$s" > "docs/tdd/$s.md"
+  done
+  git add -A; git commit -qm init
+  cat > "$D/bin/git" <<EOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = checkout ]; then echo "stub: checkout refused" >&2; exit 1; fi
+exec "$REALGIT" "\$@"
+EOF
+  cat > "$D/bin/claude" <<EOF
+#!/usr/bin/env bash
+echo invoked >> "$D/claude.log"
+echo "BATCH_RESULT: FAIL stub build must never run"
+EOF
+  chmod +x "$D/bin/git" "$D/bin/claude"
+  PATH="$D/bin:$PATH" CI_CHECKS_TEST_CMD="true" CI_CHECKS_TYPECHECK_CMD="" CI_CHECKS_LINT_CMD="" \
+    bash "$IMPL" --combined --change ci >/dev/null 2>&1
+  RPT="$(ls -t docs/tdd/.implement-logs/*/report.md 2>/dev/null | head -1)"
+  SD="$(dirname "${RPT:-/nonexistent}")/state.d"
+  grep -q 'combined-checkout-failed' "${RPT:-/nonexistent}" 2>/dev/null \
+    && ok "report names the checkout failure (clear cause)" \
+    || bad "report must carry combined-checkout-failed (tail: $(tail -3 "${RPT:-/nonexistent}" 2>/dev/null))"
+  for s in 0001-alpha 0002-beta; do
+    grep -q '"status":"failed"' "$SD/$s.json" 2>/dev/null && grep -q 'combined-checkout-failed' "$SD/$s.json" 2>/dev/null \
+      && ok "$s FAILed with the combined-checkout-failed cause" \
+      || bad "$s fragment must be failed + combined-checkout-failed (got: $(cat "$SD/$s.json" 2>/dev/null))"
+  done
+  [ -e "$D/claude.log" ] \
+    && bad "build gate ran despite the failed checkout (detached-HEAD build)" \
+    || ok "no build gate ran on the detached HEAD"
+  grep -q 'Opened ONE combined PR' "${RPT:-/nonexistent}" 2>/dev/null \
+    && bad "a PR must not be opened after a checkout failure" \
+    || ok "no PR opened after the checkout failure"
 ) || true
 
 echo
