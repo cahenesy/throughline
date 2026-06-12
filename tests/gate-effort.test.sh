@@ -203,6 +203,35 @@ echo "[§D] rework-default expression: three-site verbatim agreement (gates.sh �
   fi
 ) || true
 
+# Prose surfaces speak tiers (TDD 0057 / ADR 0009): concrete product names
+# live ONLY at the runner's resolution points (resolve_models, the rework
+# expression, the FR-52 verify tier); the skill and the plugin description
+# describe the pairing in tier language so they cannot silently go stale when
+# the binding is moved to the next generation.
+echo "[§D] prose surfaces speak tiers (SKILL.md, plugin.json)"
+( SK="$REPO/skills/implement/SKILL.md"; PJ="$REPO/.claude-plugin/plugin.json"
+  # rc-distinct: an unreadable file is INFRA, not a text-absent failure.
+  [ -r "$SK" ] || { bad "INFRA: cannot read $SK"; exit 0; }
+  [ -r "$PJ" ] || { bad "INFRA: cannot read $PJ"; exit 0; }
+  n="$(grep -ciE 'opus|sonnet|fable|haiku' "$SK")"
+  [ "$n" = "0" ] \
+    && ok "SKILL.md names no products (tier language only)" \
+    || bad "SKILL.md still names products on $n line(s): $(grep -inE 'opus|sonnet|fable|haiku' "$SK" | head -2 | tr '\n' ' ')"
+  grep -q 'latest top-tier model' "$SK" \
+    && ok "SKILL.md anchors the build tier (latest top-tier model)" \
+    || bad "SKILL.md is missing the 'latest top-tier model' anchor phrase"
+  grep -q "prior generation's top tier" "$SK" \
+    && ok "SKILL.md anchors the review tier (prior generation's top tier)" \
+    || bad "SKILL.md is missing the prior generation's top tier anchor phrase"
+  m="$(grep -ciE 'opus|sonnet|fable|haiku' "$PJ")"
+  [ "$m" = "0" ] \
+    && ok "plugin.json names no products" \
+    || bad "plugin.json still names products ($m line(s))"
+  grep -q 'latest top-tier model' "$PJ" \
+    && ok "plugin.json description carries 'latest top-tier model'" \
+    || bad "plugin.json description should carry 'latest top-tier model'"
+) || true
+
 # ===========================================================================
 echo "[§W] dogfood: wiring this eval into the aggregator makes its exit go non-zero when the eval fails"
 ( AGG="$REPO/tests/implement-gate.test.sh"
