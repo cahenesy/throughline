@@ -1,5 +1,5 @@
 # TDD 0052: Single PR-publish path (_publish_pr) that surfaces swallowed failures
-Status: draft
+Status: implemented
 PRD refs: FR-16 (opens PRs; never merges); FR-19 (per-TDD report + merge plan); FR-27 (run-state pr_url record); FR-69 (self-compliance with Theme A)
 PRD-rev: 0aa1e28
 ADR constraints: 0006
