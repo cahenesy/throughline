@@ -456,11 +456,15 @@ EOF
   [ "$rc" -eq 0 ] && [ ! -s "$D/gh.log" ] \
     && ok "empty PR url → no gh call, rc 0" || bad "empty url must be a no-op (rc=$rc, gh.log: $(cat "$D/gh.log" 2>/dev/null))"
 
-  # All three PR-creation sites (parallel / combined / sequential) share the
-  # helper — the pointer string stays in sync by construction.
-  n="$(grep -c '_pr_coverage_pointer "\$prurl"' "$IMPL")"
-  [ "$n" = "3" ] && ok "all three gh-pr-create sites invoke the shared pointer helper" \
-    || bad "expected 3 _pr_coverage_pointer call sites in implement.sh (got $n)"
+  # All three PR-creation sites (parallel / combined / sequential) reach the
+  # pointer through the single _publish_pr publish path (TDD 0052), which
+  # invokes it exactly once — still in sync by construction, one layer up.
+  n="$(grep -cF '_pr_coverage_pointer "$url"' "$IMPL")"
+  [ "$n" = "1" ] && ok "the shared _publish_pr path invokes the pointer helper once" \
+    || bad "expected exactly 1 _pr_coverage_pointer invocation inside _publish_pr (got $n)"
+  n="$(grep -cF '$(_publish_pr ' "$IMPL")"
+  [ "$n" = "3" ] && ok "all three publish sites reach the pointer via _publish_pr" \
+    || bad "expected 3 _publish_pr call sites in implement.sh (got $n)"
 ) || true
 
 # ===========================================================================

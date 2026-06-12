@@ -563,14 +563,17 @@ if [ "$PARALLEL" -eq 1 ]; then
       pre="$(_review_base "$BASE")"
       st="$(gate_one "$tdd" "$pre" "$abslog")"; rc=$?
       printf 'PARSTATUS::%s\n' "$st" >>"$abslog"
+      # TDD 0052 §2 (A8): publish via the single _publish_pr path. A push or
+      # PR-create failure writes a PARPUBLISH:: marker the reporting loop
+      # renders into the per-TDD report line — pre-fix this mode silently
+      # swallowed both failures (a feature whose PR never opened read as OK).
       if [ "$rc" -eq 0 ] && [ "$HASGH" -eq 1 ]; then
-        if git push -u origin "feat/$slug" >>"$abslog" 2>&1; then
-          prurl="$(gh pr create --base "$BASE" --head "feat/$slug" --fill 2>>"$abslog")"
-          if [ -n "$prurl" ]; then
-            set_tdd_meta "$slug" "pr_url=$prurl"
-            _pr_coverage_pointer "$prurl" "$abslog"   # TDD 0044 / FR-78
-          fi
-        fi
+        prurl="$(_publish_pr "feat/$slug" "$BASE" "$abslog" 2>>"$abslog")"; prc=$?
+        case "$prc" in
+          0) set_tdd_meta "$slug" "pr_url=$prurl" ;;
+          1) printf 'PARPUBLISH::push failed (see log)\n' >>"$abslog" ;;
+          *) printf 'PARPUBLISH::PR create failed (see log)\n' >>"$abslog" ;;
+        esac
       fi ) &
     pids+=("$!")
   done
@@ -583,7 +586,9 @@ if [ "$PARALLEL" -eq 1 ]; then
     # a duplicate UNKNOWN line (no subshell ran, so no PARSTATUS exists).
     [ -n "${BRANCH_MISSING[$slug]:-}" ] && continue
     st="$(sed -n 's/^PARSTATUS:://p' "$log" 2>/dev/null | tail -1)"
-    echo "- $slug — ${st:-UNKNOWN (see log)} (branch feat/$slug, log: $log)" >>"$REPORT"; done
+    # TDD 0052 §2 (A8): surface a publish failure the subshell recorded.
+    pub="$(sed -n 's/^PARPUBLISH:://p' "$log" 2>/dev/null | tail -1)"
+    echo "- $slug — ${st:-UNKNOWN (see log)} (branch feat/$slug${pub:+, $pub}, log: $log)" >>"$REPORT"; done
   { echo; echo "Parallel: one PR per feat/* (if gh+remote). Review & merge each, then 'git worktree remove'."; } >>"$REPORT"
 
 else
@@ -664,14 +669,17 @@ else
     if [ "${paused_halt:-0}" -eq 1 ]; then
       echo "Combined run paused (≥1 TDD halted at a recoverable gate). NOT pushing and NOT opening a PR; resume with /implement." >>"$REPORT"
     elif [ "$blocked" -eq 0 ] && [ "$HASGH" -eq 1 ]; then
-      if git push -u origin "$CHANGE" >>"$REPORT" 2>&1; then
-        prurl="$(gh pr create --base "$BASE" --head "$CHANGE" --fill 2>>"$REPORT")"
-        if [ -n "$prurl" ]; then
+      # TDD 0052 §2 (A8): publish via the single _publish_pr path — pre-fix a
+      # push/create failure here was silently swallowed (success reported).
+      prurl="$(_publish_pr "$CHANGE" "$BASE" "$REPORT" 2>>"$REPORT")"; prc=$?
+      case "$prc" in
+        0)
           echo "Opened ONE combined PR: $prurl (not merged — merging is your gate)." >>"$REPORT"
           for tdd in "${TDDS[@]}"; do set_tdd_meta "$(basename "$tdd" .md)" "pr_url=$prurl"; done
-          _pr_coverage_pointer "$prurl" "$REPORT"   # TDD 0044 / FR-78
-        fi
-      fi
+          ;;
+        1) echo "Combined PR NOT opened: push failed (see output above) — commits are on branch '$CHANGE'; push and open a PR manually." >>"$REPORT" ;;
+        *) echo "Combined PR NOT opened: PR create failed (see output above) — branch '$CHANGE' is pushed; open a PR manually." >>"$REPORT" ;;
+      esac
     elif [ "$HASGH" -ne 1 ]; then echo "gh/remote not available: commits are on branch '$CHANGE'; open a PR manually." >>"$REPORT"; fi
     fi
 
@@ -740,13 +748,15 @@ else
         0)
           pr=""; pbase="${prev#origin/}"   # PR base is a branch name, never origin/<name>
           if [ "$HASGH" -eq 1 ]; then
-            if git push -u origin "$branch" >>"$log" 2>&1; then
-              prurl="$(gh pr create --base "$pbase" --head "$branch" --fill 2>>"$log")"
-              if [ -n "$prurl" ]; then pr=", $prurl"; PR_PLAN+=("$prurl  (base $pbase)")
-                set_tdd_meta "$slug" "pr_url=$prurl"
-                _pr_coverage_pointer "$prurl" "$log"   # TDD 0044 / FR-78
-              else pr=", PR create failed (see log)"; fi
-            else pr=", push failed (see log)"; fi
+            # TDD 0052 §2 (A8): publish via the single _publish_pr path; this
+            # site's failure wording is the contract all three modes share.
+            prurl="$(_publish_pr "$branch" "$pbase" "$log" 2>>"$log")"; prc=$?
+            case "$prc" in
+              0) pr=", $prurl"; PR_PLAN+=("$prurl  (base $pbase)")
+                 set_tdd_meta "$slug" "pr_url=$prurl" ;;
+              1) pr=", push failed (see log)" ;;
+              *) pr=", PR create failed (see log)" ;;
+            esac
           fi
           echo "- $slug — $st (branch $branch$pr, log: $log)" >>"$REPORT"
           prev="$branch"
