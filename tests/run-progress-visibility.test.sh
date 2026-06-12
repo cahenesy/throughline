@@ -294,6 +294,18 @@ echo "[P] /implement skill cross-links /implement-status (TDD 0008 §5 docs)"
     || bad "implement skill should cross-link /implement-status"
 ) || true
 
+echo "[Q] status.sh: --logdir/--max-seconds with no value -> exit 2 + usage, no set -u crash (TDD 0054 A26 / FR-28)"
+( D="$ROOT/q"; mkdir -p "$D"; cd "$D"
+  for flag in --logdir --max-seconds; do
+    out="$(bash "$STATUS" "$flag" 2>&1)"; rc=$?
+    [ "$rc" -eq 2 ] && ok "$flag with no value exits 2" || bad "$flag with no value should exit 2 (got $rc)"
+    printf '%s\n' "$out" | grep -qi 'unbound variable' \
+      && bad "$flag with no value crashed under set -u ($out)" || ok "$flag: no set -u crash"
+    printf '%s\n' "$out" | grep -qi 'usage' \
+      && ok "$flag: diagnostic carries a usage line" || bad "$flag: expected a usage line (got: $out)"
+  done
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
