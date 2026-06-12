@@ -244,16 +244,29 @@ durable cross-cutting decision. ADR 0006 already governs and is respected.
 - `scripts/lib/gates.sh` — source json.sh; array builder (778-788) → delegate.
 - `tests/json-helper.test.sh` — NEW unit + A11/A3 regression eval.
 - `tests/implement-gate.test.sh` — register the new eval.
+- `tests/lifecycle-helpers.test.sh` — compact-array byte-pin update (the §Failure-modes "tests pinning the OLD output" sweep; found at build time).
+- `tests/interactive-draft-persistence.test.sh` — [R]-block comment sync (the deleted third-escaper rationale; same sweep).
 - `.claude-plugin/plugin.json` — version bump (build-applied housekeeping).
 
 ## Expected diff size
-- `scripts/lib/json.sh` — 80 lines (new: guard + 4 functions incl the `tl_json_field` quote-aware reader awk + comments; ×1.4 shell-lib).
-- `scripts/lib/state.sh` — 50 lines (source block + escaper delegate + 4 array delegates + `_read_fragment_field` reader repoint; ×1.4).
-- `scripts/lib/markers.sh` — 25 lines (source block + 2 delegates; ×1.4).
-- `scripts/lib/learnings.sh` — 15 lines (source block + 1 delegate; ×1.4).
-- `scripts/lib/drafts.sh` — 20 lines (source block + delete full-escaper + caller update; ×1.4).
-- `scripts/lib/gates.sh` — 15 lines (source block + 1 array delegate; ×1.4).
-- `tests/json-helper.test.sh` — 120 lines (new eval: escape/array/regression/sourcing; ×1.6 test).
-- `tests/implement-gate.test.sh` — 15 lines (register).
+Reconciled at build time (run 20260612-062318) to the enforcement metric —
+cumulative adds+dels per `git diff --numstat <build-start>..HEAD` — which
+counts every REPLACED line twice (the retired escaper/array bodies are
+deletions the original net-new estimates never counted), on top of the
+documented ~1.5× systematic under-estimate. Design-time estimates were ~342
+net lines across 9 files; the measured churn:
+- `scripts/lib/json.sh` — 159 lines (new: guard + 4 functions incl the `tl_json_field` quote-aware reader awk + contract comments).
+- `scripts/lib/state.sh` — 114 lines (source block + escaper delegate + 4 array-builder replacements + `_read_fragment_field` repoint; replaced bodies count add+del).
+- `scripts/lib/markers.sh` — 62 lines (source block + 2 delegates; the two replaced bodies count add+del).
+- `scripts/lib/learnings.sh` — 39 lines (source block + 1 delegate + header-comment sync).
+- `scripts/lib/drafts.sh` — 64 lines (source block + full-escaper deletion + caller updates + comment sync).
+- `scripts/lib/gates.sh` — 30 lines (source block + 1 array delegate).
+- `tests/json-helper.test.sh` — 370 lines (exception: ONE consolidated eval carries all six Verification sections — §1/§3 units, §2 A11+A3 regressions, §6 A10/A5 round-trip, §4 four-context sourcing matrix, §5 single-source greps, §W aggregator chain-drive — plus the per-consumer delegation observables; splitting it into per-section files would spread, not shrink, the same lines).
+- `tests/implement-gate.test.sh` — 18 lines (register + AND-chain term).
+- `tests/lifecycle-helpers.test.sh` — 2 lines (compact-array byte-pin update; §Failure-modes sweep).
+- `tests/interactive-draft-persistence.test.sh` — 11 lines ([R]-block comment sync; same sweep).
 - `.claude-plugin/plugin.json` — 2 lines (version bump).
-Total expected diff: ~342 lines across 9 files. The 9th file is the trivial build-applied version bump (1 line changed); it pushes the touched-file COUNT to 9 > the default `THROUGHLINE_TDD_MAX_TOUCHED`=8 (design-time `--bounds` only — the build does not re-check the count), so a clean design-time `--bounds` uses `THROUGHLINE_TDD_MAX_TOUCHED=9`. No per-file diff exception needed (each well under 300).
+Total measured diff: ~871 lines across 11 files. The touched-file COUNT 11 >
+the default `THROUGHLINE_TDD_MAX_TOUCHED`=8 (design-time `--bounds` only — the
+build does not re-check the count), so a clean design-time `--bounds` uses
+`THROUGHLINE_TDD_MAX_TOUCHED=11`.
