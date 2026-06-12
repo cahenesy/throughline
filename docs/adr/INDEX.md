@@ -11,4 +11,5 @@
 | 0005 | Gate scope enforced by prompt + downstream detection, not sandboxing | accepted | workflow / runner-safety / gate-architecture |
 | 0006 | Gate verdicts grounded in verifiable artifacts, not author self-report | accepted | workflow / gate-architecture / verification-integrity |
 | 0007 | Halt model: bounded rework + structural escalation (not first-failure halt) | accepted (rework-model consequence revised by 0008) | workflow / gate-architecture / halt-semantics |
-| 0008 | Rework authoring on the build model (author↔reviewer diversity); revises 0007's rework-model consequence | accepted | workflow / gate-architecture / model-diversity |
+| 0008 | Rework authoring on the build model (author↔reviewer diversity); revises 0007's rework-model consequence | accepted (product-name consequences revised by 0009) | workflow / gate-architecture / model-diversity |
+| 0009 | Tier-based default model pairing (latest top tier builds; prior-gen top tier reviews); revises 0008's product-name consequences | accepted | workflow / gate-architecture / model-diversity |
