@@ -234,3 +234,17 @@ Close:
 - End your final message with exactly `BATCH_RESULT: OK` on success,
   `BATCH_RESULT: FAIL <reason>` if you could not complete it, or
   `BATCH_RESULT: BLOCKED <reason>` for a design-level blocker.
+- SENTINEL PLACEMENT (TDD 0056 / FR-56 — the runner observes verdicts ONLY as
+  authored final-line text). The terminal sentinel
+  MUST be emitted as the FINAL line of a plain-text assistant message —
+  never inside a tool call (a Bash echo, Write/Edit content, a commit
+  message): text inside tool calls is not assistant-authored output, so a
+  sentinel there is never observed. And no message other than a genuine
+  sentinel emission (the terminal verdict, a `STEP_COMMIT:` handshake)
+  may END with a line beginning `BATCH_RESULT: ` or `STEP_COMMIT: ` — when
+  you need to quote such a line (example code, eval text, protocol
+  discussion), place it mid-message or inside a fence with trailing prose
+  after it, so your message's last line is never a sentinel you did not
+  mean. The consequence of a misplaced sentinel is honest but slow: it is
+  not observed, and the build ends at the inactivity watchdog as a transient
+  (a recoverable pause), never a false complete.

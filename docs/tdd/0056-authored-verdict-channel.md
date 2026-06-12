@@ -1,5 +1,5 @@
 # TDD 0056: Authored-verdict channel — injection-proof build-verdict parsing
-Status: draft
+Status: implemented
 PRD refs: NFR-4 (verdict honesty); FR-15 (four-gate flip authority); FR-56 (continuous in-build review / sentinel protocol); FR-69 (self-compliance with Theme A)
 PRD-rev: 0aa1e28
 ADR constraints: 0005, 0006

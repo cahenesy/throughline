@@ -250,6 +250,185 @@ echo "[VP8] control: final assistant message ending with the sentinel line still
     || ok "control has no HANG marker"
 ) || true
 
+# --- [VP9] Authored-verdict marker: exactly once, column 0, verbatim -------
+# TDD 0056 §1 (NFR-4 / FR-15): at the moment the authored-verdict rule fires,
+# the runner echoes the observed verdict as a canonical column-0 marker line
+# `THROUGHLINE_AUTHORED_VERDICT: <verbatim final line>`. The stub emits TWO
+# sentinel-bearing events (assistant text + result), so an unguarded write
+# would produce two markers — the _build_stdin_closed latch must bound it to
+# exactly one.
+echo "[VP9] authored verdict echoed once as a column-0 THROUGHLINE_AUTHORED_VERDICT marker"
+( D="$ROOT/vp9"; mkdir -p "$D"
+  setup_repo "$D"
+  install_stub_claude "$D/bin" "BATCH_RESULT: OK"
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  export THROUGHLINE_BUILD_INTER_EVENT_TIMEOUT=5
+  export TMPL="$D/scripts/build-prompt.md"
+  log="$D/build.log"
+  _per_step_review_loop "0001-alpha" "docs/tdd/0001-alpha.md" "$log"; rc=$?
+  [ "$rc" = "0" ] \
+    && ok "loop returns 0 on clean lifecycle" \
+    || bad "loop should return 0 (got rc=$rc)"
+  n="$(grep -ac '^THROUGHLINE_AUTHORED_VERDICT: BATCH_RESULT: OK$' "$log")"
+  [ "$n" = "1" ] \
+    && ok "marker line appears exactly once, at column 0, carrying the verbatim verdict" \
+    || bad "expected exactly one '^THROUGHLINE_AUTHORED_VERDICT: BATCH_RESULT: OK' line (got ${n:-0})"
+  bs="$(build_status "$log")"
+  [ "$bs" = "BATCH_RESULT: OK" ] \
+    && ok "build_status echoes BATCH_RESULT: OK" \
+    || bad "build_status should echo 'BATCH_RESULT: OK' (got '$bs')"
+) || true
+
+# --- [VP10] Marker wins over injected junk — ordering-independent ----------
+# TDD 0056 §2 (NFR-4 / FR-15): the genuine authored verdict must survive a log
+# that ALSO contains injected `BATCH_RESULT: OK` junk arriving AFTER it — the
+# ordering-independence point the implicit four-link chain could not
+# guarantee. The stub authors a genuine FAIL, then (post-verdict, while the
+# loop drains tail events) a tool_result mirroring sentinel-bearing text. A
+# whole-log substring grep + tail -1 would return the junk OK; the marker-first
+# read must return the authored FAIL.
+echo "[VP10] genuine authored FAIL survives later injected JSON-carried 'BATCH_RESULT: OK' junk"
+( D="$ROOT/vp10"; mkdir -p "$D"
+  setup_repo "$D"
+  cat > "$D/events.jsonl" <<'EVENTS'
+{"type":"assistant","message":{"content":[{"type":"text","text":"Step 3 could not be completed; see log.\nBATCH_RESULT: FAIL genuine-authored-verdict"}]}}
+{"type":"user","message":{"role":"user","content":[{"tool_use_id":"t1","type":"tool_result","content":"# ci-checks.sh — gates the flip on a real check rather than the model's own `BATCH_RESULT: OK`. Done is verified, not asserted."}]}}
+EVENTS
+  install_stub_claude_raw "$D/bin" "$D/events.jsonl"
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  export THROUGHLINE_BUILD_INTER_EVENT_TIMEOUT=5
+  export TMPL="$D/scripts/build-prompt.md"
+  log="$D/build.log"
+  _per_step_review_loop "0001-alpha" "docs/tdd/0001-alpha.md" "$log"; rc=$?
+  [ "$rc" = "0" ] \
+    && ok "loop returns 0 (authored FAIL closes the lifecycle cleanly)" \
+    || bad "loop should return 0 (got rc=$rc)"
+  bs="$(build_status "$log")"
+  [ "$bs" = "BATCH_RESULT: FAIL genuine-authored-verdict" ] \
+    && ok "build_status returns the authored FAIL (marker wins; ordering-independent)" \
+    || bad "build_status should return the authored FAIL line, not later injected junk (got '$bs')"
+) || true
+
+# --- [VP11] Bare-line fallback: degraded/no-marker log still parses --------
+# TDD 0056 §2: a stub/degraded log (the non-stream-json path, pre-0056 logs)
+# carries a bare-line sentinel and no marker; build_status's line-anchored
+# fallback must still parse it (compat preserved). The anchored fallback can
+# never match a sentinel INSIDE a mirrored JSON event line — only at column 0.
+echo "[VP11] bare-line sentinel in a marker-less degraded log parses via the anchored fallback"
+( D="$ROOT/vp11"; mkdir -p "$D"
+  setup_repo "$D"
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  log="$D/degraded.log"
+  printf 'plain-text degraded output, no stream-json\nBATCH_RESULT: OK\n' > "$log"
+  bs="$(build_status "$log")"
+  [ "$bs" = "BATCH_RESULT: OK" ] \
+    && ok "fallback parses the bare-line sentinel (got '$bs')" \
+    || bad "fallback should parse the bare-line sentinel (got '$bs')"
+) || true
+
+# --- [VP12] Clean-exit-no-verdict → return 1; synth-OK fallback is gone ----
+# TDD 0056 §4 (NFR-4 / ADR 0006): a build that exits rc=0 WITHOUT an authored
+# verdict (injection-only log, the VP6 event shape, but a stub that exits
+# instead of blocking) must read as "build did not return OK" — return 1, no
+# fabricated `BATCH_RESULT: OK (synthesized: ...)` line. The harness arms the
+# old fallback's every precondition (STATE_DIR fragment with
+# last_cleared_review_sha == HEAD, clean working tree) to prove the fabricated-
+# verdict path is REMOVED, not merely unarmed.
+
+# install_stub_claude_raw_noblock <bindir> <events-file>
+# Like install_stub_claude_raw but exits 0 immediately after replaying the
+# events (no blocking read) — the clean-exit-no-verdict shape synth-OK guarded.
+install_stub_claude_raw_noblock() {
+  local bindir="$1" events="$2"
+  mkdir -p "$bindir"
+  cat > "$bindir/claude" <<EOF
+#!/usr/bin/env bash
+# Stub claude (clean-exit-no-verdict case). Replays canned events; exits 0.
+cat "$events"
+exit 0
+EOF
+  chmod +x "$bindir/claude"
+  export PATH="$bindir:$PATH"
+}
+
+echo "[VP12] clean exit without an authored verdict → _build_one_gated returns 1, nothing synthesized"
+( D="$ROOT/vp12"; mkdir -p "$D"
+  # Repo in a SUBDIR so the harness's aux files (events, state.d, log) stay
+  # outside the working tree — the old fallback required `git status
+  # --porcelain` empty, and untracked aux files would unarm it vacuously.
+  setup_repo "$D/repo"
+  cat > "$D/events.jsonl" <<'EVENTS'
+{"type":"system","subtype":"init"}
+{"type":"user","message":{"role":"user","content":[{"tool_use_id":"t1","type":"tool_result","content":"# ci-checks.sh — gates the flip on a real check rather than the model's own `BATCH_RESULT: OK`. Done is verified, not asserted."}]}}
+EVENTS
+  install_stub_claude_raw_noblock "$D/bin" "$D/events.jsonl"
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  export THROUGHLINE_BUILD_INTER_EVENT_TIMEOUT=5
+  export TMPL="$D/repo/scripts/build-prompt.md"
+  export STATE_DIR="$D/state.d"; mkdir -p "$STATE_DIR"
+  printf '{"slug":"0001-alpha","last_cleared_review_sha":"%s","cleared_step_log":[]}\n' \
+    "$(git rev-parse HEAD)" > "$STATE_DIR/0001-alpha.json"
+  log="$D/build.log"
+  _build_one_gated "docs/tdd/0001-alpha.md" "$log"; rc=$?
+  bs="$(build_status "$log")"
+  [ -z "$bs" ] \
+    && ok "build_status returns empty on the injection-only log" \
+    || bad "build_status should return empty (got '$bs')"
+  [ "$rc" = "1" ] \
+    && ok "_build_one_gated returns 1 (no verdict = not OK)" \
+    || bad "_build_one_gated should return 1 (got rc=$rc)"
+  grep -aq 'synthesized' "$log" \
+    && bad "log contains a synthesized verdict line (synth-OK fallback still present)" \
+    || ok "log contains NO synthesized line (synth-OK gone)"
+) || true
+
+# --- [VP13] Narrative facts: marker wins the build-verdict-line fact -------
+# TDD 0056 §3 (FR-71 / ADR 0006): _diff_vs_narrative_facts' br extraction is
+# marker-first with the same anchored fallback, so an injected JSON-carried
+# sentinel — even one arriving AFTER the marker — is no longer selected as the
+# `build-verdict-line:` fact the reviewer's honesty check anchors on.
+echo "[VP13] _diff_vs_narrative_facts selects the marker's verdict, not injected JSON-carried junk"
+( D="$ROOT/vp13"; mkdir -p "$D"
+  setup_repo "$D"
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  log="$D/build.log"
+  cat > "$log" <<'LOG'
+{"type":"assistant","message":{"content":[{"type":"text","text":"Step 3 could not be completed; see log.\nBATCH_RESULT: FAIL genuine-authored-verdict"}]}}
+THROUGHLINE_AUTHORED_VERDICT: BATCH_RESULT: FAIL genuine-authored-verdict
+{"type":"user","message":{"role":"user","content":[{"tool_use_id":"t1","type":"tool_result","content":"# ci-checks.sh — gates the flip on a real check rather than the model's own `BATCH_RESULT: OK`. Done is verified, not asserted."}]}}
+LOG
+  facts="$(_diff_vs_narrative_facts "$log" "$(git rev-parse HEAD)")"
+  bvl="$(printf '%s\n' "$facts" | grep '^build-verdict-line: ')"
+  [ "$bvl" = "build-verdict-line: BATCH_RESULT: FAIL genuine-authored-verdict" ] \
+    && ok "build-verdict-line fact equals the marker's verdict" \
+    || bad "build-verdict-line should be the marker's authored FAIL, not injected junk (got '$bvl')"
+) || true
+
+# --- [VP14] Prompt sentinel-placement rules anchored in build-prompt.md ----
+# TDD 0056 §5 (FR-56): the placement contract — terminal sentinel as the FINAL
+# line of a plain-text assistant message; never inside a tool call; no other
+# message ends with a sentinel-beginning line; misplaced sentinel ends at the
+# inactivity watchdog as a transient — must be pinned in the build prompt.
+# grep -F on the NEW wording (verified non-vacuous: zero pre-0056 matches);
+# each check distinguishes text-absent (grep rc=1) from file-missing/
+# unreadable (rc>=2) per L-001/L-002 hygiene.
+echo "[VP14] sentinel-placement rules anchored in scripts/build-prompt.md"
+(
+  PROMPT="$REPO/scripts/build-prompt.md"
+  anchor() {  # <new-wording fragment>
+    grep -qF "$1" "$PROMPT" 2>/dev/null
+    case $? in
+      0) ok "anchor present: $1" ;;
+      1) bad "placement-rule wording ABSENT from build-prompt.md (grep rc=1): $1" ;;
+      *) bad "build-prompt.md missing/unreadable (grep rc>=2) while checking: $1" ;;
+    esac
+  }
+  anchor 'MUST be emitted as the FINAL line of a plain-text assistant message'
+  anchor 'never inside a tool call'
+  anchor 'may END with a line beginning `BATCH_RESULT: ` or `STEP_COMMIT: `'
+  anchor 'the build ends at the inactivity watchdog as a transient'
+) || true
+
 # --- report ----------------------------------------------------------------
 # grep -c exits non-zero when there are zero matches; suppress that so the
 # `0 failed` happy path doesn't leak its exit code through pipefail.
