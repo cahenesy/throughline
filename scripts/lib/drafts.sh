@@ -18,11 +18,12 @@
 # draft_doc is backslash-escaped by json_escape, so neither marker can appear
 # inside user content.
 #
-# Reuses TDD 0009's tl_drafts_dir/tl_repo_id (scripts/lib/repo-id.sh) and TDD
-# 0015's json_escape (scripts/lib/state.sh) — sourced once here so the runner
-# and the skills share one escaper without duplicating it. No new dependency:
-# python3 is OPTIONAL (jq→python3→bash cascade, same as the runner); mkdir, mv,
-# printf, grep, sed, rm, date are POSIX.
+# Reuses TDD 0009's tl_drafts_dir/tl_repo_id (scripts/lib/repo-id.sh), TDD
+# 0015's json_escape (scripts/lib/state.sh), and the canonical C0-complete
+# tl_json_escape (scripts/lib/json.sh, TDD 0050) — sourced once here so the
+# runner and the skills share ONE escaper without duplicating it. No new
+# dependency: python3 is OPTIONAL (jq→python3→bash cascade, same as the
+# runner); mkdir, mv, printf, grep, sed, rm, date are POSIX.
 #
 # No top-level `set` (matching repo-id.sh / state.sh): this file is SOURCED, so
 # flipping nounset/errexit/pipefail here would leak those options into the
@@ -34,6 +35,19 @@ _TL_DRAFTS_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "${_TL_DRAFTS_LIB_DIR}/repo-id.sh"
 # shellcheck source=scripts/lib/state.sh
 . "${_TL_DRAFTS_LIB_DIR}/state.sh"
+# Source the canonical JSON helpers directly (TDD 0050): drafts.sh consumes
+# tl_json_escape itself, so it owns its own source line rather than relying on
+# state.sh's transitive pull. FATAL on missing per ADR 0006 (a draft written
+# with the escaper undefined would be silently corrupt); the dual
+# `return||exit` idiom is correct sourced or executed; json.sh's include guard
+# makes this a no-op when state.sh already sourced it.
+_jlib="${_TL_DRAFTS_LIB_DIR}/json.sh"
+# shellcheck source=scripts/lib/json.sh
+{ [ -r "$_jlib" ] && . "$_jlib"; } || {
+  echo "FATAL: cannot source $_jlib (partial install or perms)" >&2
+  return 1 2>/dev/null || exit 1
+}
+unset _jlib
 
 # Current draft schema. Additive fields stay at 1 (same policy as TDD 0011 for
 # run-state); a breaking change bumps this and the skill refuses to resume an
@@ -114,34 +128,12 @@ tl_draft_read() {
   cat "$p"
 }
 
-# _tl_json_escape_full <string> — JSON-escape a free-text string for the
-# python3-less fallback so it is equivalent (at the parsed-value level) to what
-# the python3 path's json.dump emits. json_escape (state.sh) covers the common
-# cases — `\`, `"`, and the `\t`/`\n`/`\r` whitespace controls — but the other
-# C0 control bytes U+0001..U+001F are ILLEGAL raw inside a JSON string, so a bare
-# json_escape would yield invalid JSON for them. This layers the remaining
-# escapes on top: 0x08 → `\b`, 0x0c → `\f`, every other still-raw C0 byte →
-# `\uXXXX`. NUL (0x00) cannot appear in a shell argument (the kernel forbids it
-# in argv), so it need not be handled; DEL (0x7f) is legal raw in JSON and is
-# left untouched (python's encoder leaves it raw too), so content round-trips
-# byte-for-byte. Runs AFTER json_escape so the backslashes introduced here are
-# not double-escaped. Pure bash (printf -v + parameter expansion) — no external
-# tool, so it works in the same degraded environment as the rest of the fallback.
-_tl_json_escape_full() {
-  local s i byte hex
-  s="$(json_escape "${1:-}")"
-  # 1..8, 11, 12, 14..31 — i.e. all of U+0001..U+001F except \t (9), \n (10),
-  # \r (13) which json_escape already turned into their short escapes.
-  for i in 1 2 3 4 5 6 7 8 11 12 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31; do
-    printf -v byte '%b' "\\$(printf '%03o' "$i")"   # the raw control byte itself
-    case "$i" in
-      8)  s=${s//"$byte"/\\b} ;;
-      12) s=${s//"$byte"/\\f} ;;
-      *)  printf -v hex '%04x' "$i"; s=${s//"$byte"/\\u$hex} ;;
-    esac
-  done
-  printf '%s' "$s"
-}
+# The C0-completion escaper that used to live here (_tl_json_escape_full,
+# layered over json_escape's pre-TDD-0050 gap) is DELETED: tl_json_escape
+# (scripts/lib/json.sh) is C0-complete, so the python3-less fallback writers
+# below call it directly and stay equivalent (at the parsed-value level) to
+# what the python3 path's json.dump emits. DEL (0x7f) is legal raw in JSON and
+# both leave it raw, so content still round-trips byte-for-byte.
 
 # tl_draft_append_elicit <skill-name> <kind> <header> <question> <answer>
 # — atomically append one entry to interview[] with the current epoch as ts and
@@ -183,8 +175,8 @@ PY
   else
     local obj old content head tail inner
     obj="$(printf '{"ts":%s,"kind":"%s","header":"%s","question":"%s","answer":"%s"}' \
-      "$now" "$(json_escape "$kind")" "$(_tl_json_escape_full "$header")" \
-      "$(_tl_json_escape_full "$question")" "$(_tl_json_escape_full "$answer")")"
+      "$now" "$(json_escape "$kind")" "$(tl_json_escape "$header")" \
+      "$(tl_json_escape "$question")" "$(tl_json_escape "$answer")")"
     old="$(sed -n 's/.*"updated_at":\([0-9]*\)[,}].*/\1/p' "$p" | head -1)"
     if [ -z "$old" ]; then
       echo "tl_draft_append_elicit: cannot locate a numeric updated_at in $p; refusing to corrupt the draft" >&2
@@ -240,7 +232,7 @@ PY
     rc=$?
   else
     local old content prefix esc
-    esc="$(_tl_json_escape_full "$doc")"
+    esc="$(tl_json_escape "$doc")"
     old="$(sed -n 's/.*"updated_at":\([0-9]*\)[,}].*/\1/p' "$p" | head -1)"
     if [ -z "$old" ]; then
       echo "tl_draft_write_doc: cannot locate a numeric updated_at in $p; refusing to corrupt the draft" >&2
