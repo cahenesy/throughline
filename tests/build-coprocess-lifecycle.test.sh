@@ -404,6 +404,31 @@ LOG
     || bad "build-verdict-line should be the marker's authored FAIL, not injected junk (got '$bvl')"
 ) || true
 
+# --- [VP14] Prompt sentinel-placement rules anchored in build-prompt.md ----
+# TDD 0056 §5 (FR-56): the placement contract — terminal sentinel as the FINAL
+# line of a plain-text assistant message; never inside a tool call; no other
+# message ends with a sentinel-beginning line; misplaced sentinel ends at the
+# inactivity watchdog as a transient — must be pinned in the build prompt.
+# grep -F on the NEW wording (verified non-vacuous: zero pre-0056 matches);
+# each check distinguishes text-absent (grep rc=1) from file-missing/
+# unreadable (rc>=2) per L-001/L-002 hygiene.
+echo "[VP14] sentinel-placement rules anchored in scripts/build-prompt.md"
+(
+  PROMPT="$REPO/scripts/build-prompt.md"
+  anchor() {  # <new-wording fragment>
+    grep -qF "$1" "$PROMPT" 2>/dev/null
+    case $? in
+      0) ok "anchor present: $1" ;;
+      1) bad "placement-rule wording ABSENT from build-prompt.md (grep rc=1): $1" ;;
+      *) bad "build-prompt.md missing/unreadable (grep rc>=2) while checking: $1" ;;
+    esac
+  }
+  anchor 'MUST be emitted as the FINAL line of a plain-text assistant message'
+  anchor 'never inside a tool call'
+  anchor 'may END with a line beginning `BATCH_RESULT: ` or `STEP_COMMIT: `'
+  anchor 'the build ends at the inactivity watchdog as a transient'
+) || true
+
 # --- report ----------------------------------------------------------------
 # grep -c exits non-zero when there are zero matches; suppress that so the
 # `0 failed` happy path doesn't leak its exit code through pipefail.
