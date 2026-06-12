@@ -1,5 +1,5 @@
 # TDD 0050: Canonical JSON escaper + array builder (scripts/lib/json.sh)
-Status: draft
+Status: implemented
 PRD refs: FR-72 (candidate-learnings JSON); FR-27 (run-state JSON record); FR-46 (draft persistence JSON); FR-39 (resume reads run-state); FR-69 (self-compliance with Theme A)
 PRD-rev: 0aa1e28
 ADR constraints: 0006
