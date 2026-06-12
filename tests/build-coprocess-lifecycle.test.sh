@@ -279,6 +279,53 @@ echo "[VP9] authored verdict echoed once as a column-0 THROUGHLINE_AUTHORED_VERD
     || bad "build_status should echo 'BATCH_RESULT: OK' (got '$bs')"
 ) || true
 
+# --- [VP10] Marker wins over injected junk — ordering-independent ----------
+# TDD 0056 §2 (NFR-4 / FR-15): the genuine authored verdict must survive a log
+# that ALSO contains injected `BATCH_RESULT: OK` junk arriving AFTER it — the
+# ordering-independence point the implicit four-link chain could not
+# guarantee. The stub authors a genuine FAIL, then (post-verdict, while the
+# loop drains tail events) a tool_result mirroring sentinel-bearing text. A
+# whole-log substring grep + tail -1 would return the junk OK; the marker-first
+# read must return the authored FAIL.
+echo "[VP10] genuine authored FAIL survives later injected JSON-carried 'BATCH_RESULT: OK' junk"
+( D="$ROOT/vp10"; mkdir -p "$D"
+  setup_repo "$D"
+  cat > "$D/events.jsonl" <<'EVENTS'
+{"type":"assistant","message":{"content":[{"type":"text","text":"Step 3 could not be completed; see log.\nBATCH_RESULT: FAIL genuine-authored-verdict"}]}}
+{"type":"user","message":{"role":"user","content":[{"tool_use_id":"t1","type":"tool_result","content":"# ci-checks.sh — gates the flip on a real check rather than the model's own `BATCH_RESULT: OK`. Done is verified, not asserted."}]}}
+EVENTS
+  install_stub_claude_raw "$D/bin" "$D/events.jsonl"
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  export THROUGHLINE_BUILD_INTER_EVENT_TIMEOUT=5
+  export TMPL="$D/scripts/build-prompt.md"
+  log="$D/build.log"
+  _per_step_review_loop "0001-alpha" "docs/tdd/0001-alpha.md" "$log"; rc=$?
+  [ "$rc" = "0" ] \
+    && ok "loop returns 0 (authored FAIL closes the lifecycle cleanly)" \
+    || bad "loop should return 0 (got rc=$rc)"
+  bs="$(build_status "$log")"
+  [ "$bs" = "BATCH_RESULT: FAIL genuine-authored-verdict" ] \
+    && ok "build_status returns the authored FAIL (marker wins; ordering-independent)" \
+    || bad "build_status should return the authored FAIL line, not later injected junk (got '$bs')"
+) || true
+
+# --- [VP11] Bare-line fallback: degraded/no-marker log still parses --------
+# TDD 0056 §2: a stub/degraded log (the non-stream-json path, pre-0056 logs)
+# carries a bare-line sentinel and no marker; build_status's line-anchored
+# fallback must still parse it (compat preserved). The anchored fallback can
+# never match a sentinel INSIDE a mirrored JSON event line — only at column 0.
+echo "[VP11] bare-line sentinel in a marker-less degraded log parses via the anchored fallback"
+( D="$ROOT/vp11"; mkdir -p "$D"
+  setup_repo "$D"
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  log="$D/degraded.log"
+  printf 'plain-text degraded output, no stream-json\nBATCH_RESULT: OK\n' > "$log"
+  bs="$(build_status "$log")"
+  [ "$bs" = "BATCH_RESULT: OK" ] \
+    && ok "fallback parses the bare-line sentinel (got '$bs')" \
+    || bad "fallback should parse the bare-line sentinel (got '$bs')"
+) || true
+
 # --- report ----------------------------------------------------------------
 # grep -c exits non-zero when there are zero matches; suppress that so the
 # `0 failed` happy path doesn't leak its exit code through pipefail.
