@@ -107,6 +107,52 @@ echo "[1c] pause-retry.sh: a quote-bearing note survives an _append_retry carry-
     && ok "pause-retry.sh: retries[] entry appended as intended" || bad "retries[] entry should be appended"
 ) || true
 
+echo "[2] grep invariant: zero inline [^\"]* free-text fragment readers remain in the three carry-forward libs"
+( # The inline free-text string-reader signature: sed -n 's/.*"<field>":"\([^"]*\)".*/\1/p'.
+  # The `":"` (colon-quote) distinguishes it from the array readers (`":\[`) and the
+  # numeric readers (`":\([0-9]`), which are explicitly out of scope and untouched.
+  pat='sed -n .s/\.\*"[A-Za-z0-9_]+":"'
+  n=0
+  for L in "$REPO/scripts/lib/state.sh" "$REPO/scripts/lib/resume.sh" "$REPO/scripts/lib/pause-retry.sh"; do
+    # grep -c prints the count on stdout and exits 1 when it is 0; command
+    # substitution captures the "0" regardless, so no `|| true` is needed.
+    c="$(grep -cE "$pat" "$L" 2>/dev/null)"; n=$(( n + ${c:-0} ))
+  done
+  [ "$n" -eq 0 ] \
+    && ok "no inline [^\"]* free-text fragment reader remains in state.sh/resume.sh/pause-retry.sh" \
+    || bad "an inline [^\"]* free-text fragment reader still remains in the three libs (count=$n)"
+  # Positive control: the SAME pattern still matches the out-of-scope renderer
+  # scripts/status.sh (TDD 0051 §Elephants — its display-only inline reads are a
+  # separate concern, deliberately untouched), proving the grep is live so a zero
+  # in the libs is a real invariant, not a dead-pattern artifact.
+  sc="$(grep -cE "$pat" "$REPO/scripts/status.sh" 2>/dev/null)"
+  [ "${sc:-0}" -gt 0 ] \
+    && ok "positive control: the reader pattern is live (still matches the out-of-scope status.sh)" \
+    || bad "positive control failed: the grep pattern matched nothing in status.sh (pattern may be dead)"
+) || true
+
+echo "[3] control-flow: an embedded quote in note does not alter the terminal halt state"
+( D="$ROOT/3"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  # Two fragments identical except the note's embedded quote. The run routes by
+  # status / halt_cause / paused_cause / halt_next_actions (all quote-free); a
+  # truncation-corrupted note must not perturb those control-flow comparands.
+  FQ="$D/state.d/0001-q.json"; FP="$D/state.d/0001-p.json"
+  _write_tdd_fragment 0001-q 1 docs/tdd/0001-q.md 1 building build 1000 1000 "$BR" "" "$LOG" "$NOTE" "" "" "" ""
+  _write_tdd_fragment 0001-p 1 docs/tdd/0001-p.md 1 building build 1000 1000 "$BR" "" "$LOG" "plain note no quote" "" "" "" ""
+  set_halt_cause 0001-q ratelimit
+  set_halt_cause 0001-p ratelimit
+  sig() { printf '%s|%s|%s|%s' \
+    "$(_read_fragment_field "$1" status)" "$(_read_fragment_field "$1" halt_cause)" \
+    "$(_read_fragment_field "$1" paused_cause)" "$(_read_fragment_array_csv "$1" halt_next_actions)"; }
+  [ "$(sig "$FQ")" = "$(sig "$FP")" ] \
+    && ok "embedded quote leaves the terminal control-flow state identical (status/halt_cause/paused_cause/next-actions)" \
+    || bad "embedded quote changed the terminal state ('$(sig "$FQ")' vs '$(sig "$FP")')"
+) || true
+
 echo "[4] state.sh: the stage null-guard collapse preserves stage:null -> empty (set_tdd_meta)"
 ( D="$ROOT/4"; mkdir -p "$D/state.d"
   export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
@@ -130,6 +176,37 @@ echo "[4] state.sh: the stage null-guard collapse preserves stage:null -> empty 
   grep -q '"stage":null' "$F" \
     && ok "set_tdd_meta re-writes stage:null (empty stage -> JSON null, not \"\" or \"null\")" \
     || bad "set_tdd_meta should preserve the JSON null stage literal"
+) || true
+
+# §W: dogfood (TDD 0038 §3 wire-in rule) — registering this eval in the aggregator
+# adds an SCQ_FAIL accumulator to its final AND-chain, so the aggregator now exits
+# non-zero on a new condition. Drive the REAL extracted chain with every accumulator
+# green EXCEPT this eval's, stubbed to fail: before the wire-in the chain never
+# references SCQ_FAIL and evaluates true (RED); after, it includes the term and
+# evaluates false (GREEN).
+echo "[§W] dogfood: wiring this eval into the aggregator makes its exit go non-zero when the eval fails"
+( AGG="$REPO/tests/implement-gate.test.sh"
+  if [ ! -r "$AGG" ]; then bad "INFRA: §W — aggregator unreadable: $AGG"; exit 0; fi
+  # Structural: the new eval is registered (run) in the aggregator. Anchored on the
+  # eval filename so an unwired aggregator is RED.
+  grep -q 'state-carryforward-quotesafe\.test\.sh' "$AGG" 2>/dev/null \
+    && ok "the new eval is wired into the aggregator (registration present)" \
+    || bad "the new eval must be registered in the aggregator"
+  # Behavioral: extract the aggregator's real final AND-chain verbatim and evaluate
+  # it against stub integers (no recursion into the sub-evals).
+  chain="$(grep -aE '^\[ "\$FAIL" -eq 0 \] &&' "$AGG" | tail -1)"
+  if [ -z "$chain" ]; then bad "INFRA: §W — could not locate the aggregator final AND-chain"; exit 0; fi
+  drive_rc="$(
+    set +u
+    for v in $(printf '%s' "$chain" | grep -aoE '\$[A-Za-z_][A-Za-z0-9_]*' | tr -d '$' | sort -u); do
+      eval "$v=0"
+    done
+    SCQ_FAIL=1
+    eval "$chain"; echo $?
+  )"
+  [ "$drive_rc" != "0" ] \
+    && ok "aggregator final AND-chain goes non-zero when the new eval fails (wire-in propagates)" \
+    || bad "aggregator AND-chain must be non-zero with SCQ_FAIL=1 (got rc=$drive_rc)"
 ) || true
 
 echo
