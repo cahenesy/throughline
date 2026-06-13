@@ -1,258 +1,226 @@
-# TDD 0051: state.sh fragment carry-forward — single read-all/write-all + quote-safe parse
+# TDD 0051: Quote-safe fragment reads — route mutator inline reads through the canonical reader
 Status: draft
 PRD refs: FR-27 (structured run-state record); FR-39 (resume from state); FR-40 (resume baseline); FR-69 (self-compliance with Theme A)
-PRD-rev: 0aa1e28
+PRD-rev: d7bc491
 ADR constraints: 0006
 
 ## Approach
-> **STATUS (2026-06-11): DEFERRED out of the 0050–0055 hardening push.** This is
-> the biggest/riskiest pending TDD (a 320-line rewrite of the core run-state I/O
-> every gate depends on) and its bugs are forensic-cosmetic, so it is held for a
-> later dedicated, heavily-verified effort rather than built in the current
-> small-and-safe sequence. **The A10/A5 PRIMARY-reader fix was extracted into
-> [[0050]]** (the `tl_json_field` quote-aware reader, repointing
-> `_read_fragment_field`), so the highest-traffic documented corruption path is
-> fixed without this refactor. When 0051 is eventually built, its remaining job is
-> the maintainability refactor (reuse #3/#2: the read-all/write-all pair retiring
-> the 29-param writer) PLUS routing the RESIDUAL inline `[^"]*` readers
-> (state.sh:701, 782, … and resume.sh) through the same `tl_json_field` reader 0050
-> introduced. Re-scope/re-author at that time; the text below is the original
-> full-refactor design.
->
-> **REVIVAL PREREQUISITES (2026-06-12, post 0050/0052/0054/0056 builds):** the
-> design below is now STALE in three specific ways a full in-place re-author
-> (the sanctioned path for a never-built draft — NOT supersession) must fix:
-> (1) **single-source constraint** — the `_json_field`-in-state.sh component
-> below now CONTRADICTS the json.sh single-source convention 0050 shipped;
-> `tests/json-helper.test.sh` `[single-source]` mechanically fails any
-> `tl_json_*` definition or escaper copy outside `scripts/lib/json.sh`. The
-> re-author must REUSE `tl_json_field` (json.sh), not define a new extractor
-> (and confirm it satisfies this TDD's jq-free parser requirement).
-> (2) **stale survey** — every cited line range (state.sh:688-759 …,
-> resume.sh:32-87, pause-retry.sh:95-141) shifted under 0050's ~114-line
-> state.sh churn (and 0057's state.sh:358 touch); the residual `[^"]*` reader
-> count measured 87 (61 state.sh / 13 resume.sh / 13 pause-retry.sh) on
-> 2026-06-12 vs the 75 documented below. Re-survey mechanically before
-> declaring scope. (3) **PRD-rev** — the PRD has advanced (tier-language pass,
-> d7bc491); bump on revision. UNCHANGED and verified still true on 2026-06-12:
-> `_write_tdd_fragment` still takes 29 positional params, the nine mutators
-> are untouched, and the mutator-inline readers were knowingly left out of
-> 0050's scope — the remaining payoff is intact, and so is the risk calculus
-> that deferred it.
+This TDD is the **correctness half** of the original 0051. A 2026-06-13 re-survey
+of master (post 0050/0057) showed the live A10/A5 carry-forward corruption has
+shrunk to a small, surgical surface, so 0051 is narrowed to close it cleanly; the
+larger read-all/write-all *maintainability* refactor moves to **[[0058]]** (a
+deferred draft).
 
-The per-TDD run-state fragment (`state.d/<slug>.json`) is mutated by **nine
-functions** that each open-code the same block: read EVERY carry-forward field
-into locals, override the 1–3 they own, then call `_write_tdd_fragment` threading
-all fields back as positional args (state.sh:688-759, 765-822, 833-876, 889-929,
-1017-1087, 1097-1138, 1335-1443; resume.sh:32-87; pause-retry.sh:95-141 — reuse
-finding #3). `_write_tdd_fragment` now takes **29 positional parameters**; every
-mutator must thread the same 25+ args in the same order, and state.sh:185-190's
-own comment records that this forced the `preserve-on-absent` compromise (params
-26-29) because "one missed site silently wipes findings."
+**The bug (A10/A5).** The per-TDD run-state fragment (`state.d/<slug>.json`) is
+mutated by **13 functions** that each open-code a "read every carry-forward field
+into locals, override the 1–3 they own, re-write all fields" block. Several of
+those reads are inline `sed -n 's/.*"k":"\([^"]*\)".*/\1/p'`. The `[^"]*` class
+stops at the first `"` byte — which is the quote half of a stored `\"` escape — so
+a free-text value containing a double-quote is **truncated** on read, then the
+dangling `\` re-escapes to `\\` on the next `json_escape` write, compounding the
+corruption on every transition.
 
-Worse, every free-text field on that path is read with
-`sed -n 's/.*"k":"\([^"]*\)".*/\1/p'`. The `[^"]*` class stops at the first `"`
-byte — which is the quote half of a stored `\"` escape — so a `note` or
-`halt_cause_detail` containing a double-quote is **silently truncated** on every
-carry-forward round-trip, and the dangling `\` is re-escaped to `\\` on the next
-write, compounding the corruption (**bugs A10 + A5**; 75 such readers across
-state.sh + resume.sh). The control fields (status, the closed halt-cause enum,
-SHAs) are quote-free so routing is unaffected — only operator-facing forensic text
-is corrupted, but it is corrupted **every** transition.
+**What 0050 already fixed, and what's left.** 0050 routed the standalone
+`_read_fragment_field` through the quote-aware, jq-free `tl_json_field`
+(`scripts/lib/json.sh`). In the mutator read-blocks, the important forensic field
+`halt_cause_detail` is ALREADY read via `_read_fragment_field` (safe). The
+re-survey found the **only genuinely free-text field still read by the vulnerable
+inline `[^"]*` sed is `note`** (~12–13 sites, one per mutator read-block); the
+other inline `[^"]*` reads are `path`/`branch`/`pr_url`/`log` (quote-free in
+practice — git refnames, file paths, percent-encoded URLs) and
+`status`/`stage`/`mode`/`change` (closed enums / identifiers). So the live
+corruption is `note`, and the rest is a latent class waiting for the next
+free-text field added to a read-block.
 
-This TDD replaces the nine copies with a single read-all / write-all pair and a
-**quote-aware pure-text parser**, so (1) a new fragment field is added in ONE place
-instead of nine, and (2) quote-bearing free text round-trips losslessly. It folds
-reuse findings #3 (and the #2 counter RMW that shares the same fragile splice) and
-bugs A10/A5.
-
-**The parser must stay jq-free.** state.sh's fragment I/O is deliberately
-jq-OPTIONAL (`_extract_token_spend` falls back to `null` when jq is absent — "no
-new dependency", TDD 0037 dependency-light). So the fix is a **quote-aware awk
-parser** that consumes `\"` escapes correctly, NOT a switch to `jq -r` — the same
-correct parser is used whether or not jq exists.
+**The fix.** Convert **every** inline `[^"]*` free-text string read of a fragment
+field, across `state.sh` + `resume.sh` + `pause-retry.sh`, to the existing
+`_read_fragment_field` wrapper (which the same blocks already use for
+`halt_cause_detail`, `paused_cause`, etc.). This (a) closes the live `note`
+corruption, (b) eliminates the whole inline-`[^"]*` reader class so a future
+free-text field can't reintroduce it, and (c) leaves a clean, greppable invariant.
+It is **read-side only** — the write path (`json_escape`/`tl_json_escape`) is
+already correct. No new helper, no schema change, no positional-writer change.
 
 ## Components & interfaces
-**New canonical reader/writer in state.sh:**
-```
-_read_fragment_all <file>
-    Parse the whole fragment ONCE and populate a well-known set of shell vars
-    (a fixed namespace, e.g. FRAG_n / FRAG_status / FRAG_stage / FRAG_note /
-    FRAG_halt_cause / FRAG_halt_cause_detail / FRAG_findings_json /
-    FRAG_step_block_log_json / FRAG_cleared_step_log_json / ... — one per
-    carry-forward field). Scalars and free-text via the quote-aware extractor;
-    the raw-object/array fields (findings[], *_log) read verbatim as their JSON
-    sub-string (the existing _read_fragment_raw_object/_read_fragment_cleared_log
-    behavior, reused). Missing file → all-empty, rc 0 (caller-friendly).
-_write_fragment_from_vars <file>
-    Serialize the SAME FRAG_* var set back to the fragment via json_escape
-    (tl_json_escape post-[[0050]]) for strings and verbatim splice for the
-    raw json fields. The single writer; `_write_tdd_fragment`'s 29-positional
-    contract is retired (or reduced to a thin shim over from-vars during migration).
-```
-**Quote-aware extractor** (the A10/A5 fix), used by `_read_fragment_all` AND the
-standalone `_read_fragment_field` (state.sh:50):
-```
-_json_field <file> <key>   # awk: locate "key": then consume a JSON string,
-                           # honoring \" \\ \/ \n.. escapes; emit the UNescaped
-                           # value. Replaces every `[^"]*` sed reader.
-```
-**The 9 mutators become read-all → override → write-all:**
-```
-set_tdd_state(){ _read_fragment_all "$f"; FRAG_status=$1; FRAG_stage=$2; ...; _write_fragment_from_vars "$f"; }
-```
-Each names only the 1–3 fields it changes; all others survive by construction
-(no positional threading, so a "missed arg" can no longer wipe a field). The
-resume.sh and pause-retry.sh mutators adopt the same pair.
+No new public interface. The change is a mechanical reader swap at the call sites,
+reusing the canonical reader 0050 shipped:
 
-**`set -u` invariant.** `_write_fragment_from_vars` runs under `set -u`, so the
-FRAG_* set MUST be initialized before it is called. The contract: a mutator either
-(a) calls `_read_fragment_all` first (the normal read-all → override → write-all
-shape, which populates every FRAG_*), or (b) for INITIAL fragment creation where no
-file exists yet, calls `_read_fragment_all` on the absent file (which sets every
-FRAG_* to empty, rc 0) before overriding the creation fields. `_read_fragment_all`
-is thus the single initializer of the namespace; `_write_fragment_from_vars` never
-guesses a default and a caller never writes without a prior read-all.
-
-**Counter helpers (reuse #2).** `rework_attempts` / `re_review_attempts` are
-maps spliced with a hand-rolled `"$key":[0-9]*` sed in 3 places. Add
-`_frag_counter_peek <field> <key>` and `_frag_counter_set <field> <key> <val>`
-operating on the FRAG_* map vars, so the splice lives once; the public
-peek/bump funcs become wrappers. (Folded here because they share the fragment
-round-trip; keeps the counter RMW from re-diverging.)
+- **`_read_fragment_field <file> <key>`** (`scripts/lib/state.sh`, existing) — the
+  quote-aware, unescaping, field-name-validated reader that delegates to
+  `tl_json_field` (json.sh). Every converted site becomes
+  `key="$(_read_fragment_field "$f" key)"`. Reuse, not redefine — honoring 0050's
+  json.sh single-source convention (the `tests/json-helper.test.sh`
+  `[single-source]` invariant forbids a new extractor outside json.sh).
+- **The 13 mutator read-blocks** (`state.sh`: `state_init`, `set_tdd_state`,
+  `set_tdd_meta`, `set_halt_cause`, `_record_cleared_step`,
+  `_rewrite_fragment_findings`, `_rewrite_fragment_rework`,
+  `_reset_rework_attempts`, `_update_branch_head_at_pause`,
+  `_accept_blocked_as_paused`; `resume.sh`: `_update_paused_cause` + the resume
+  orchestration reads; `pause-retry.sh`: `_append_retry`, `_enter_paused`) —
+  each inline `sed -n 's/.*"<field>":"\([^"]*\)".*/\1/p' … | head -1` for a
+  string field is replaced by `_read_fragment_field "$f" <field>`.
+- **`stage` null-guard collapse.** Sites read `stage` as
+  `if grep -q '"stage":null' "$f"; then stage=""; else stage="$(sed …)"; fi`.
+  Because `_read_fragment_field` returns empty for a `null` or absent field (its
+  documented contract), this collapses to `stage="$(_read_fragment_field "$f"
+  stage)"` with identical semantics — the guard becomes redundant, not removed
+  behavior.
+- **Out of scope, declared:** the numeric reads (`"n":\([0-9]*\)`,
+  `started_at`, `queue_pos`) stay as-is (not `[^"]*`, not free-text); the
+  structural array/object readers (`_read_fragment_array_csv`,
+  `_read_fragment_raw_array`, `_read_fragment_raw_object`,
+  `_read_fragment_cleared_log` — all `[^]]*` bracket matches) stay as-is
+  (quote-free by construction); `scripts/status.sh` is the read-only renderer
+  (a separate concern with its own inline reads, not a carry-forward-WRITE path)
+  and is **not** touched here.
 
 ## Data & state
-Same on-disk fragment schema (state.d/<slug>.json) — NO schema change, only the
-read/write *mechanism*. The FRAG_* namespace is process-local. Backward
-compatibility: a fragment written by the OLD writer reads identically through
-`_read_fragment_all` (same keys), and a fragment written by the NEW writer is
-byte-equivalent for quote-free values (quote-bearing values now round-trip
-correctly instead of truncating — the only intended output difference).
+No on-disk schema change, no record-version bump, no migration. The fragment
+format is identical; only the read *mechanism* at the call sites changes. A
+fragment written before this TDD reads back identically; a value with no JSON
+escapes is byte-identical through the new reader (the unescape is the identity on
+escape-free input). The single intended output difference: a `note` containing a
+`"` now reads back intact instead of truncated.
 
 ## Sequencing / implementation plan
-1. Add `_json_field` (quote-aware extractor) and repoint `_read_fragment_field`
-   (state.sh:50) to it; this alone fixes A10/A5 for the standalone reader.
-2. Add `_read_fragment_all` + `_write_fragment_from_vars` (FRAG_* namespace),
-   reusing the existing raw-object/cleared-log readers for the JSON sub-fields.
-3. Migrate the 7 in-file state.sh mutators to read-all → override → write-all;
-   reduce `_write_tdd_fragment` to a shim (or retire it) so no caller threads 29
-   positionals.
-4. Migrate the resume.sh (32-87) and pause-retry.sh (95-141) mutators to the pair.
-5. Add `_frag_counter_peek`/`_frag_counter_set`; repoint the rework/re-review
-   counter funcs.
-6. Update `tests/refactor-state-io.test.sh` (+ any fragment-mutator tests) with
-   the carry-forward round-trip + quote-safety regressions; register if new.
+1. Convert the inline `[^"]*` free-text fragment reads in `scripts/lib/state.sh`
+   (the 10 mutator read-blocks) to `_read_fragment_field`, collapsing each
+   `stage` null-guard to a plain safe-reader call.
+2. Convert the inline `[^"]*` free-text fragment reads in `scripts/lib/resume.sh`
+   (the `_update_paused_cause` carry-forward block + the resume-orchestration
+   reads) to `_read_fragment_field`.
+3. Convert the inline `[^"]*` free-text fragment reads in
+   `scripts/lib/pause-retry.sh` (`_append_retry`, `_enter_paused`) to
+   `_read_fragment_field`.
+4. Add `tests/state-carryforward-quotesafe.test.sh` (drive the mutators with a
+   quote-bearing `note`; assert round-trip integrity + the no-inline-reader grep
+   invariant; the `stage:null→empty` regression), then register it in
+   `tests/implement-gate.test.sh` (new `SCQ_FAIL` term + AND-chain), red-first
+   per the TDD 0038 §3 wire-in rule.
 
 ## Failure modes & edge cases
 **Real risks.**
-- *A carry-forward field is silently dropped by the new writer* — the exact
-  failure the 29-param hack guarded. Mitigated by Verification §1: a round-trip
-  test populating EVERY field (incl findings[], step_block_log, cleared_step_log)
-  and asserting each non-mutated field survives byte-identical after each mutator.
-  This is the gating regression; the refactor is rejected if any field drops.
-- *The quote-aware extractor mis-parses a pathological value* (embedded `\\"`,
-  a backslash before the closing quote). Mitigated by Verification §2 adversarial
-  cases (`a"b`, `a\`, `a\"b`, trailing `\`).
-- *state.sh per-file diff exceeds the 300-line bound.* Declared exception (this is
-  a cohesive single-file refactor of the mutator family; splitting it leaves
-  callers half-migrated against a changed writer — worse than one large file).
+- *A converted read changes a value a downstream comparison depends on.* The only
+  field whose output changes is a quote-bearing one, and only `note` can carry a
+  `"`; `note` is forensic display text, never a control-flow comparand. Quote-free
+  fields are byte-identical. Mitigated by Verification §1 (quote-free equivalence)
+  + §3 (no control-flow path reads `note`).
+- *The `stage` null-guard collapse changes the null/absent path.*
+  `_read_fragment_field` returns empty for `null`/absent — the same value the
+  guard produced. Mitigated by Verification §4 (a `stage:null` fragment reads back
+  `stage=""`).
+- *A free-text field is read by an inline `[^"]*` sed somewhere the grep misses.*
+  Mitigated by Verification §2, a repo-grep asserting **zero** inline `[^"]*`
+  free-text fragment readers remain in the three libs (the falsifiable invariant).
 
 **Overblown risks.**
-- *On-disk schema migration.* None — the schema is unchanged; old fragments read
-  cleanly. No migration step, no version bump of the record.
-- *Performance of one awk parse vs many seds.* `_read_fragment_all` does ONE pass
-  where the old code did N sed invocations — strictly fewer processes.
+- *Performance.* `_read_fragment_field` is one awk pass vs the old one-sed-per-
+  field; on the write-path mutators (not a hot loop) the delta is immaterial.
+- *Schema migration.* None — the on-disk format is unchanged.
 
 **Unspoken risks (elephants).**
-- *A reader OUTSIDE the mutator set still uses the `[^"]*` sed.* status.sh has its
-  own inline copies ([[0054]] / A28 territory) and learnings.sh reads slug. This
-  TDD fixes the carry-forward WRITE path and `_read_fragment_field`; Verification
-  §4 greps state.sh+resume.sh to assert no `[^"]*` free-text reader remains in the
-  refactored set, and explicitly notes status.sh's readers are out of scope (owned
-  by [[0054]]), so the boundary is declared rather than silently partial.
+- *Declaring "fixed" while the renderer still truncates.* `scripts/status.sh` has
+  its own inline readers for the human-facing snapshot. This TDD fixes the
+  carry-forward WRITE path (the corruption *source*); the renderer only *displays*
+  and never re-writes, so it cannot compound corruption — but a quote-bearing
+  `note` could still render truncated in the status view. That is a separate,
+  display-only concern, explicitly left to a future status.sh pass rather than
+  silently bundled — the boundary is declared, not hidden.
 
 ## Verification plan
-- **Observable surface:** (a) a fragment file on disk after a mutator runs — its
-  field values; (b) `_read_fragment_field`/`_read_fragment_all` stdout; (c) the
-  rework/re-review counter values after peek/set.
-- **Observation points (mechanical, `tests/refactor-state-io.test.sh`, sourcing
-  state.sh via the existing harness):**
-  1. Write a fragment with every carry-forward field populated (status, stage,
-     note, halt_cause_detail, branch, pr_url, findings[] with 2 entries,
-     step_block_log, cleared_step_log, rework_attempts map). Run EACH mutator in
-     turn; after each, read the fragment back and assert every field the mutator
-     did NOT target is byte-identical to before.
-  2. Set `note` and `halt_cause_detail` to values containing `"` (e.g.
-     `gate emitted no verdict: "PASS" expected`), run a state transition, read back
-     — assert the full original string (no truncation, no dangling `\`).
-  3. `_frag_counter_set rework_attempts review:1 2` then `_frag_counter_peek` → 2;
-     bump again → 3; on a fresh fragment peek → 0.
-  4. Repo-grep state.sh + resume.sh: no `[^"]*` free-text reader remains in the
-     mutator/`_read_fragment_field` set; the writer is `_write_fragment_from_vars`
-     only.
+- **Observable surface:** (a) the bytes of a fragment file after a mutator runs;
+  (b) `_read_fragment_field` stdout for a quote-bearing value; (c) a repo-grep
+  over the three libs.
+- **Observation points (mechanical; `tests/state-carryforward-quotesafe.test.sh`
+  sources `state.sh`/`resume.sh`/`pause-retry.sh` via the existing source-guard
+  harness):**
+  1. Write a fragment whose `note` is `gate emitted no verdict: "PASS" expected`
+     and whose `branch`/`pr_url`/`log` are set; run `set_tdd_state` (then
+     `set_halt_cause`); read the fragment back and assert `note` is byte-identical
+     to the original (no truncation at the `"`, no `\\` compounding) and that
+     `branch`/`pr_url`/`log` are unchanged.
+  2. Repo-grep `state.sh` + `resume.sh` + `pause-retry.sh`: assert **zero**
+     `sed -n 's/.*"<field>":"\([^"]*\)".*/.../p'` free-text string readers remain
+     (the array/object `[^]]*` readers and numeric `[0-9]*` reads are explicitly
+     excluded from the assertion).
+  3. Drive a mutator on a fragment whose `note` holds a `"`, then assert no
+     control-flow branch consumed a truncated value (the run still routes by
+     `status`/`halt_cause`, which are quote-free) — i.e. the same terminal state
+     is reached with and without the embedded quote.
+  4. Write a fragment with `"stage":null`, run `set_tdd_meta`, read back: assert
+     `stage` is empty (the null-guard-collapse regression).
 - **Expected observations (PASS):**
-  - §1 (**carry-forward regression**): pre-refactor a field-drop bug would surface
-    as a wiped field; post-refactor every non-targeted field survives byte-identical.
-  - §2 (**A10/A5 regression**): pre-fix the quote-bearing note reads back truncated
-    at the first `"`; post-fix it round-trips intact. Named fail-pre/pass-post.
-  - §3: counters peek/set/bump correctly; empty → 0.
-  - §4: single read-all/write-all; no `[^"]*` reader in the refactored set.
+  - §1 **A10/A5 regression** — pre-fix the quote-bearing `note` reads back
+    truncated at the first `"`; post-fix it round-trips intact (named
+    fail-pre/pass-post).
+  - §2 the grep returns no inline free-text reader in the three libs.
+  - §3 the embedded quote does not alter the terminal run state.
+  - §4 `stage:null → stage=""` preserved.
 
 ## Evaluation rubric
 | Criterion | High-quality | Acceptable | Failing |
 |---|---|---|---|
-| Requirement + folded-bug traceability | Every FR-53/54/67 tie-in AND each folded bug (A-id) maps to a named design element | All mapped | Any req or folded bug untraced |
-| Folded-bug regression coverage | Each folded bug has a named observation point that fails pre-fix / passes post-fix | Each folded bug has a regression check | A folded bug has no regression observation |
-| Single-source-of-truth (refactors) | One canonical helper; all callers verified-thin delegates | Callers delegate; one definition | A divergent copy remains |
-| Sourcing + back-compat | New shared lib sources cleanly in all 4 contexts incl markers minimal-host; existing callers/tests unbroken | Sourcing + guard specified | A context unhandled or a caller regressed |
-| Verification-plan actionability | Observable surface + exact points + expected values | Surface + points named | placeholder/vague |
-| Scope-bound adherence | Within bounds, or a declared/justified exception (state.sh) | Within bounds | Bound blown without exception |
-| Naming consistency | Same helper names across all 5 TDDs | Mostly consistent | Same concept named two ways |
+| A10/A5 closure | Quote-bearing note round-trips byte-intact through a mutator transition, pinned by a fail-pre/pass-post regression | Round-trip asserted | No regression, or note still truncates |
+| Single-source reuse | All reads route through tl_json_field/_read_fragment_field (the 0050 convention); no new extractor defined | Reuses the safe reader | A new inline parser or escaper copy is introduced |
+| Clean grep invariant | Verification asserts no inline `[^"]*` free-text fragment reader remains in state.sh/resume.sh/pause-retry.sh | Invariant asserted for the converted set | Residual inline free-text reader left unasserted |
+| Behavior preservation | Quote-free fields byte-identical; `stage:null`->empty preserved; no control-flow change | Equivalence stated + spot-checked | A quote-free field value or stage-null path changes |
+| Verification-plan actionability | Observable surface + exact observation points (fragment bytes after each mutator) + expected values | Surface + points named | Tests-pass placeholder |
+| Scope-bound adherence | Within per-file + touched-file bounds (no exception needed for the surgical TDD) | Within bounds | Over a bound without exception |
+| 0058 deferral honesty | DEFERRED banner + revival prerequisites + corrected 13-mutator survey; not presented as buildable | Marked deferred | Reads as ready-to-build or carries stale survey |
 
 ## Requirement traceability
 | Requirement / bug | Design element |
 |---|---|
-| FR-27 (structured run-state) | one read-all/write-all pair owns the fragment round-trip; schema unchanged |
-| FR-39 / FR-40 (resume from state) | resume.sh mutators adopt the lossless pair (step 4); halt_cause_detail no longer truncated on refuse-to-resume |
-| ADR 0006 (artifacts grounded) | forensic note/detail preserved intact, so the human-facing record is trustworthy |
-| bug A10 / A5 | `_json_field` quote-aware extractor replaces every `[^"]*` reader; Verification §2 |
-| reuse #3 | `_read_fragment_all`/`_write_fragment_from_vars` retire the 9 copies + 29-param writer |
-| reuse #2 | `_frag_counter_peek`/`_frag_counter_set` single-source the counter splice |
-| FR-69 (self-compliance with Theme A) | collapses 9 duplicated mutator blocks + the 29-param writer, bringing state.sh closer to scope-compliant |
+| FR-27 (structured run-state) | the fragment round-trip preserves free-text fields losslessly; schema unchanged |
+| FR-39 / FR-40 (resume from state) | `resume.sh`/`pause-retry.sh` carry-forward reads route through the safe reader, so a quote-bearing `note`/cause survives a pause→resume transition |
+| ADR 0006 (artifacts grounded) | the forensic `note` the human reviews is no longer silently truncated — the durable record is trustworthy |
+| bug A10 / A5 | every inline `[^"]*` free-text fragment read → `_read_fragment_field` (tl_json_field); Verification §1/§2 |
+| FR-69 (self-compliance with Theme A) | eliminates the inline-`[^"]*` reader class across the three run-state libs, converging on the single canonical reader |
 
-No gaps.
+No gaps. The maintainability reuse (#3 read-all/write-all, #2 counter helpers)
+is intentionally **not** in this TDD — it is [[0058]] (deferred).
 
 ## Dependencies considered
-No new external dependency, NO jq on the core path. Chosen: a quote-aware awk
-parser + a FRAG_* var-set read-all/write-all. Rejected alternatives:
-- **`jq -r '.note'` for the free-text fields** — rejected: state.sh fragment I/O
-  is deliberately jq-OPTIONAL (TDD 0037 / `_extract_token_spend` fallback); a hard
-  jq dep on the core state path reverses that contract and would strand
-  jq-less hosts mid-resume.
-- **Keep `_write_tdd_fragment`'s positional contract, just add the quote-aware
-  reader** — rejected: fixes A10/A5 but leaves the 9-copy / 29-param duplication
-  (reuse #3) that already forced the preserve-on-absent compromise and re-bites on
-  every future field.
+No new external dependency; no jq on the core path (the reused `tl_json_field` is
+pure awk). Chosen: reuse the existing `_read_fragment_field` wrapper. Rejected
+alternatives:
+- **Define a fresh quote-aware extractor in `state.sh`** — rejected: 0050 made
+  `scripts/lib/json.sh` the single source for JSON helpers and ships a
+  `[single-source]` eval that fails any `tl_json_*`/escaper definition outside it;
+  a new extractor would reintroduce exactly the divergence 0050 removed.
+- **Fix only the `note` field (~13 sites)** — rejected: closes today's live bug
+  but leaves the inline-`[^"]*` reader class in place, so the next free-text field
+  added to a read-block silently reintroduces A10/A5, and the verification grep
+  can't assert a clean invariant.
+- **Do the full read-all/write-all refactor now** — rejected for THIS TDD: it is
+  the biggest/riskiest pending change (a rewrite of the run-state I/O every gate
+  depends on) for a purely-internal maintainability payoff; split to [[0058]] so
+  the correctness fix ships small and safe.
 
 ## PRD conflicts surfaced (and resolution)
-None. Refactors the mechanism of an existing requirement (FR-27/39/40); schema and
-behavior preserved except the intended quote-safety fix. No ADR reversed.
+None. Refactors the read *mechanism* of an existing requirement (FR-27/39/40);
+schema and behavior preserved except the intended quote-safety fix. No ADR
+reversed. (The PRD advanced to `d7bc491` via the tier-language pass, which does
+not touch this TDD's FR refs; PRD-rev bumped accordingly.)
 
 ## Decisions to promote (ADR candidates)
-None. An internal read-all/write-all refactor of one module is not a durable
-cross-cutting decision. ADR 0006 governs and is respected.
+None. Routing reads through an existing canonical reader is an internal
+consistency fix, not a durable cross-cutting decision. ADR 0006 governs and is
+respected.
 
 ## Touched files
-- `scripts/lib/state.sh` — `_json_field` quote-aware extractor; `_read_fragment_all` + `_write_fragment_from_vars`; migrate 7 mutators; retire/shim `_write_tdd_fragment`; `_frag_counter_peek`/`_set` (A10/A5, reuse #3/#2).
-- `scripts/lib/resume.sh` — migrate the carry-forward mutator (32-87) to the pair; drop its `[^"]*` readers (A5).
-- `scripts/lib/pause-retry.sh` — migrate the mutator (95-141) to the pair.
-- `tests/refactor-state-io.test.sh` — carry-forward round-trip + quote-safety + counter regressions.
-- `.claude-plugin/plugin.json` — version bump (build-applied housekeeping).
+- `scripts/lib/state.sh` — convert the 10 mutator blocks' inline `[^"]*` free-text reads to `_read_fragment_field`; collapse the `stage` null-guards (A10/A5).
+- `scripts/lib/resume.sh` — convert the `_update_paused_cause` + resume-orchestration inline `[^"]*` free-text reads to `_read_fragment_field`.
+- `scripts/lib/pause-retry.sh` — convert the `_append_retry` / `_enter_paused` inline `[^"]*` free-text reads to `_read_fragment_field`.
+- `tests/state-carryforward-quotesafe.test.sh` — quote-bearing-note round-trip + no-inline-reader grep invariant + stage:null regression.
+- `tests/implement-gate.test.sh` — register the new eval (SCQ_FAIL term + AND-chain), red-first wire-in (TDD 0038 §3).
+- `.claude-plugin/plugin.json` — version bump (build-applied).
 
 ## Expected diff size
-- `scripts/lib/state.sh` — 320 lines (exception: cohesive single-file refactor of the fragment-mutator family — `_json_field` + read-all/write-all + 7 mutator migrations + counter helpers; splitting leaves callers half-migrated against a changed writer).
-- `scripts/lib/resume.sh` — 60 lines (mutator migration + reader replacement; ×1.4).
-- `scripts/lib/pause-retry.sh` — 45 lines (mutator migration; ×1.4).
-- `tests/refactor-state-io.test.sh` — 150 lines (round-trip all-fields + quote cases + counters; ×1.6 test).
+- `scripts/lib/state.sh` — 130 lines (61 inline `[^"]*` string reads × ~1-line swap, plus the stage null-guard collapses; ×1.4 shell-lib). Note: of the 61 converted reads, only the ~8 `note` reads (state_init takes `note` as a parameter, so it has none) produce an OUTPUT change — and only when the value holds a `"`; the other ~53 (path/branch/pr_url/log/status/stage) are byte-identical, converted for the clean grep invariant, not for a value change.
+- `scripts/lib/resume.sh` — 35 lines (13 swaps; ×1.4).
+- `scripts/lib/pause-retry.sh` — 35 lines (13 swaps; ×1.4).
+- `tests/state-carryforward-quotesafe.test.sh` — 180 lines (mutator round-trip + grep invariant + regressions; ×1.6 test).
+- `tests/implement-gate.test.sh` — 20 lines (registration block + AND-chain term; ×1.6).
 - `.claude-plugin/plugin.json` — 2 lines (version bump).
-Total expected diff: ~577 lines across 5 files. One inline exception declared on `scripts/lib/state.sh` (cohesive refactor over the 300-line per-file cap); all other files well under cap (the `.claude-plugin/plugin.json` bump is a trivial build-applied 1-line change).
+Total expected diff: ~402 lines across 6 files. All files within the 300-line per-file cap (no exception needed); touched files 6 ≤ 8.
