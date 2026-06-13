@@ -1,5 +1,5 @@
 # TDD 0051: Quote-safe fragment reads — route mutator inline reads through the canonical reader
-Status: draft
+Status: implemented
 PRD refs: FR-27 (structured run-state record); FR-39 (resume from state); FR-40 (resume baseline); FR-69 (self-compliance with Theme A)
 PRD-rev: d7bc491
 ADR constraints: 0006
