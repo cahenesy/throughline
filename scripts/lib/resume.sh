@@ -45,15 +45,14 @@ _update_paused_cause() {
   local gates_csv retries_json branch_head
   n="$(sed -n 's/.*"n":\([0-9]*\).*/\1/p'            "$f" | head -1)"
   qp="$(sed -n 's/.*"queue_pos":\([0-9]*\).*/\1/p'   "$f" | head -1)"
-  path="$(sed -n 's/.*"path":"\([^"]*\)".*/\1/p'     "$f" | head -1)"
-  status="$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$f" | head -1)"
-  if grep -q '"stage":null' "$f" 2>/dev/null; then stage=""
-  else stage="$(sed -n 's/.*"stage":"\([^"]*\)".*/\1/p' "$f" | head -1)"; fi
+  path="$(_read_fragment_field "$f" path)"
+  status="$(_read_fragment_field "$f" status)"
+  stage="$(_read_fragment_field "$f" stage)"
   sta="$(sed -n 's/.*"started_at":\([0-9]*\).*/\1/p' "$f" | head -1)"
-  branch="$(sed -n 's/.*"branch":"\([^"]*\)".*/\1/p' "$f" | head -1)"
-  pr_url="$(sed -n 's/.*"pr_url":"\([^"]*\)".*/\1/p' "$f" | head -1)"
-  log_f="$(sed -n 's/.*"log":"\([^"]*\)".*/\1/p'     "$f" | head -1)"
-  note="$(sed -n 's/.*"note":"\([^"]*\)".*/\1/p'     "$f" | head -1)"
+  branch="$(_read_fragment_field "$f" branch)"
+  pr_url="$(_read_fragment_field "$f" pr_url)"
+  log_f="$(_read_fragment_field "$f" log)"
+  note="$(_read_fragment_field "$f" note)"
   gates_csv="$(_read_fragment_array_csv "$f" gates_completed)"
   retries_json="$(_read_fragment_raw_array "$f" retries)"
   branch_head="$(_read_fragment_field "$f" branch_head_at_pause)"
@@ -169,7 +168,7 @@ _resume_from() {
   # recovery arms below re-set it; a normal resume leaves it empty.
   RESUME_RECOVER_CAUSE=""
   local fragment_status
-  fragment_status="$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+  fragment_status="$(_read_fragment_field "$f" status)"
   if [ "$fragment_status" != "paused" ]; then
     # TDD 0027 §3c / FR-39: a blocked halt whose halt_next_actions begins with a
     # resume action (e.g. rework-scope-exceeded → "resume (retries with stricter
@@ -179,8 +178,7 @@ _resume_from() {
     # fragment whose actions are design escalations only is not resumable.
     local _halt_actions _stage_now _hc_now
     _halt_actions="$(sed -n 's/.*\("halt_next_actions":\[[^]]*\]\).*/\1/p' "$f" | head -1)"
-    if grep -q '"stage":null' "$f" 2>/dev/null; then _stage_now=""
-    else _stage_now="$(sed -n 's/.*"stage":"\([^"]*\)".*/\1/p' "$f" | head -1)"; fi
+    _stage_now="$(_read_fragment_field "$f" stage)"
     # TDD 0039 / FR-39: halt_cause read once here so the RECOVER-guarded recovery
     # arms below (after the existing blocked-resume/orphaned arms, before the
     # final `else return 0`) can discriminate without re-reading (norm #6).
@@ -199,7 +197,7 @@ _resume_from() {
         local _hdetail _recorded_blob _spath _integ_blob
         _hdetail="$(_read_fragment_field "$f" halt_cause_detail)"
         _recorded_blob="$(printf '%s' "$_hdetail" | sed -n 's/.*tdd_rev=\([0-9a-f]\{7,\}\).*/\1/p')"
-        _spath="$(sed -n 's/.*"path":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+        _spath="$(_read_fragment_field "$f" path)"
         _integ_blob=""
         [ -n "$_spath" ] && _integ_blob="$(git rev-parse --verify --quiet "$INTEGRATION:$_spath" 2>/dev/null)"
         if [ -n "$_recorded_blob" ] && [ -n "$_integ_blob" ]; then
@@ -227,7 +225,7 @@ _resume_from() {
         local _hdetail _recorded_blob _spath _integ_blob
         _hdetail="$(_read_fragment_field "$f" halt_cause_detail)"
         _recorded_blob="$(printf '%s' "$_hdetail" | sed -n 's/.*tdd_rev=\([0-9a-f]\{7,\}\).*/\1/p')"
-        _spath="$(sed -n 's/.*"path":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+        _spath="$(_read_fragment_field "$f" path)"
         _integ_blob=""
         [ -n "$_spath" ] && _integ_blob="$(git rev-parse --verify --quiet "$INTEGRATION:$_spath" 2>/dev/null)"
         if [ -n "$_recorded_blob" ] && [ -n "$_integ_blob" ]; then
@@ -316,7 +314,7 @@ _resume_from() {
       # something else (review-fatal) is left terminal for [[0040]] (`else
       # return 0`, exactly today's no-recover behavior).
       local _rnote _rgates
-      _rnote="$(sed -n 's/.*"note":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+      _rnote="$(_read_fragment_field "$f" note)"
       _rgates=",$(_read_fragment_array_csv "$f" gates_completed),"
       if printf '%s' "$_rnote" | grep -q 'ci-checks' \
          && [[ "$_rgates" == *,build,* ]] && [[ "$_rgates" == *,test-first,* ]] && [[ "$_rgates" != *,verify,* ]]; then
@@ -338,7 +336,7 @@ _resume_from() {
   fi
 
   local branch branch_head_at_pause gates_csv
-  branch="$(sed -n 's/.*"branch":"\([^"]*\)".*/\1/p' "$f" | head -1)"
+  branch="$(_read_fragment_field "$f" branch)"
   branch_head_at_pause="$(_read_fragment_field "$f" branch_head_at_pause)"
   gates_csv="$(_read_fragment_array_csv "$f" gates_completed)"
 
