@@ -63,6 +63,28 @@ echo "[1] state.sh: a quote-bearing note round-trips through set_tdd_state -> se
   [ "$got_log" = "$LOG" ] && ok "quote-free log unchanged" || bad "log changed (got '$got_log')"
 ) || true
 
+echo "[1b] resume.sh: a quote-bearing note survives an _update_paused_cause carry-forward (FR-39/FR-40)"
+( D="$ROOT/1b"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  F="$D/state.d/0001-alpha.json"
+  _write_tdd_fragment 0001-alpha 1 docs/tdd/0001-alpha.md 1 paused "" \
+    1000 1000 "$BR" "$PRURL" "$LOG" "$NOTE" "" "" "" ""
+  # _update_paused_cause reads note off disk and round-trips it via _write_tdd_fragment
+  # (it mutates only paused_cause) — the resume.sh read site the A10/A5 truncation bit.
+  _update_paused_cause 0001-alpha resume-blocked-branch-divergence
+  got_note="$(_read_fragment_field "$F" note)"
+  got_branch="$(_read_fragment_field "$F" branch)"
+  [ "$got_note" = "$NOTE" ] \
+    && ok "note survives _update_paused_cause byte-intact (resume.sh read fixed)" \
+    || bad "note must survive _update_paused_cause intact (got '$got_note')"
+  [ "$got_branch" = "$BR" ] && ok "resume.sh: quote-free branch unchanged" || bad "branch changed (got '$got_branch')"
+  [ "$(_read_fragment_field "$F" paused_cause)" = "resume-blocked-branch-divergence" ] \
+    && ok "resume.sh: paused_cause updated as intended" || bad "paused_cause should be updated"
+) || true
+
 echo "[4] state.sh: the stage null-guard collapse preserves stage:null -> empty (set_tdd_meta)"
 ( D="$ROOT/4"; mkdir -p "$D/state.d"
   export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
