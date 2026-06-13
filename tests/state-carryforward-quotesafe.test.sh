@@ -153,6 +153,16 @@ echo "[3] control-flow: an embedded quote in note does not alter the _resume_fro
     'gate said "ci-checks" failed' "" "build,test-first"
   _write_tdd_fragment 0001-p 1 docs/tdd/0001-p.md 1 failed "" 1000 1000 "" "" "$LOG" \
     'ci-checks.sh FAIL' "" "build,test-first"
+  # Negative control (inline red-first proof): this §3 arrived as a rework AFTER the
+  # implementation, so its discriminating power is demonstrated HERE rather than by
+  # commit order. Apply the EXACT pre-fix truncating reader to 0001-q's on-disk note
+  # and assert it drops 'ci-checks' — the very byte the recovery decision greps for.
+  # So the old reader WOULD misroute this fixture (red); only the quote-safe read
+  # below keeps it whole and routes correctly (green).
+  old_q="$(sed -n 's/.*"note":"\([^"]*\)".*/\1/p' "$STATE_DIR/0001-q.json")"
+  printf '%s' "$old_q" | grep -q 'ci-checks' \
+    && bad "negative control void: the truncating read still saw 'ci-checks' (§3 would not go red pre-fix)" \
+    || ok "negative control: the pre-fix truncating read drops 'ci-checks' from 0001-q's note — §3 fails against the old reader"
   rq="$(rec 0001-q)"; rp="$(rec 0001-p)"
   [ "$rp" = "ci-checks" ] && [ "$rq" = "$rp" ] \
     && ok "embedded quote leaves the _resume_from/_rnote recovery decision identical (both route to ci-checks)" \
