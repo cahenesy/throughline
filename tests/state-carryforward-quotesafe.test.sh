@@ -63,6 +63,31 @@ echo "[1] state.sh: a quote-bearing note round-trips through set_tdd_state -> se
   [ "$got_log" = "$LOG" ] && ok "quote-free log unchanged" || bad "log changed (got '$got_log')"
 ) || true
 
+echo "[4] state.sh: the stage null-guard collapse preserves stage:null -> empty (set_tdd_meta)"
+( D="$ROOT/4"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  F="$D/state.d/0001-alpha.json"
+  # Seed a fragment whose stage is the JSON null literal (an empty stage arg makes
+  # _write_tdd_fragment emit `"stage":null`). The old code guarded this with
+  # `if grep -q '"stage":null' ...; then stage=""`; the collapse relies on
+  # _read_fragment_field returning empty for a null/absent field. Pin that the
+  # collapsed reader still yields stage="" so set_tdd_meta re-writes `"stage":null`.
+  _write_tdd_fragment 0001-alpha 1 docs/tdd/0001-alpha.md 1 building "" \
+    1000 1000 "$BR" "" "$LOG" ""
+  grep -q '"stage":null' "$F" || { bad "seed precondition: fragment should carry stage:null"; exit 0; }
+  set_tdd_meta 0001-alpha branch=feat/keep
+  got_stage="$(_read_fragment_field "$F" stage)"
+  [ -z "$got_stage" ] \
+    && ok "stage:null reads back as empty through the collapsed guard" \
+    || bad "stage:null must read back empty (got '$got_stage')"
+  grep -q '"stage":null' "$F" \
+    && ok "set_tdd_meta re-writes stage:null (empty stage -> JSON null, not \"\" or \"null\")" \
+    || bad "set_tdd_meta should preserve the JSON null stage literal"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
