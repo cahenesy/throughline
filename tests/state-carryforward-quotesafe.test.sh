@@ -131,26 +131,32 @@ echo "[2] grep invariant: zero inline [^\"]* free-text fragment readers remain i
     || bad "positive control failed: the grep pattern matched nothing in status.sh (pattern may be dead)"
 ) || true
 
-echo "[3] control-flow: an embedded quote in note does not alter the terminal halt state"
+echo "[3] control-flow: an embedded quote in note does not alter the _resume_from/_rnote recovery decision (FR-39/FR-40)"
 ( D="$ROOT/3"; mkdir -p "$D/state.d"
   export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
-  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D" RECOVER=1
   TDDS=()
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
-  # Two fragments identical except the note's embedded quote. The run routes by
-  # status / halt_cause / paused_cause / halt_next_actions (all quote-free); a
-  # truncation-corrupted note must not perturb those control-flow comparands.
-  FQ="$D/state.d/0001-q.json"; FP="$D/state.d/0001-p.json"
-  _write_tdd_fragment 0001-q 1 docs/tdd/0001-q.md 1 building build 1000 1000 "$BR" "" "$LOG" "$NOTE" "" "" "" ""
-  _write_tdd_fragment 0001-p 1 docs/tdd/0001-p.md 1 building build 1000 1000 "$BR" "" "$LOG" "plain note no quote" "" "" "" ""
-  set_halt_cause 0001-q ratelimit
-  set_halt_cause 0001-p ratelimit
-  sig() { printf '%s|%s|%s|%s' \
-    "$(_read_fragment_field "$1" status)" "$(_read_fragment_field "$1" halt_cause)" \
-    "$(_read_fragment_field "$1" paused_cause)" "$(_read_fragment_array_csv "$1" halt_next_actions)"; }
-  [ "$(sig "$FQ")" = "$(sig "$FP")" ] \
-    && ok "embedded quote leaves the terminal control-flow state identical (status/halt_cause/paused_cause/next-actions)" \
-    || bad "embedded quote changed the terminal state ('$(sig "$FQ")' vs '$(sig "$FP")')"
+  # _resume_from's --recover arm (TDD 0039) is the ONE control-flow path that reads
+  # note: it greps _rnote for 'ci-checks' to classify a `failed` halt as a ci-checks
+  # recovery (setting RESUME_RECOVER_CAUSE). A truncating read drops everything past
+  # an embedded " — hiding 'ci-checks' and misrouting the recovery. Drive the REAL
+  # _resume_from on two `failed` fragments differing only by an embedded " in note
+  # (both mention ci-checks) and assert the recovery decision is identical. Git is
+  # isolated (CWD has no .git, GIT_* unset) so the post-decision integration merge
+  # cannot touch the real tree — the decision is recorded BEFORE that merge runs.
+  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+  cd "$D" || { bad "[3] could not cd to an isolated dir; skipping to avoid a real merge"; exit 0; }
+  rec() { RESUME_RECOVER_CAUSE=""; _resume_from "$1" >/dev/null 2>&1 || true; printf '%s' "${RESUME_RECOVER_CAUSE:-}"; }
+  # FQ's " sits BEFORE 'ci-checks' — the byte the old [^"]* reader stopped at.
+  _write_tdd_fragment 0001-q 1 docs/tdd/0001-q.md 1 failed "" 1000 1000 "" "" "$LOG" \
+    'gate said "ci-checks" failed' "" "build,test-first"
+  _write_tdd_fragment 0001-p 1 docs/tdd/0001-p.md 1 failed "" 1000 1000 "" "" "$LOG" \
+    'ci-checks.sh FAIL' "" "build,test-first"
+  rq="$(rec 0001-q)"; rp="$(rec 0001-p)"
+  [ "$rp" = "ci-checks" ] && [ "$rq" = "$rp" ] \
+    && ok "embedded quote leaves the _resume_from/_rnote recovery decision identical (both route to ci-checks)" \
+    || bad "embedded quote altered the _resume_from recovery decision (quote='$rq' plain='$rp')"
 ) || true
 
 echo "[4] state.sh: the stage null-guard collapse preserves stage:null -> empty (set_tdd_meta)"
