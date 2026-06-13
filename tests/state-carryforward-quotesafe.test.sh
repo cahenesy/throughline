@@ -85,6 +85,28 @@ echo "[1b] resume.sh: a quote-bearing note survives an _update_paused_cause carr
     && ok "resume.sh: paused_cause updated as intended" || bad "paused_cause should be updated"
 ) || true
 
+echo "[1c] pause-retry.sh: a quote-bearing note survives an _append_retry carry-forward (FR-39)"
+( D="$ROOT/1c"; mkdir -p "$D/state.d"
+  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
+  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"
+  TDDS=()
+  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
+  F="$D/state.d/0001-alpha.json"
+  _write_tdd_fragment 0001-alpha 1 docs/tdd/0001-alpha.md 1 building build \
+    1000 1000 "$BR" "$PRURL" "$LOG" "$NOTE" "" "" "" ""
+  # _append_retry reads note off disk and round-trips it via _write_tdd_fragment
+  # while splicing a retries[] entry — the pause-retry.sh read site A10/A5 bit.
+  _append_retry 0001-alpha verify-runtime 1 30
+  got_note="$(_read_fragment_field "$F" note)"
+  got_branch="$(_read_fragment_field "$F" branch)"
+  [ "$got_note" = "$NOTE" ] \
+    && ok "note survives _append_retry byte-intact (pause-retry.sh read fixed)" \
+    || bad "note must survive _append_retry intact (got '$got_note')"
+  [ "$got_branch" = "$BR" ] && ok "pause-retry.sh: quote-free branch unchanged" || bad "branch changed (got '$got_branch')"
+  grep -q '"gate":"verify-runtime","count":1' "$F" \
+    && ok "pause-retry.sh: retries[] entry appended as intended" || bad "retries[] entry should be appended"
+) || true
+
 echo "[4] state.sh: the stage null-guard collapse preserves stage:null -> empty (set_tdd_meta)"
 ( D="$ROOT/4"; mkdir -p "$D/state.d"
   export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
