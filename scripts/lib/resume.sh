@@ -711,6 +711,20 @@ gate_one() {  # <tdd> <review-base-ref> <log>
 # The done-signal (Status: implemented) is committed on the build branch, not on
 # your BASE, until you merge. These helpers read real branch state so a re-run
 # skips work that is done-but-unmerged instead of rebuilding it. --rebuild forces.
+
+# _tdd_implemented_at <ref> <tdd> (TDD 0059 / FR-18) — the SINGLE home for the
+# `^Status:[[:space:]]*implemented` predicate. Returns 0 iff the TDD blob at
+# <ref> carries a Status: implemented line; non-zero otherwise — including when
+# the ref or path is absent (git show fails → grep sees nothing on its stdin →
+# grep returns 1). built_branch / combined_built_branch (here) and flip_status
+# (gates.sh, sourced before this module — resolved at call time, same contract as
+# gate_one calling gates.sh helpers) all delegate to this one definition so the
+# Status:implemented check never drifts across copies (L-003 duplicate-drift).
+_tdd_implemented_at() {  # <ref> <tdd> -> 0 iff <ref>:<tdd> has a Status: implemented line
+  local ref="$1" tdd="$2"
+  git show "$ref:$tdd" 2>/dev/null | grep -qE '^Status:[[:space:]]*implemented'
+}
+
 built_branch() {  # <tdd> -> echoes the TDD's own build branch if already implemented
   [ "$REBUILD" -eq 1 ] && return 1
   local tdd="$1" slug; slug="$(basename "$tdd" .md)"; local ref
@@ -718,7 +732,7 @@ built_branch() {  # <tdd> -> echoes the TDD's own build branch if already implem
     case "$ref" in
       "$BASE"|"origin/$BASE") continue ;;
       */"$slug")
-        git show "$ref:$tdd" 2>/dev/null | grep -qE '^Status:[[:space:]]*implemented' \
+        _tdd_implemented_at "$ref" "$tdd" \
           && { printf '%s\n' "$ref"; return 0; } ;;
     esac
   done < <(git for-each-ref --format='%(refname:short)' refs/heads refs/remotes/origin 2>/dev/null)
@@ -731,7 +745,7 @@ combined_built_branch() {  # echoes a branch where EVERY queued TDD is implement
     case "$ref" in "$BASE"|"origin/$BASE") continue ;; esac
     ok=1
     for tdd in "${TDDS[@]}"; do
-      git show "$ref:$tdd" 2>/dev/null | grep -qE '^Status:[[:space:]]*implemented' || { ok=0; break; }
+      _tdd_implemented_at "$ref" "$tdd" || { ok=0; break; }
     done
     [ "$ok" -eq 1 ] && { printf '%s\n' "$ref"; return 0; }
   done < <(git for-each-ref --format='%(refname:short)' refs/heads refs/remotes/origin 2>/dev/null)
