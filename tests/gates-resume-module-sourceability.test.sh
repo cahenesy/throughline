@@ -84,7 +84,7 @@ echo "[C] resume.sh parses + sources in isolation"
 echo "[D] resume.sh binds all moved functions"
 ( missing=""
   for fn in _resume_gates_var _update_paused_cause _resume_from gate_one \
-            built_branch combined_built_branch; do
+            built_branch combined_built_branch _tdd_implemented_at; do
     bash -c "source \"$RESUME\"; type -t $fn >/dev/null" 2>/dev/null || missing="$missing $fn"
   done
   if [ -z "$missing" ]; then
