@@ -58,6 +58,56 @@ echo "[§1] _tdd_implemented_at predicate"
     || ok "missing ref → non-zero"
 ) || true
 
+# --- [§2] flip_status idempotency + honesty -----------------------------------
+# A TDD already `implemented` at HEAD must flip as a no-op SUCCESS (return 0, no
+# commit) — the empty-commit `FAIL flip` that issue #165 cascaded from. A genuine
+# draft still flips and commits; a real commit failure on a genuine draft still
+# returns non-zero (NFR-4: the guard precedes, never masks, the honest commit).
+echo "[§2] flip_status idempotency + honesty"
+( THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "§2 could not source implement.sh"; exit 0; }
+  log="$ROOT/s2.log"; : > "$log"
+
+  # (a) already implemented at HEAD → no-op success (return 0, no new commit)
+  ( A="$ROOT/s2a"; mkdir -p "$A/docs/tdd"; cd "$A" || exit 0
+    git init -q -b master; git config user.email t@t.t; git config user.name t
+    printf '# TDD 0001: a\nStatus: implemented\n\n## Approach\nx\n' > docs/tdd/0001-a.md
+    git add -A; git commit -qm init >/dev/null 2>&1
+    before="$(git rev-list --count HEAD)"
+    flip_status docs/tdd/0001-a.md "$log"; rc=$?
+    after="$(git rev-list --count HEAD)"
+    [ "$rc" -eq 0 ] && ok "(a) already-implemented flip returns 0" || bad "(a) already-implemented flip must return 0 (got rc=$rc)"
+    [ "$before" = "$after" ] && ok "(a) no new commit on an already-implemented flip" || bad "(a) must add no commit (before=$before after=$after)"
+  ) || true
+
+  # (b) genuine draft → flips and commits (return 0, exactly one new commit)
+  ( B="$ROOT/s2b"; mkdir -p "$B/docs/tdd"; cd "$B" || exit 0
+    git init -q -b master; git config user.email t@t.t; git config user.name t
+    printf '# TDD 0001: b\nStatus: draft\n\n## Approach\nx\n' > docs/tdd/0001-b.md
+    git add -A; git commit -qm init >/dev/null 2>&1
+    before="$(git rev-list --count HEAD)"
+    flip_status docs/tdd/0001-b.md "$log"; rc=$?
+    after="$(git rev-list --count HEAD)"
+    [ "$rc" -eq 0 ] && ok "(b) genuine draft flip returns 0" || bad "(b) genuine draft flip must return 0 (got rc=$rc)"
+    [ "$((after - before))" -eq 1 ] && ok "(b) exactly one new commit on a genuine flip" || bad "(b) must add exactly one commit (before=$before after=$after)"
+    git show "HEAD:docs/tdd/0001-b.md" 2>/dev/null | grep -qE '^Status:[[:space:]]*implemented' \
+      && ok "(b) HEAD now carries Status: implemented" || bad "(b) flipped TDD must be implemented at HEAD"
+  ) || true
+
+  # (c) genuine draft but git commit forced to fail → honest non-zero, no commit
+  ( C="$ROOT/s2c"; mkdir -p "$C/docs/tdd"; cd "$C" || exit 0
+    git init -q -b master; git config user.email t@t.t; git config user.name t
+    printf '# TDD 0001: c\nStatus: draft\n\n## Approach\nx\n' > docs/tdd/0001-c.md
+    git add -A; git commit -qm init >/dev/null 2>&1
+    # reject every commit (issue #28B-style pre-commit hook), forcing git commit to fail
+    printf '#!/usr/bin/env bash\nexit 1\n' > .git/hooks/pre-commit; chmod +x .git/hooks/pre-commit
+    before="$(git rev-list --count HEAD)"
+    flip_status docs/tdd/0001-c.md "$log"; rc=$?
+    after="$(git rev-list --count HEAD)"
+    [ "$rc" -ne 0 ] && ok "(c) a real commit failure still returns non-zero (NFR-4)" || bad "(c) guard must not mask a real commit failure (got rc=$rc)"
+    [ "$before" = "$after" ] && ok "(c) no commit landed on a forced commit failure" || bad "(c) failed flip must not add a commit (before=$before after=$after)"
+  ) || true
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
