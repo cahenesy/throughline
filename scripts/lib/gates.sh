@@ -709,6 +709,14 @@ test_first_ok() {  # <base-ref> <log>
 # (gate_one's flip site) halts honestly.
 flip_status() {  # <tdd> <log>
   local tdd="$1" log="$2"
+  # TDD 0059 / FR-18, NFR-4: idempotent flip. A TDD already `Status: implemented`
+  # at HEAD (e.g. a combined-batch resume re-reaching an already-built TDD) has
+  # nothing to commit; flipping it would `sed` a no-op then `git commit` with an
+  # empty index → the spurious `FAIL flip` that issue #165 cascaded from. Treat it
+  # as a no-op SUCCESS. A TDD NOT yet implemented at HEAD falls through to the real
+  # flip-and-commit below, so a genuine commit failure (rejecting hook, disk) still
+  # returns non-zero — this guard precedes, never replaces, the honest commit.
+  if _tdd_implemented_at HEAD "$tdd"; then return 0; fi
   sed -i.bak -E 's/^Status:[[:space:]]*(draft|ready)/Status: implemented/' "$tdd" && rm -f "$tdd.bak"
   if ! git add "$tdd" >>"$log" 2>&1; then
     echo "flip_status: git add failed for $tdd" >>"$log"; return 1; fi
