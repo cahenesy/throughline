@@ -108,6 +108,114 @@ echo "[§2] flip_status idempotency + honesty"
   ) || true
 ) || true
 
+# --- [§3] combined-resume regression (drives the real combined driver) ---------
+# Issue #165: a --combined run halted on a downstream TDD (position > 1) must
+# resume cleanly. Fixture: A (0001-alpha) implemented + committed on the combined
+# branch `ci`; B (0002-beta) paused at review (resumable) with B still draft on
+# ci; C (0003-gamma) unbuilt. On `--combined --resume` the driver must SKIP A
+# (already built — not re-flip → empty-commit FAIL flip → BLOCKED cascade), REACH
+# B (re-run only its remaining gate), and NOT cascade-BLOCK B or C.
+echo "[§3] combined-resume regression (real driver, end-to-end)"
+( D="$ROOT/s3"; mkdir -p "$D/.stub/bin"; cd "$D" || { bad "§3 cd failed"; exit 0; }
+  git init -q -b master >/dev/null; git config user.email t@t.t; git config user.name t
+  mkdir -p docs/tdd docs/adr
+  printf '# PRD\n## Requirements\n1. x\n' > docs/PRD.md
+  printf '# ADR Index\n' > docs/adr/INDEX.md
+  for s in 0001-alpha 0002-beta 0003-gamma; do
+    printf '# TDD %s\nStatus: draft\nPRD refs: 1\nPRD-rev: deadbee\nADR constraints: none\n\n## Approach\nstub\n' "$s" > "docs/tdd/$s.md"
+  done
+  git add -A; git commit -qm init >/dev/null
+
+  # Combined branch `ci`: A flipped to implemented + committed; B, C left draft.
+  git checkout -q -b ci
+  sed -i -E 's/^Status:[[:space:]]*draft/Status: implemented/' docs/tdd/0001-alpha.md
+  git add -A; git commit -qm "mark 0001-alpha implemented (verified + reviewed)" >/dev/null
+  ci_head="$(git rev-parse refs/heads/ci)"
+  git checkout -q master
+
+  # stub ci-checks (tests pass; typecheck + lint skipped) + stub claude
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$D/.stub/verify_test.sh"
+  export CI_CHECKS_TEST_CMD="bash $D/.stub/verify_test.sh" CI_CHECKS_TYPECHECK_CMD="" CI_CHECKS_LINT_CMD=""
+  cat > "$D/.stub/bin/claude" <<'EOF'
+#!/usr/bin/env bash
+prompt=""
+while [ $# -gt 0 ]; do case "$1" in -p) prompt="$2"; shift 2;; *) shift;; esac; done
+slug="$(printf '%s' "$prompt" | grep -oE 'docs/tdd/[0-9]+-[a-z]+' | head -1 | sed 's#docs/tdd/##')"
+if printf '%s' "$prompt" | grep -q 'INDEPENDENT runtime-verification gate'; then
+  echo "VERIFY_RUNTIME: PASS"; exit 0
+fi
+if printf '%s' "$prompt" | grep -q 'INDEPENDENT review gate'; then
+  rbase="$(printf '%s' "$prompt" | grep -oE 'name-only[[:space:]]+[0-9a-f]{7,40}' | head -1 | grep -oE '[0-9a-f]{7,40}')"
+  [ -n "$rbase" ] && git diff --name-only "$rbase"..HEAD 2>/dev/null | while IFS= read -r f; do
+    [ -n "$f" ] && echo "FILE_REVIEWED_NO_FINDINGS: $f"
+  done
+  echo "REVIEW_RESULT: PASS"; exit 0
+fi
+echo "t $slug" >> "test-$slug.txt"; git add -A >/dev/null 2>&1; git commit -q -m "test(failing): $slug" >/dev/null 2>&1 || true
+echo "g $(date +%s%N)" >> "gen-$slug.txt"; git add -A >/dev/null 2>&1; git commit -q -m "stub build $slug" >/dev/null 2>&1 || true
+echo "BATCH_RESULT: OK"; exit 0
+EOF
+  chmod +x "$D/.stub/bin/claude"
+  export PATH="$D/.stub/bin:$PATH"
+
+  # Build the prior combined run's paused state (state.d + run.json + latest link)
+  # via the real state helpers (source-only), so the JSON is parser-faithful.
+  ts=20260101-000000
+  LOGDIR_ABS="$D/docs/tdd/.implement-logs/$ts"; mkdir -p "$LOGDIR_ABS/state.d"
+  ( THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || exit 1
+    export STATE_DIR="$LOGDIR_ABS/state.d" STATE_STARTED_AT=1000 STATE_MODE=combined
+    export INTEGRATION=master CHANGE=ci LOGDIR="$LOGDIR_ABS" MAINREPO="$D"
+    TDDS=(docs/tdd/0001-alpha.md docs/tdd/0002-beta.md docs/tdd/0003-gamma.md)
+    # A: already built (done) on ci, every gate complete.
+    _write_tdd_fragment 0001-alpha 1 docs/tdd/0001-alpha.md 1 done "" 1000 1000 ci "" log "" \
+      "" "build,test-first,verify,verify-runtime,review" "" "$ci_head"
+    # B: paused at review (resumable transient) — only the review gate remains.
+    _write_tdd_fragment 0002-beta 2 docs/tdd/0002-beta.md 2 paused review 1000 1000 ci "" log "" \
+      ratelimit "build,test-first,verify,verify-runtime" "" "$ci_head"
+    # C: unbuilt.
+    _write_tdd_fragment 0003-gamma 3 docs/tdd/0003-gamma.md 3 pending "" 1000 1000 "" "" log ""
+    _write_run_fragment paused
+  ) || { bad "§3 fixture-state build failed"; exit 0; }
+  ln -sfn "$ts" "$D/docs/tdd/.implement-logs/latest"
+
+  # Resume the combined run via the REAL driver (separate process; no source-only).
+  THROUGHLINE_INTEGRATION_BRANCH=master bash "$IMPL" --combined --resume >/dev/null 2>&1
+  R="$(ls -t "$D"/docs/tdd/.implement-logs/*/report.md 2>/dev/null | head -1)"
+  st_of() { sed -n 's/.*"status":"\([^"]*\)".*/\1/p' "$1" 2>/dev/null | head -1; }
+  sa="$(st_of "$LOGDIR_ABS/state.d/0001-alpha.json")"
+  sb="$(st_of "$LOGDIR_ABS/state.d/0002-beta.json")"
+  sc="$(st_of "$LOGDIR_ABS/state.d/0003-gamma.json")"
+
+  grep -q "0001-alpha — already built on ci (combined batch); skipped" "$R" 2>/dev/null \
+    && ok "A reports the combined-batch skip line (not FAIL flip / not OK re-report)" \
+    || bad "A must report the combined-batch skip line (report: ${R:-none})"
+  [ "$sa" = skipped ] && ok "A fragment status=skipped" || bad "A fragment must be skipped (got '$sa')"
+  grep -q "0002-beta — BLOCKED (upstream" "$R" 2>/dev/null \
+    && bad "B must NOT be cascade-BLOCKED by A's re-entry" || ok "B is not cascade-BLOCKED (the skip advanced the loop)"
+  [ "$sb" = done ] && ok "B is reached and completes (status=done)" || bad "B should be reached + flipped (got '$sb')"
+  grep -q "0003-gamma — BLOCKED (upstream" "$R" 2>/dev/null \
+    && bad "C must NOT be cascade-BLOCKED" || ok "C is not cascade-BLOCKED (got status '$sc')"
+  marks="$(git -C "$D" log --format='%s' refs/heads/ci 2>/dev/null | grep -c 'mark 0001-alpha implemented')"
+  [ "$marks" = 1 ] && ok "no duplicate 'mark 0001-alpha implemented' commit on ci" || bad "expected exactly one A-flip commit on ci (got $marks)"
+) || true
+
+# --- [§4] single-source Status:implemented predicate --------------------------
+# Exactly one definition of the predicate; built_branch + combined_built_branch +
+# flip_status + the combined-loop skip all delegate; no inline copy of the
+# `git show … | grep … '^Status:…implemented'` check remains (L-003 drift class).
+echo "[§4] single-source Status:implemented predicate"
+( libs=("$REPO/scripts/lib/resume.sh" "$REPO/scripts/lib/gates.sh" "$REPO/scripts/implement.sh")
+  inline="$(grep -rhF "grep -qE '^Status:[[:space:]]*implemented'" "${libs[@]}" 2>/dev/null | wc -l | tr -d '[:space:]')"
+  [ "$inline" = "1" ] && ok "exactly one inline Status:implemented predicate across the libs" \
+    || bad "expected exactly 1 inline predicate (the _tdd_implemented_at body), found $inline"
+  defs="$(grep -rhE '^_tdd_implemented_at\(\)' "${libs[@]}" 2>/dev/null | wc -l | tr -d '[:space:]')"
+  [ "$defs" = "1" ] && ok "_tdd_implemented_at defined exactly once" \
+    || bad "expected exactly 1 _tdd_implemented_at definition, found $defs"
+  calls="$(grep -rhE '_tdd_implemented_at (HEAD|"\$)' "${libs[@]}" 2>/dev/null | wc -l | tr -d '[:space:]')"
+  [ "$calls" -ge 4 ] && ok "all four sites delegate to _tdd_implemented_at (call sites: $calls)" \
+    || bad "expected >=4 delegating call sites (built_branch, combined_built_branch, flip_status, combined-loop skip), found $calls"
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
