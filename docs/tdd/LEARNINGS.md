@@ -89,3 +89,12 @@
 - Flags: structural=false rework=false
 - Summary: §3 does not exercise the _resume_from _rnote control-flow path, contradicting the TDD's stated mitigation that "no control-flow path reads note"
 - Representative evidence: TDD 0051 §Failure modes (line 105): "`note` is forensic display text, never a control-flow comparand. Quote-free fields are byte-identical. Mitigated by Verification §1 (quote-free equivalence) + §3 (no control-flow path reads `note`)." Diff scripts/lib/resume.sh (context surrounding the converted line): `_rnote="$(_read_fragment_field "$f" note)"` followed immediately by `if printf '%s' "$_rnote" | grep -q 'ci-checks'` — note IS used as a control-flow comparand in _resume_from's ci-checks recovery arm. Test §3 (lines 134-154) only calls `set_halt_cause` and checks `status|halt_cause|paused_cause|halt_next_actions`; it never drives `_resume_from`, never sets `RECOVER=1`, and never asserts the 'ci-checks' grep classification is quote-stable. Zero references to `_resume_from`, `ci-checks`, or `_rnote` exist in the new test file.
+
+## L-011: silent-skip-on-infra-failure
+- Pattern class: silent-skip-on-infra-failure
+- Recurred across: 0059-combined-resume-skip-built-tdd (first observed run 20260619-142939)
+- Severity range: minor–major
+- Subject-area hints: files=[scripts/lib/resume.sh, scripts/lib/gates.sh, scripts/implement.sh, tests/combined-resume-skip.test.sh, tests/implement-gate.test.sh, tests/gates-resume-module-sourceability.test.sh, .claude-plugin/plugin.json] tags=[silent-skip-on-infra-failure]
+- Flags: structural=false rework=false
+- Summary: Negated grep assertions false-pass when `$R` is empty (driver produces no report)
+- Representative evidence: Line 193: `grep -q "0002-beta — BLOCKED (upstream" "$R" 2>/dev/null && bad "B must NOT be cascade-BLOCKED by A's re-entry" || ok "B is not cascade-BLOCKED (the skip advanced the loop)"` — if `$R=""` (empty string as filename), grep returns rc=2 (file-not-found, stderr suppressed), the `&&` short-circuits, `|| ok` fires: false pass. Same pattern at line 196-197. Other assertions (`[ "$sb" = done ]`, `[ "$marks" = 1 ]`) provide complementary coverage that would still catch driver failure.
