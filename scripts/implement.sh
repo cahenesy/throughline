@@ -680,6 +680,22 @@ else
         _terminal_state "$slug" blocked "" "upstream TDD failed; not attempted"
         continue
       fi
+      # TDD 0059 / FR-18, FR-40: per-TDD skip — the combined analogue of the
+      # parallel/sequential built_branch skip. On a resume that re-processes the
+      # whole queue, a TDD already `implemented` at the combined branch HEAD must
+      # be SKIPPED (mark skipped, continue) so the loop advances to the halted
+      # downstream TDD — instead of re-entering gate_one + re-flipping it (the
+      # empty-commit FAIL flip that cascaded every remaining TDD to BLOCKED, #165).
+      # Gated on REBUILD≠1 (mirrors built_branch); the skip carries its OWN
+      # set_tdd_meta and uses `continue` WITHOUT touching blocked/paused_halt, so
+      # it never suppresses the eventual push/PR. The unconditional
+      # set_tdd_meta below stays intact for the non-skipped path.
+      if [ "$REBUILD" -ne 1 ] && _tdd_implemented_at "$CHANGE" "$tdd"; then
+        echo "- $slug — already built on $CHANGE (combined batch); skipped" >>"$REPORT"
+        _terminal_state "$slug" skipped "" "already built on $CHANGE (combined batch); awaiting your merge"
+        set_tdd_meta "$slug" "branch=$CHANGE"
+        continue
+      fi
       # TDD 0011 / MA-3: write branch metadata BEFORE _resume_from runs.
       # _resume_from's divergence guard reads the fragment's `branch` field
       # to find the build branch's HEAD-at-pause sibling; if branch is

@@ -655,11 +655,16 @@ echo "[CO-1] gate_one halts honestly when flip_status's commit fails (no false d
   THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" || { bad "source guard missing"; exit 0; }
   git init -q -b master; git config user.email t@t.t; git config user.name t
   mkdir -p docs/tdd
-  # Already `implemented` → flip_status's Status sed is a no-op → the flip
-  # commit fails (nothing to commit). All four gates are marked done so gate_one
-  # proceeds straight to the flip; it must mark failed, not done.
-  printf '# TDD\nStatus: implemented\n' > docs/tdd/0001-a.md
+  # A genuine `draft` TDD whose flip commit is FORCED to fail by a rejecting
+  # pre-commit hook (issue #28B-style). flip_status seds draft→implemented and the
+  # git add succeeds, but git commit is rejected → flip_status returns non-zero.
+  # (TDD 0059 made an already-`implemented` flip an idempotent no-op SUCCESS, so the
+  # old "Status sed is a no-op → empty commit fails" mechanism is no longer a failure;
+  # this forces a REAL commit failure instead.) All four gates are marked done so
+  # gate_one proceeds straight to the flip; it must mark failed, not done.
+  printf '# TDD\nStatus: draft\n' > docs/tdd/0001-a.md
   git add -A; git commit -qm init >/dev/null
+  printf '#!/usr/bin/env bash\nexit 1\n' > .git/hooks/pre-commit; chmod +x .git/hooks/pre-commit
   _write_tdd_fragment 0001-a 1 docs/tdd/0001-a.md 1 reviewing review \
     1000 1000 "" "" "log" "" "" "build,test-first,verify,verify-runtime,review" "" "" "" "" "" "" ""
   export RESUME_GATES_DONE_0001_a="build,test-first,verify,verify-runtime,review"

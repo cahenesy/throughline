@@ -836,4 +836,19 @@ if [ -f "$SCQ" ]; then
   bash "$SCQ" || SCQ_FAIL=1
 fi
 
-[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ] && [ "$SMS_FAIL" -eq 0 ] && [ "$PRM_FAIL" -eq 0 ] && [ "$GRM_FAIL" -eq 0 ] && [ "$BRL_FAIL" -eq 0 ] && [ "$SCB_FAIL" -eq 0 ] && [ "$RR_FAIL" -eq 0 ] && [ "$BCL_FAIL" -eq 0 ] && [ "$BO_FAIL" -eq 0 ] && [ "$IDP_FAIL" -eq 0 ] && [ "$RES_FAIL" -eq 0 ] && [ "$CVR_FAIL" -eq 0 ] && [ "$HRS_FAIL" -eq 0 ] && [ "$SHR_FAIL" -eq 0 ] && [ "$BPL_FAIL" -eq 0 ] && [ "$BDN_FAIL" -eq 0 ] && [ "$IDISC_FAIL" -eq 0 ] && [ "$ERC_FAIL" -eq 0 ] && [ "$SCP_FAIL" -eq 0 ] && [ "$IMR_FAIL" -eq 0 ] && [ "$RVR_FAIL" -eq 0 ] && [ "$WIC_FAIL" -eq 0 ] && [ "$RTH_FAIL" -eq 0 ] && [ "$TFP_FAIL" -eq 0 ] && [ "$TGR_FAIL" -eq 0 ] && [ "$BRC_FAIL" -eq 0 ] && [ "$CMAP_FAIL" -eq 0 ] && [ "$RLNS_FAIL" -eq 0 ] && [ "$SRG_FAIL" -eq 0 ] && [ "$RTM_FAIL" -eq 0 ] && [ "$MDP_FAIL" -eq 0 ] && [ "$GEF_FAIL" -eq 0 ] && [ "$DRR_FAIL" -eq 0 ] && [ "$JSH_FAIL" -eq 0 ] && [ "$GIM_FAIL" -eq 0 ] && [ "$SCQ_FAIL" -eq 0 ]
+# TDD 0059 (FR-18/FR-40/NFR-4; ADR 0005, 0006; issue #165): the combined-resume-skip
+# eval pins the combined driver's per-TDD skip of an already-`implemented` TDD on the
+# shared combined branch (so a downstream halt resumes without re-flipping → empty-commit
+# FAIL flip → BLOCKED cascade), the idempotent flip_status, and the single-sourced
+# _tdd_implemented_at predicate. Registered here so the combined-resume regression is
+# gated by ci-checks, not orphaned from the aggregator. Per the TDD 0038 §3 wire-in rule
+# this registration is new gating behavior — its failing wire-in test (the eval's §W
+# dogfood) drove the AND-chain term below red→green before this block landed.
+CRS="$(dirname "$0")/combined-resume-skip.test.sh"
+CRS_FAIL=0
+if [ -f "$CRS" ]; then
+  echo
+  bash "$CRS" || CRS_FAIL=1
+fi
+
+[ "$FAIL" -eq 0 ] && [ "$RPV_FAIL" -eq 0 ] && [ "$TSR_FAIL" -eq 0 ] && [ "$BTS_FAIL" -eq 0 ] && [ "$SMS_FAIL" -eq 0 ] && [ "$PRM_FAIL" -eq 0 ] && [ "$GRM_FAIL" -eq 0 ] && [ "$BRL_FAIL" -eq 0 ] && [ "$SCB_FAIL" -eq 0 ] && [ "$RR_FAIL" -eq 0 ] && [ "$BCL_FAIL" -eq 0 ] && [ "$BO_FAIL" -eq 0 ] && [ "$IDP_FAIL" -eq 0 ] && [ "$RES_FAIL" -eq 0 ] && [ "$CVR_FAIL" -eq 0 ] && [ "$HRS_FAIL" -eq 0 ] && [ "$SHR_FAIL" -eq 0 ] && [ "$BPL_FAIL" -eq 0 ] && [ "$BDN_FAIL" -eq 0 ] && [ "$IDISC_FAIL" -eq 0 ] && [ "$ERC_FAIL" -eq 0 ] && [ "$SCP_FAIL" -eq 0 ] && [ "$IMR_FAIL" -eq 0 ] && [ "$RVR_FAIL" -eq 0 ] && [ "$WIC_FAIL" -eq 0 ] && [ "$RTH_FAIL" -eq 0 ] && [ "$TFP_FAIL" -eq 0 ] && [ "$TGR_FAIL" -eq 0 ] && [ "$BRC_FAIL" -eq 0 ] && [ "$CMAP_FAIL" -eq 0 ] && [ "$RLNS_FAIL" -eq 0 ] && [ "$SRG_FAIL" -eq 0 ] && [ "$RTM_FAIL" -eq 0 ] && [ "$MDP_FAIL" -eq 0 ] && [ "$GEF_FAIL" -eq 0 ] && [ "$DRR_FAIL" -eq 0 ] && [ "$JSH_FAIL" -eq 0 ] && [ "$GIM_FAIL" -eq 0 ] && [ "$SCQ_FAIL" -eq 0 ] && [ "$CRS_FAIL" -eq 0 ]
