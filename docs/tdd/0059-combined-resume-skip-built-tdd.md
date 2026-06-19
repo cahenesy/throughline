@@ -1,5 +1,5 @@
 # TDD 0059: Combined-mode resume skips already-built TDDs (issue #165)
-Status: draft
+Status: implemented
 PRD refs: FR-18 (resume safety — skip already-implemented); FR-40 (gate-level resume preserves completed work)
 PRD-rev: d7bc491
 ADR constraints: 0005, 0006
