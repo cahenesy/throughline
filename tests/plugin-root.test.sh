@@ -199,6 +199,72 @@ echo "[J] tl_plugin_root does not consult git or cwd"
     || bad "outside git repo: rc=$rc out='$out'"
 ) || true
 
+# --- [K] five authoring/status skills: no vendor tool/CLI names (FR-81) ------
+# TDD 0060 verification observation 3: a case-insensitive search of these
+# five files for AskUserQuestion / claude -p / grok -p as required names
+# is empty. ${CLAUDE_PLUGIN_ROOT} may remain only as an env *name*.
+echo "[K] authoring/status skills name actions, not vendor tools"
+SKILLS=(
+  "$REPO/skills/prd-author/SKILL.md"
+  "$REPO/skills/tdd-author/SKILL.md"
+  "$REPO/skills/adr-new/SKILL.md"
+  "$REPO/skills/bootstrap-project/SKILL.md"
+  "$REPO/skills/implement-status/SKILL.md"
+)
+( hits="$(grep -nEi 'AskUserQuestion|claude -p|grok -p' "${SKILLS[@]}" 2>/dev/null || true)"
+  if [ -z "$hits" ]; then
+    ok "five skills contain no AskUserQuestion / claude -p / grok -p"
+  else
+    bad "vendor tool/CLI names still present:"$'\n'"$hits"
+  fi
+  for f in "${SKILLS[@]}"; do
+    base="$(basename "$(dirname "$f")")"
+    # Skills that source plugin scripts must resolve them via tl_plugin_root.
+    # adr-new has no plugin-path sources — vendor-name absence is enough.
+    if grep -qE 'scripts/lib/|scripts/status\.sh' "$f"; then
+      if grep -q 'tl_plugin_root' "$f"; then
+        ok "$base resolves plugin paths via tl_plugin_root"
+      else
+        bad "$base sources plugin scripts but does not use tl_plugin_root"
+      fi
+    fi
+  done
+) || true
+
+# --- [L] Grok marketplace index (FR-79 install surface) ----------------------
+echo "[L] .grok-plugin/marketplace.json names throughline"
+( mf="$REPO/.grok-plugin/marketplace.json"
+  if [ -f "$mf" ]; then
+    ok "marketplace.json exists"
+  else
+    bad "marketplace.json missing at $mf"
+  fi
+  if [ -f "$mf" ] && command -v jq >/dev/null 2>&1; then
+    if jq -e '.plugins[0].name=="throughline"' "$mf" >/dev/null; then
+      ok "plugins[0].name == throughline"
+    else
+      bad "plugins[0].name is not throughline ($(jq -c '.plugins[0].name' "$mf" 2>/dev/null))"
+    fi
+    if jq -e '.plugins[0].source.type=="local" and .plugins[0].source.path=="./"' "$mf" >/dev/null; then
+      ok "plugins[0].source is local ./"
+    else
+      bad "plugins[0].source is not {type:local,path:./}"
+    fi
+    if jq -e '(.plugins[0].dependencies|length)//0 == 0' "$mf" >/dev/null; then
+      ok "no Superpowers/pr-review-toolkit dependency entries (ADR 0010)"
+    else
+      bad "marketplace lists dependencies (ADR 0010 forbids them)"
+    fi
+  elif [ -f "$mf" ]; then
+    # jq-free fallback matching TDD 0060 observation 4's field.
+    if grep -q '"name"[[:space:]]*:[[:space:]]*"throughline"' "$mf"; then
+      ok "marketplace.json names throughline (jq-free)"
+    else
+      bad "marketplace.json does not name throughline"
+    fi
+  fi
+) || true
+
 echo
 PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
