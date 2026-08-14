@@ -9,8 +9,9 @@ the model's say-so.
 
 It is deliberately minimal. It owns **governance and traceability** and *delegates*
 discovery and generic engineering (test-driven-development, code review, worktrees) to
-Anthropic's official plugins — **superpowers** and **pr-review-toolkit** — instead of
-re-implementing them.
+whatever the harness already provides — Superpowers and pr-review-toolkit are
+**optional** — instead of re-implementing them. Some harnesses already own
+`/implement`; throughline's build command is `/build-tdds` (FR-85).
 
 ---
 
@@ -24,9 +25,9 @@ marketplace, which you almost certainly already have):
 /plugin install throughline@throughline
 ```
 
-This auto-installs the two official plugins it depends on (superpowers,
-pr-review-toolkit). If dependency resolution complains, add the official
-marketplace first: `/plugin marketplace add anthropics/claude-plugins-official`.
+Superpowers and pr-review-toolkit are optional; throughline installs and
+flips without them. Add the official marketplace only if you want those
+delegates: `/plugin marketplace add anthropics/claude-plugins-official`.
 
 **Set up your repo** (once per project, idempotent):
 
@@ -41,10 +42,10 @@ merge the PR it opens before the next command:
 |---|---|---|---|
 | 1. Requirements | `/prd-author` | Interviews you → writes/updates `docs/PRD.md` → opens a **PRD PR** | Review + merge it |
 | 2. Design | `/tdd-author` | Diffs the PRD → writes TDDs + ADRs → independent design critique → opens a **design PR** | Review + merge it |
-| 3. Build | `/implement` | Detached runner builds each TDD failing-test-first through **four gates** → opens one **feature PR** per TDD | Review + merge them |
+| 3. Build | `/build-tdds` | Builds each TDD failing-test-first through **four gates** → opens one **feature PR** per TDD | Review + merge them |
 
 Watch a running build with `/implement-status`. If a build pauses (rate limit,
-halt), re-run `/implement` — it detects the paused run and offers to resume.
+halt), re-run `/build-tdds` to resume.
 
 That's the whole workflow. Everything below explains *why* it's shaped this way
 and what each gate actually enforces.
@@ -78,7 +79,7 @@ loses:
 | Lose the session, lose your work. A network drop mid-interview erases your elicitation; a rate-limit kills the build. | Interviews write a **draft file to disk** after every substantive elicitation — kill, reboot, or compaction resumes from where you left off. Builds run **detached + resumable** — rate-limit hits pause the run; you `/implement --resume` after the window. |
 | Re-running setup either re-does everything (slow) or skips silently (drift). | **Two markers, queried independently**: repo state in the committed `docs/.throughline-bootstrap.json`, per-developer environment in `${CLAUDE_PLUGIN_DATA}/<repo-id>/local.json`. Bootstrap is mechanically idempotent; a SessionStart hook auto-reconciles plugin updates without launching Claude. |
 | Token spend is "whatever the model picked." | The runtime-verify gate **tiers models by plan complexity**: mechanical observations (exit codes, log greps) run on a cost-efficient lower-tier model; nontrivial plans (browser, judgment, multi-step) run on the build model. Mechanical pre-pass lint runs before the LLM design-reviewer, so the reviewer never spends tokens on what `grep` already proved. |
-| Engineering basics (TDD, worktrees, code review) are either reinvented per session or skipped. | Delegated **once** to the official plugins (superpowers, pr-review-toolkit). throughline owns the design-of-record and the gates; the plugins own the discipline that gates them. |
+| Engineering basics (TDD, worktrees, code review) are either reinvented per session or skipped. | Delegated to optional Superpowers / pr-review-toolkit (or harness built-ins) when present. throughline owns the design-of-record and the gates. |
 | The same class of bug recurs build after build; nothing remembers. | Per-build findings are mined at run-end for **recurring categorical patterns** (a finding class that appeared across more than one TDD or build step). One batched accept/discard prompt; accepted classes persist to `docs/tdd/LEARNINGS.md` and surface as **advisory context** in future `/tdd-author` sessions whose scope intersects the learning's `files=[…]` / `tags=[…]` hints. |
 
 Put another way: plain Claude is a really good pair programmer in a closed room.
@@ -102,7 +103,7 @@ of record lives in **git + `docs/`**, not the chat, so each phase re-reads the
 merged result; a clear only drops the previous interview's noise. The interactive
 phases (`/prd-author`, `/tdd-author`, `/bootstrap-project`) pair well with
 **`/fast`** (faster Opus output for snappy interviews); leave it off for
-`/implement`, which runs detached and unattended.
+`/build-tdds`.
 
 **1. Requirements** — *fresh session*
 - `/prd-author` → interviews you and writes `docs/PRD.md` (the WHAT and WHY;
@@ -134,12 +135,9 @@ phases (`/prd-author`, `/tdd-author`, `/bootstrap-project`) pair well with
 - Pull `main` current, do a `/clear` or start a new session.
 
 **3. Build** — *fresh session, on `main`, pulled current*
-- `/implement` → confirms the queue (every TDD merged to `main` and not yet
-  `implemented`) and the mode, then launches a thin **harness-tracked watcher**
-  (`scripts/implement-watch.sh`) that in turn `nohup`s the **detached** runner —
-  the build survives session close, and the watcher's tracked completion
-  re-invokes your session when the run ends. Each TDD builds failing-test-first
-  in a dedicated worktree and must pass **four gates** before it flips to
+- `/build-tdds` → confirms the queue (every TDD merged to `main` and not yet
+  `implemented`) and the mode, then builds each TDD failing-test-first
+  in a dedicated worktree. Each TDD must pass **four gates** before it flips to
   `implemented` and opens a **feature PR**. It never merges.
 - **Watch it:** `/implement-status` prints a progress **snapshot** (current TDD,
   stage, an estimate-labeled %, per-TDD statuses, log/PR pointers); for a live,
@@ -160,27 +158,26 @@ phases (`/prd-author`, `/tdd-author`, `/bootstrap-project`) pair well with
 - **GitHub:** review and **merge the feature PR(s).** Sequential (default) PRs
   are *stacked* — merge **bottom-up in the report's "Merge plan" order**, with
   a merge-commit or rebase-merge (a squash breaks the stack; use
-  `/implement --combined` for one squashable PR).
+  `/build-tdds --combined` for one squashable PR).
 - Pull `main` current, do a `/clear` and start the next lap.
 
-After the first round, `/prd-author` *updates* the existing PRD. Because
-`/implement` runs detached in an isolated worktree, you can start the next lap's
-`/prd-author` / `/tdd-author` while a build is still running; a single-run lock
-holds off a second `/implement`, so two builds can't race.
+After the first round, `/prd-author` *updates* the existing PRD. You can start
+the next lap's `/prd-author` / `/tdd-author` while a build is still running; a
+single-run lock holds off a second `/build-tdds`, so two builds can't race.
 
 ### Feedback edges (the unhappy path)
 
-- **Design blocker at build time:** `/implement` appends infeasible or
+- **Design blocker at build time:** `/build-tdds` appends infeasible or
   contradictory requirements to `docs/tdd/BLOCKERS.md` and halts → re-run
   `/tdd-author` (it reads BLOCKERS.md), merge the design PR, re-run
-  `/implement`.
+  `/build-tdds`.
 - **Halting review finding (in-build):** the runner classifies the finding as
   structural-or-fixable. *Fixable* → enters a bounded automatic rework loop on
   the build model (scope-capped per FR-66/67, attempt-budget-bounded per FR-65); the
   next per-step review pass runs against the new diff. *Structural* → routed to
   `docs/tdd/BLOCKERS.md` as a design-action-required cause, halts the TDD.
 - **Rate-limit / transient pause:** the runner enters `paused` with the cause
-  recorded; you resume after the window with `/implement --resume`. No work
+  recorded; re-run `/build-tdds` after the window. No work
   re-done; gates pick up where they left off.
 - **Need human attention:** a single closed enum of **halt causes** + a
   one-screen halt context tells you exactly *why* the run is waiting and *what*
@@ -202,11 +199,11 @@ throughline/
 │   ├── prd-author/           # /prd-author       — the WHAT → docs/PRD.md (draft-persistent)
 │   ├── tdd-author/           # /tdd-author       — the HOW  → docs/tdd/NNNN-* (draft-persistent)
 │   ├── adr-new/              # /adr-new          — durable decisions → docs/adr/
-│   ├── implement/            # /implement        — build all merged TDDs, detached
+│   ├── implement/            # /build-tdds       — build all merged TDDs
 │   └── implement-status/     # /implement-status — progress snapshot of a live run
 ├── scripts/
-│   ├── implement.sh             # detached runner (fresh claude -p per TDD) + run-state record
-│   ├── implement-watch.sh       # thin harness-tracked watcher; nohups the runner, signals session re-invocation on completion
+│   ├── implement.sh             # retired stub (use /build-tdds)
+│   ├── implement-watch.sh       # retired stub (use /build-tdds)
 │   ├── lib/
 │   │   ├── state.sh             # per-TDD / per-run JSON state-fragment I/O
 │   │   ├── pause-retry.sh       # pause/retry classification (rate-limit, transient, usage-limit)
@@ -257,7 +254,7 @@ throughline/
 | `/prd-author`        | `docs/PRD.md`            | The WHAT. Explore + interview; observable acceptance criteria. Draft persisted after every answer; a kill resumes. Own session. |
 | `/tdd-author`        | `docs/tdd/NNNN-*`        | The HOW. Runs ONCE per PRD update: diffs the PRD to decide how many TDDs; each carries a verification plan, expected diff size, touched files; mechanical pre-pass before the LLM design-reviewer. Draft persisted between turns. |
 | `/adr-new`           | `docs/adr/NNNN-*`        | Append-only; status-gated supersession.                    |
-| `/implement`         | code + tests + PR(s)     | Builds every merged, unbuilt TDD, detached; four gates before `implemented`; continuous in-build review with bounded automatic rework; one PR per TDD; halts the stack on failure; never merges. |
+| `/build-tdds`        | code + tests + PR(s)     | Builds every merged, unbuilt TDD; four gates before `implemented`; one PR per TDD; halts the stack on failure; never merges. |
 | `/implement-status`  | progress view            | Read-only snapshot of the active run; `--follow` for a live watch. |
 
 On-demand code review is delegated to the official plugins — use the built-in
@@ -266,7 +263,7 @@ On-demand code review is delegated to the official plugins — use the built-in
 
 ## How the build gate works
 
-`/implement` does **not** trust a build's self-reported `BATCH_RESULT: OK`. The
+`/build-tdds` does **not** trust a build's self-reported success. The
 verdict itself is **authenticated**: the runner honors only an assistant-authored,
 final-line sentinel — observed once and echoed to a runner-written, line-anchored
 marker that downstream parsing reads — so sentinel text that merely appears inside
@@ -430,7 +427,7 @@ from tests/typechecks, carried from the PRD forward:
   observation points that drive the changed code to where it runs, and the
   expected observations that constitute PASS — the design-critique gate
   **blocks** a TDD whose plan is missing or non-actionable;
-- **`/implement`** executes that plan as gate 3 above, on a model tiered to
+- **`/build-tdds`** executes that plan as gate 3 above, on a model tiered to
   the plan's complexity.
 
 throughline owns only that a plan *exists, is executed, and yields evidence*;
@@ -498,14 +495,13 @@ is ignored; design state (`docs/PRD.md`, `docs/tdd/0*.md`, `docs/adr/`,
 
 Long work survives the messy world. Three independent mechanisms:
 
-- **Detached builds.** `/implement` launches a `nohup` runner that survives
-  your session closing, host reboot (returning), or network drop. The runner
-  uses a single-run lock so two builds can't race.
+- **Detached builds.** `/build-tdds` runs so the session can close; a
+  single-run lock so two builds can't race.
 - **Paused/resume on rate-limit + transient errors.** The pause/retry
   classifier recognizes ratelimit / transient / usage-limit failures, records
-  the cause in the run-state, and pauses. `/implement --resume` picks up
-  exactly where the run left off — gates already cleared stay cleared; the
-  rework attempt budget is preserved; nothing is re-done.
+  the cause in the run-state, and pauses. Re-run `/build-tdds` to pick up
+  exactly where the run left off — gates already cleared stay cleared;
+  nothing is re-done.
 - **Interactive interview draft persistence.** `/prd-author` and `/tdd-author`
   write a transient on-disk draft after every substantive elicitation. Host
   reboot, manual kill, lost session, or intra-session compaction does **not**
@@ -532,7 +528,7 @@ Long work survives the messy world. Three independent mechanisms:
   plan. Its verdict rides in the design PR so the human merges on an
   informed view.
 - A TDD becomes **buildable when its design PR merges** — merging lands it on
-  the integration branch at `draft`, and `/implement` builds whatever is
+  the integration branch at `draft`, and `/build-tdds` builds whatever is
   there and not yet `implemented`. No manual `Status: ready` step; an
   un-merged draft on a design branch is not on integration, so the PR stays
   the gate.
@@ -556,11 +552,9 @@ and `/clear` between them.
 ## Relationship to superpowers & the official plugins
 
 Throughline is a thin **governance overlay** — it does not try to own your
-whole SDLC. It **depends on and delegates engineering to** the official
-`claude-plugins-official` plugins (superpowers, pr-review-toolkit) rather than
-competing with them
-([ADR 0003](docs/adr/0003-keep-security-reviewer-in-gate.md), carrying ADR
-0002 forward):
+whole SDLC. Superpowers and pr-review-toolkit are **optional** delegates
+(ADR 0010). throughline uses them when present and does not fail install or
+a gate solely because they are absent:
 
 - **Superpowers owns discovery and engineering** —
   test-driven-development, worktrees, code review, the verification
@@ -586,34 +580,20 @@ do not also invoke `superpowers:brainstorming` or `writing-plans` for it."*
 
 ## Requirements & dependencies
 
-Throughline is a **layer on top of** the official plugins, not a standalone
-tool. It owns the governance layer (PRD/TDD/ADR) and **delegates overlapping
-engineering** to the better-maintained official plugins + built-ins, so it
-**requires**:
+Throughline is a **layer on top of** the harness, not a standalone tool. It
+owns the governance layer (PRD/TDD/ADR) and **optionally delegates**
+overlapping engineering to Superpowers, pr-review-toolkit, or harness
+built-ins when those are present (FR-22, FR-83). They are **not** install
+requirements and are **not** declared in `plugin.json`.
 
-- **superpowers** — discovery (`brainstorming`) and the generic engineering
-  skills (test-driven-development, worktrees, and the verification
-  *mechanism* via `verification-before-completion` / `/verify`).
+- **superpowers** (optional) — discovery (`brainstorming`) and generic
+  engineering (test-driven-development, worktrees, verification *mechanism*).
   Throughline ingests its `docs/superpowers/*` artifacts if present.
-- **pr-review-toolkit** — code review (used on-demand via `/review-pr`, and
-  by the `/implement` review gate's continuous in-build passes).
+- **pr-review-toolkit** (optional) — on-demand `/review-pr` / `/code-review`.
 
-Both are declared as cross-marketplace `dependencies` in `plugin.json`
-(`allowCrossMarketplaceDependenciesOn: ["claude-plugins-official"]` in
-`marketplace.json`), so installing throughline **auto-installs them** —
-*provided you already have the `claude-plugins-official` marketplace added*
-(you almost certainly do). If you don't, throughline loads with a
-`dependency-unsatisfied` error until you add it:
-
-```
-/plugin marketplace add anthropics/claude-plugins-official
-```
-
-Then `/plugin install throughline@throughline` pulls throughline + its
-dependencies. (Cross-marketplace dependency resolution needs Claude Code
-≥ 2.1.110.) Built-in commands throughline also leans on — `/code-review`,
-`/security-review`, and the `Explore` agent — ship with Claude Code and need
-no install.
+Built-in harness commands (`/code-review`, `/security-review`, Explore)
+need no extra install. A harness that already owns `/implement` is why
+throughline's build command is `/build-tdds`.
 
 ## Running the eval suites locally
 
