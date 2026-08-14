@@ -1,6 +1,6 @@
 # TDD 0011: Detached `/implement` run recovery & restart resilience
 
-Status: superseded by 0024 (formerly implemented; halt-taxonomy aspect superseded by 0018)
+Status: superseded by 0062
 PRD refs: FR-39, FR-40, FR-41, FR-42, FR-43, FR-44, FR-45 (new)
 PRD-rev: 9626a59
 ADR constraints: 0003, 0004, 0005

@@ -1,5 +1,5 @@
 # 0007. Halt model: bounded rework + structural escalation (not first-failure halt)
-Status: accepted
+Status: superseded by 0013
 Date: 2026-05-28
 Scope: workflow / gate-architecture / halt-semantics
 

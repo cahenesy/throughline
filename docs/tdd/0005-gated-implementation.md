@@ -1,6 +1,6 @@
 # TDD 0005: Gated unattended implementation
 
-Status: implemented
+Status: superseded by 0062
 PRD refs: FR-13, FR-14, FR-15, FR-16, FR-17, FR-18, FR-19, FR-20, NFR-1, NFR-3, NFR-4
 PRD-rev: cbe3c26
 ADR constraints: 0003
