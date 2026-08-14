@@ -1,6 +1,6 @@
 # 0003. Keep security-reviewer in the gate; delegate build + code-review (spike outcome)
 
-Status: accepted
+Status: superseded by 0010
 Date: 2026-05-25
 Scope: workflow / plugin-architecture
 Supersedes: 0002

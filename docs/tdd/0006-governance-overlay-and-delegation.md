@@ -1,6 +1,6 @@
 # TDD 0006: Governance overlay & delegation
 
-Status: implemented
+Status: superseded by 0063
 PRD refs: FR-22, NFR-2, NFR-5
 PRD-rev: cbe3c26
 ADR constraints: 0003

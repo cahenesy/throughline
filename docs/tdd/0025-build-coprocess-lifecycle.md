@@ -1,6 +1,6 @@
 # TDD 0025: Build coprocess lifecycle — BATCH_RESULT → stdin close → clean exit — supersedes TDD 0020
 
-Status: implemented (manual finish, PR #59)
+Status: superseded by 0062
 PRD refs: FR-56, FR-57, FR-59
 PRD-rev: c4ac185
 ADR constraints: 0003, 0004, 0005, 0006, 0007

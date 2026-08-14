@@ -1,6 +1,6 @@
 # TDD 0008: Run progress visibility
 
-Status: implemented
+Status: superseded by 0062
 PRD refs: FR-27, FR-28, FR-29, FR-30 (new); NFR-4 (estimate-labeling delta)
 PRD-rev: 962732c
 ADR constraints: 0003
