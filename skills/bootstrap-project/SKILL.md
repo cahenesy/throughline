@@ -18,16 +18,25 @@ repo marker (from the repo root):
 
 ```bash
 # The short-circuit DEPENDS on these helpers: if a helper cannot be sourced
-# (wrong/unset CLAUDE_PLUGIN_ROOT), tl_repo_marker_read becomes "command not
-# found", $applied reads empty, and an unguarded block would fall through to a
-# full re-bootstrap of an already-bootstrapped repo — silently bypassing FR-31.
-# Fail loudly instead so the operator fixes the path and re-runs.
-source "${CLAUDE_PLUGIN_ROOT}/scripts/lib/repo-id.sh" || {
-  echo "bootstrap: could not source scripts/lib/repo-id.sh from \${CLAUDE_PLUGIN_ROOT} — cannot read the bootstrap marker to check for a prior run; fix the plugin path and re-run" >&2
+# (wrong/unset CLAUDE_PLUGIN_ROOT or GROK_PLUGIN_ROOT), tl_repo_marker_read
+# becomes "command not found", $applied reads empty, and an unguarded block
+# would fall through to a full re-bootstrap of an already-bootstrapped repo —
+# silently bypassing FR-31. Fail loudly instead so the operator fixes the
+# path and re-runs. Resolve the plugin tree first (tl_plugin_root is defined
+# only after plugin-root.sh is sourced).
+_tl_src="${CLAUDE_PLUGIN_ROOT:-${GROK_PLUGIN_ROOT:-}}"
+# shellcheck disable=SC1091
+. "${_tl_src}/scripts/lib/plugin-root.sh" || {
+  echo "bootstrap: could not source scripts/lib/plugin-root.sh from CLAUDE_PLUGIN_ROOT or GROK_PLUGIN_ROOT — cannot read the bootstrap marker to check for a prior run; fix the plugin path and re-run" >&2
   return 1 2>/dev/null || exit 1
 }
-source "${CLAUDE_PLUGIN_ROOT}/scripts/lib/markers.sh" || {
-  echo "bootstrap: could not source scripts/lib/markers.sh from \${CLAUDE_PLUGIN_ROOT} — cannot read the bootstrap marker to check for a prior run; fix the plugin path and re-run" >&2
+unset _tl_src
+source "$(tl_plugin_root)/scripts/lib/repo-id.sh" || {
+  echo "bootstrap: could not source scripts/lib/repo-id.sh from $(tl_plugin_root) — cannot read the bootstrap marker to check for a prior run; fix the plugin path and re-run" >&2
+  return 1 2>/dev/null || exit 1
+}
+source "$(tl_plugin_root)/scripts/lib/markers.sh" || {
+  echo "bootstrap: could not source scripts/lib/markers.sh from $(tl_plugin_root) — cannot read the bootstrap marker to check for a prior run; fix the plugin path and re-run" >&2
   return 1 2>/dev/null || exit 1
 }
 marker="$(tl_repo_marker_read)"   # the marker JSON, or "{}" if absent/malformed
@@ -53,10 +62,18 @@ byte-identical on a re-run. Re-apply ONLY the cheap, idempotent steps:
 
 ```bash
 # Guard the source for the same reason as Step 0's reads above: an unguarded
-# source under a misconfigured CLAUDE_PLUGIN_ROOT turns tl_gitignore_add_line
-# into a "command not found" no-op, silently dropping the .gitignore re-apply.
-source "${CLAUDE_PLUGIN_ROOT}/scripts/lib/gitignore.sh" || {
-  echo "bootstrap: could not source scripts/lib/gitignore.sh from \${CLAUDE_PLUGIN_ROOT} — cannot re-apply the .gitignore entry; fix the plugin path and re-run" >&2
+# source under a misconfigured CLAUDE_PLUGIN_ROOT or GROK_PLUGIN_ROOT turns
+# tl_gitignore_add_line into a "command not found" no-op, silently dropping
+# the .gitignore re-apply.
+_tl_src="${CLAUDE_PLUGIN_ROOT:-${GROK_PLUGIN_ROOT:-}}"
+# shellcheck disable=SC1091
+. "${_tl_src}/scripts/lib/plugin-root.sh" || {
+  echo "bootstrap: could not source scripts/lib/gitignore.sh from CLAUDE_PLUGIN_ROOT or GROK_PLUGIN_ROOT — cannot re-apply the .gitignore entry; fix the plugin path and re-run" >&2
+  return 1 2>/dev/null || exit 1
+}
+unset _tl_src
+source "$(tl_plugin_root)/scripts/lib/gitignore.sh" || {
+  echo "bootstrap: could not source scripts/lib/gitignore.sh from $(tl_plugin_root) — cannot re-apply the .gitignore entry; fix the plugin path and re-run" >&2
   return 1 2>/dev/null || exit 1
 }
 tl_gitignore_add_line "docs/tdd/.implement-logs/"
@@ -112,7 +129,7 @@ failure for correction rather than reverting it.
   no unit tests. Ask whether to add a framework and backfill tests for
   existing code before proceeding. Do not silently introduce a framework.
 
-`/implement` gates every TDD's flip to `implemented` on the plugin's verify
+`/build-tdds` gates every TDD's flip to `implemented` on the plugin's verify
 gate, which runs the test suite + typecheck + project linter (eslint, ruff,
 clippy `-D warnings`, golangci-lint). That gate needs a working test/typecheck
 command (auto-detected, or set via `CI_CHECKS_TEST_CMD` / `CI_CHECKS_TYPECHECK_CMD` /
@@ -186,14 +203,21 @@ root:
 # The marker steps are NOT optional, so a helper that cannot be sourced must
 # abort loudly rather than turn the write calls below into silent
 # "command not found" no-ops. Bail (with no marker written) if any source fails.
+_tl_src="${CLAUDE_PLUGIN_ROOT:-${GROK_PLUGIN_ROOT:-}}"
+# shellcheck disable=SC1091
+. "${_tl_src}/scripts/lib/plugin-root.sh" || {
+  echo "bootstrap: could not source scripts/lib/plugin-root.sh from CLAUDE_PLUGIN_ROOT or GROK_PLUGIN_ROOT — markers NOT recorded; fix the plugin path and re-run" >&2
+  return 1 2>/dev/null || exit 1
+}
+unset _tl_src
 for _lib in gitignore.sh repo-id.sh markers.sh; do
-  source "${CLAUDE_PLUGIN_ROOT}/scripts/lib/$_lib" || {
-    echo "bootstrap: could not source scripts/lib/$_lib from \${CLAUDE_PLUGIN_ROOT} — markers NOT recorded; fix the plugin path and re-run" >&2
+  source "$(tl_plugin_root)/scripts/lib/$_lib" || {
+    echo "bootstrap: could not source scripts/lib/$_lib from $(tl_plugin_root) — markers NOT recorded; fix the plugin path and re-run" >&2
     return 1 2>/dev/null || exit 1
   }
 done
 ver="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
-        "${CLAUDE_PLUGIN_ROOT}/.claude-plugin/plugin.json" | head -n1)"
+        "$(tl_plugin_root)/.claude-plugin/plugin.json" | head -n1)"
 
 # FR-32: ignore throughline's per-run artifacts (idempotent, byte-stable).
 # Required step: if this write fails its return value must NOT be swallowed —
@@ -210,7 +234,7 @@ tl_gitignore_add_line "docs/tdd/.implement-logs/" || {
 # re-bootstrap forever. If the version could not be read, write NO marker and
 # report it rather than poison the short-circuit.
 if [ -z "$ver" ]; then
-  echo "bootstrap: could not read the plugin version from ${CLAUDE_PLUGIN_ROOT}/.claude-plugin/plugin.json — repo marker NOT written" >&2
+  echo "bootstrap: could not read the plugin version from $(tl_plugin_root)/.claude-plugin/plugin.json — repo marker NOT written" >&2
 else
   # FR-31: committed repo marker. Replace <language> with the detected language
   # and <steps-csv> with the subset of

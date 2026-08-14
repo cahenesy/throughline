@@ -16,7 +16,7 @@
 #   - agents/design-reviewer.md: the scope-coherence working-memory item +
 #     the `DESIGN_REVIEW: BLOCK scope-coherence — <reason>` verdict form.
 #   - skills/tdd-author/SKILL.md: the two new required template sections, the
-#     step-7b refusal flow (AskUserQuestion three options + `## Scope override`),
+#     step-7b refusal flow (structured multiple-choice, three options + `## Scope override`),
 #     and the `--bounds` invocation.
 #   - the FR-55 enforcement: implement.sh / build-prompt.md carry NO scope-bound
 #     env var and NO `scope-concern` halt cause (the build never halts on scope).
@@ -505,9 +505,9 @@ echo "[skill-7b] step 7b wires the --bounds pre-pass + the refusal flow"
   grep -q 'PRECHECK_FAIL' "$SKILL" \
     && ok "SKILL.md keys the refusal flow off PRECHECK_FAIL" \
     || bad "expected PRECHECK_FAIL handling in $SKILL"
-  grep -q 'AskUserQuestion' "$SKILL" \
-    && ok "SKILL.md presents AskUserQuestion on a bound violation" \
-    || bad "expected AskUserQuestion in the refusal flow ($SKILL)"
+  grep -qi 'structured multiple-choice question' "$SKILL" \
+    && ok "SKILL.md presents a structured multiple-choice question on a bound violation" \
+    || bad "expected a structured multiple-choice question in the refusal flow ($SKILL)"
   grep -qF '## Scope override' "$SKILL" \
     && ok "SKILL.md documents the '## Scope override' section for the override arm" \
     || bad "expected '## Scope override' in $SKILL"

@@ -1,11 +1,11 @@
 ---
 name: implement-status
-description: Show progress for the currently-running `/implement` job. Prints a one-shot snapshot (current TDD, stage, an estimate-labeled percent, per-TDD statuses, log/PR pointers) and, for a live watch, hands you a one-line `!bash …/scripts/status.sh --follow` command to paste yourself (Ctrl-C exits the watch; the build is unaffected). Read-only — no pause/resume/cancel. Invoke with /implement-status.
+description: Show progress for the currently-running `/build-tdds` job. Prints a one-shot snapshot (current TDD, stage, an estimate-labeled percent, per-TDD statuses, log/PR pointers) and, for a live watch, hands you a one-line `!bash …/scripts/status.sh --follow` command to paste yourself (Ctrl-C exits the watch; the build is unaffected). Read-only — no pause/resume/cancel. Invoke with /implement-status.
 ---
 
 # Implement status
 
-A read-only progress view for the detached `/implement` runner. The runner
+A read-only progress view for the `/build-tdds` run. The runner
 writes a structured run-state record under
 `docs/tdd/.implement-logs/<ts>/state.d/` (FR-27); this skill renders it.
 
@@ -28,7 +28,7 @@ shows:
 - **Current focus** — the in-progress TDD and its stage, when a TDD is
   non-terminal.
 
-If no `/implement` run is active, the skill says so plainly and (if a previous
+If no `/build-tdds` run is active, the skill says so plainly and (if a previous
 run exists) summarizes the last run's final state. It never reports false
 progress.
 
@@ -39,13 +39,13 @@ snapshot switches to a one-screen halt context (FR-64): the halt cause from the
 closed enum, the triggering finding reference, and the deterministic next-action
 options, each on its own numbered line. Halted-run rendering fits 24×80 by
 default; to see full logs use `cat docs/tdd/.implement-logs/<runid>/REPORT`. The
-`Resume: /implement --resume <runid>` line appears only when the cause is a
+`Resume: /build-tdds --resume <runid>` line appears only when the cause is a
 recoverable (paused-state) one.
 
 A run whose state is `interrupted` (TDD 0030 §3) did not exit cleanly — the
 runner died mid-gate, leaving one or more TDDs orphaned in a non-terminal status.
 The snapshot renders a distinct "the run did not exit cleanly" banner naming each
-orphaned TDD + gate and pointing at `/implement --resume <runid>`; it is never
+orphaned TDD + gate and pointing at `/build-tdds --resume <runid>`; it is never
 reported as `done`.
 
 `--follow` watch mode in a non-interactive background job: use `kill -TERM` (or
@@ -58,7 +58,9 @@ For the on-demand snapshot, run the renderer once via a single Bash call and
 relay the output:
 
 ```
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/status.sh"
+_tl_src="${CLAUDE_PLUGIN_ROOT:-${GROK_PLUGIN_ROOT:-}}"
+. "${_tl_src}/scripts/lib/plugin-root.sh"
+bash "$(tl_plugin_root)/scripts/status.sh"
 ```
 
 Add `--logdir <dir>` to inspect a specific historical run dir instead of the
@@ -70,7 +72,7 @@ For a live watch that refreshes until you press Ctrl-C, hand the user the
 following line for them to paste themselves as a foreground `!` command:
 
 ```
-!bash "${CLAUDE_PLUGIN_ROOT}/scripts/status.sh" --follow
+!bash -c '_tl_src="${CLAUDE_PLUGIN_ROOT:-${GROK_PLUGIN_ROOT:-}}"; . "${_tl_src}/scripts/lib/plugin-root.sh" && bash "$(tl_plugin_root)/scripts/status.sh" --follow'
 ```
 
 DO NOT call `status.sh --follow` through the Bash tool from this skill — it is
