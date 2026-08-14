@@ -1,6 +1,6 @@
 # TDD 0063: Soft delegates and coprocess retirement
 
-Status: draft
+Status: implemented
 PRD refs: FR-22, FR-28, FR-30, FR-45, FR-64, FR-83, NFR-5
 PRD-rev: 373cd89
 ADR constraints: 0010
