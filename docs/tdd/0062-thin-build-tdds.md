@@ -1,6 +1,7 @@
 # TDD 0062: Thin `/build-tdds` on Claude Code and Grok Build
 
-Status: draft
+Status: implemented
+build-engine: bootstrap
 PRD refs: FR-13, FR-14, FR-16, FR-17, FR-18, FR-19, FR-20, FR-41, FR-42, FR-80, FR-84, FR-85, NFR-1, NFR-3
 PRD-rev: 373cd89
 ADR constraints: 0004, 0005, 0009, 0010, 0011, 0013
