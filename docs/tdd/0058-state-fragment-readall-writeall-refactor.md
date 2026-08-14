@@ -1,10 +1,17 @@
 # TDD 0058: state.sh fragment carry-forward — single read-all/write-all pair (DEFERRED)
-Status: draft
+Status: superseded by 0061
 PRD refs: FR-27 (structured run-state record); FR-39 (resume from state); FR-40 (resume baseline); FR-69 (self-compliance with Theme A)
 PRD-rev: d7bc491
 ADR constraints: 0006
 
 ## Approach
+> **STATUS (2026-08-14): WILL NOT BUILD — superseded by [[0061]].**
+> FR-27 / FR-39 / FR-40 now live on `scripts/lib/run-record.sh`. TDD 0061
+> rejected extending `state.sh`'s 29-positional writer (coprocess record).
+> TDD 0063 stubbed `scripts/implement.sh` and pointed `status.sh` at
+> run-record. This TDD's 13-mutator refactor has no live caller. Body
+> kept as historical record.
+>
 > **STATUS (2026-06-13): DEFERRED — the maintainability half split out of [[0051]].**
 > 0051 shipped the *correctness* fix (route the inline `[^"]*` free-text reads
 > through the canonical `tl_json_field` reader, closing A10/A5). This TDD carries
