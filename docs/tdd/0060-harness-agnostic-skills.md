@@ -1,6 +1,7 @@
 # TDD 0060: Harness-agnostic skills and dual-marketplace install
 
-Status: draft
+Status: implemented
+build-engine: bootstrap
 PRD refs: FR-79, FR-81, FR-85, FR-34
 PRD-rev: 373cd89
 ADR constraints: 0010

@@ -1,0 +1,9 @@
+{
+  "name": "throughline",
+  "plugins": [
+    {
+      "name": "throughline",
+      "source": { "type": "local", "path": "./" }
+    }
+  ]
+}
