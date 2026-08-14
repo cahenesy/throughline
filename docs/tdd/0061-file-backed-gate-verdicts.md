@@ -1,6 +1,7 @@
 # TDD 0061: File-backed four-gate verdicts and durable run record
 
-Status: draft
+Status: implemented
+build-engine: bootstrap
 PRD refs: FR-15, FR-16, FR-25, FR-27, FR-39, FR-40, FR-41, FR-42, FR-43, FR-44, FR-45, FR-63, FR-64, FR-67, FR-70, FR-82
 PRD-rev: 373cd89
 ADR constraints: 0004, 0005, 0006, 0011, 0013
