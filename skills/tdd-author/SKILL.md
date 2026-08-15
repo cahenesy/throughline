@@ -18,7 +18,7 @@ design notes exist, READ and fold in their substance rather than redoing the wor
 they are transient input, never authoritative, never relocated. The canonical
 record is `docs/tdd/` + `docs/adr/`. A throughline TDD is a DESIGN, not a
 step-by-step build script — the bite-sized failing-test-first task breakdown is
-`/build-tdds`'s job (`build-prompt.md`), so do not reproduce it here.
+`/build-tdds`'s job, so do not reproduce it here.
 
 ## 0. Resume check
 Resolve the plugin tree from the first set of `CLAUDE_PLUGIN_ROOT` /

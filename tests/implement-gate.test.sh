@@ -4,49 +4,9 @@
 # The claude -p runner is not flip authority. This file no longer executes
 # implement.sh scenarios or the coprocess-only evals it used to chain.
 #
-# Retired-with-coprocess (still in tree; not invoked here):
-#   implement-gate [A]–[S] (inline implement.sh scenarios)
-#   run-progress-visibility.test.sh
-#   token-spend-reduction.test.sh
-#   bounded-tdd-scope.test.sh
-#   state-module-sourceability.test.sh
-#   pause-retry-module-sourceability.test.sh
-#   gates-resume-module-sourceability.test.sh
-#   bounded-rework-loop.test.sh
-#   structural-classification-bound.test.sh
-#   run-recovery.test.sh
-#   build-coprocess-lifecycle.test.sh
-#   build-observability.test.sh
-#   interactive-draft-persistence.test.sh
-#   runner-resilience.test.sh
-#   coproc-verdict-resilience.test.sh
-#   honest-review-scope-structural-resume.test.sh
-#   severity-honest-reporting.test.sh
-#   build-phase-learning-capture.test.sh
-#   build-defensive-norms.test.sh
-#   interrogator-discipline.test.sh
-#   evaluation-rubric.test.sh
-#   step-commit-protocol.test.sh
-#   integration-merge-on-resume.test.sh
-#   runtime-verify-resume.test.sh
-#   watcher-inactivity-completion.test.sh
-#   recoverable-terminal-halts.test.sh
-#   test-first-per-step.test.sh
-#   transient-gate-resilience.test.sh
-#   bounded-rework-convergence.test.sh
-#   coverage-map.test.sh
-#   review-lenses.test.sh
-#   surgical-norm.test.sh
-#   tdd-author-redteam.test.sh
-#   md-parser.test.sh
-#   gate-effort.test.sh
-#   detached-run-recovery.test.sh
-#   json-helper.test.sh
-#   gated-implementation.test.sh
-#   state-carryforward-quotesafe.test.sh
-#   combined-resume-skip.test.sh
-#
-# Kept (0060–0062): plugin-root, verdicts, run-record, build-tdds-skill.
+# Coprocess/runner evals were removed with the implement.sh body (TDD 0063+).
+# This aggregator keeps the 0063 stub/status observations and the live
+# 0060–0062 helpers: plugin-root, verdicts, run-record, build-tdds-skill.
 #
 # Run: bash tests/implement-gate.test.sh
 set -uo pipefail

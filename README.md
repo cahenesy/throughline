@@ -205,44 +205,29 @@ throughline/
 │   ├── implement.sh             # retired stub (use /build-tdds)
 │   ├── implement-watch.sh       # retired stub (use /build-tdds)
 │   ├── lib/
-│   │   ├── state.sh             # per-TDD / per-run JSON state-fragment I/O
-│   │   ├── pause-retry.sh       # pause/retry classification (rate-limit, transient, usage-limit)
-│   │   ├── gates.sh             # gate executors: build / verify / runtime-verify / review (+ the authored-verdict channel)
-│   │   ├── resume.sh            # resume orchestration: re-enter paused state, pick gates to re-run
-│   │   ├── tdd-lint.sh          # mechanical pre-pass: structural lint + placeholder + traceability; --bounds runs the TDD-scope checks (doc size / per-file diff / touched-file count)
-│   │   ├── plan-classifier.sh   # mechanical / nontrivial verification-plan heuristic (model tiering)
-│   │   ├── learnings.sh         # recurring-pattern detection over per-TDD findings + accepted-learning persistence to docs/tdd/LEARNINGS.md
-│   │   ├── json.sh              # single-source JSON helpers: tl_json_escape + tl_json_field (quote-aware reads)
+│   │   ├── plugin-root.sh       # CLAUDE_PLUGIN_ROOT / GROK_PLUGIN_ROOT resolver
+│   │   ├── verdicts.sh          # file-backed gate verdicts
+│   │   ├── run-record.sh        # /build-tdds run-state (run.json + per-TDD slugs)
+│   │   ├── models.sh            # ADR 0009 model pairing
+│   │   ├── tdd-lint.sh          # mechanical pre-pass: structural lint + placeholder + traceability; --bounds runs the TDD-scope checks
+│   │   ├── plan-classifier.sh   # mechanical / nontrivial verification-plan heuristic
+│   │   ├── json.sh              # single-source JSON helpers: tl_json_escape + tl_json_field
 │   │   ├── md.sh                # unified fence-aware markdown section/bullet parsers
 │   │   ├── touched-files.sh     # the one Touched-files extractor every consumer delegates to
 │   │   ├── drafts.sh            # interview draft persistence (per-elicitation crash safety)
 │   │   └── markers.sh / repo-id.sh / gitignore.sh   # bootstrap markers + repo identity + managed ignore rules
-│   ├── build-prompt.md          # build discipline; delegates to superpowers:test-driven-development
-│   ├── build-norms.md           # enumerated FR-74 defensive-coding norms; rendered into the build prompt + reinforced on a per-step BLOCK
-│   ├── rework-prompt.md         # bounded-rework authoring prompt (single-finding scope)
-│   ├── review-prompt.md         # review gate: pr-review-toolkit + security-reviewer, separate process/model
-│   ├── ci-checks.sh                # mechanical gate: tests + typecheck + lint (CI's job)
-│   ├── verify-runtime-prompt.md # runtime-verification gate: drive + observe the real artifact
-│   └── status.sh                # renders run progress (snapshot + --follow watch)
+│   ├── build-norms.md           # enumerated FR-74 defensive-coding norms
+│   ├── ci-checks.sh             # mechanical gate: tests + typecheck + lint (CI's job)
+│   └── status.sh                # renders /build-tdds run progress (snapshot + --follow watch)
 ├── tests/
-│   ├── implement-gate.test.sh             # eval: proves the four gates actually fire
-│   ├── run-progress-visibility.test.sh    # eval: run-state record + status renderer
-│   ├── run-recovery.test.sh               # eval: detached run recovery (paused / resume)
-│   ├── token-spend-reduction.test.sh      # eval: lint + classifier + runtime-verify tiering
-│   ├── build-observability.test.sh        # eval: session pointer + log conventions
+│   ├── implement-gate.test.sh             # aggregator: 0063 stubs + live 0060–0062 helpers
+│   ├── plugin-root / verdicts / run-record / build-tdds-skill .test.sh
 │   ├── repo-id / markers / gitignore-helper / bootstrap-marker-wiring /
-│   │     releases-manifest / session-reconcile-hook .test.sh  # evals: two markers + idempotent re-run + SessionStart reconcile + release-impact notice
-│   ├── interactive-draft-persistence.test.sh # eval: draft files written after every elicitation
-│   ├── bounded-tdd-scope.test.sh          # eval: expected-diff-size + touched-files bounds
-│   ├── continuous-in-build-review.test.sh # eval: per-step scoped review
-│   ├── test-first-per-step.test.sh        # eval: mechanical per-step test-first pre-check
-│   ├── bounded-rework-loop.test.sh        # eval: in-invocation rework + budget
-│   ├── halt-taxonomy.test.sh              # eval: closed cause enum + one-screen context
-│   ├── severity-honest-reporting.test.sh  # eval: severity tags + diff-grounded report + author self-review + per-file coverage
-│   ├── build-phase-learning-capture.test.sh # eval: recurring-pattern detection + watcher liveness + LEARNINGS.md persistence
-│   ├── learnings-inform-tdd-author.test.sh  # eval: /tdd-author reads LEARNINGS.md + scope-matched advisory surfacing
-│   ├── build-coprocess-lifecycle.test.sh    # eval: authored-verdict channel — injected/prose sentinels never end a build or pass the gate
-│   └── … (a selection — ~49 eval files total; implement-gate.test.sh is the aggregator that runs them all)
+│   │     releases-manifest / session-reconcile-hook .test.sh
+│   ├── token-spend-reduction.test.sh      # eval: tdd-lint + plan classifier
+│   ├── interactive-draft-persistence.test.sh
+│   ├── bounded-tdd-scope.test.sh
+│   └── learnings-inform-tdd-author.test.sh
 └── hooks/{hooks.json, format-and-lint.sh, throughline-session-reconcile.sh}
 ```
 
@@ -333,87 +318,30 @@ enforces it:
   than expanding the rework loop — the rework loop is bounded; structural
   problems are design problems and get sent back to design.
 
-throughline **dogfoods this**: its own scripts (`implement.sh` plus
-`scripts/lib/{state,pause-retry,gates,resume}.sh`) comply with the same per-file
-bounds it enforces on consumer TDDs.
+throughline **dogfoods this**: its own live scripts (`scripts/lib/{verdicts,run-record,tdd-lint,drafts}.sh`)
+comply with the same per-file bounds it enforces on consumer TDDs.
 
-## Continuous review + bounded automatic rework
+## `/build-tdds` gates
 
-The review gate's authority is unchanged — it must end `REVIEW_RESULT: PASS`
-before a flip — but *when* it runs is split:
+`/build-tdds` sequences one implementer worker, then four flip gates, then a
+PR. It never merges. After any gate FAIL/BLOCKED (or a transient pause), it
+unlocks and **stops** — no in-build rework loop, no per-step coprocess review.
 
-- **Per-step passes during the build.** After each numbered item in the TDD's
-  `## Sequencing / implementation plan` lands, a fresh `claude -p` review
-  reads only the diff range since the last *cleared* pass on this TDD. Cleared
-  code is never re-evaluated, so review time stays sublinear in diff size.
-- **Cross-step learning.** A finding observed and resolved in step N is
-  surfaced to the step-(N+1) reviewer as context, so the same class of bug
-  isn't re-introduced one step later.
-- **Halting finding → bounded automatic rework.** A `{blocker, major}` with
-  `structural: false` triggers a rework attempt on the build model (the review
-  gates run a different model, so the reviewer never shares the
-  rework author's blind spots): the model gets the
-  finding, the scope bounds, and the cleared-code map. Its commit faces the
-  mechanical pre-pass first; on clear it ships and the next per-step review
-  pass runs against the new diff range. The loop has an attempt budget (per
-  gate); exhaustion triggers `rework-budget-exhausted` halt → human attention.
-- **Structural escalation, not local sweep.** A halting finding with
-  `structural: true` (e.g. needs changes to a file outside `## Touched files`)
-  routes to `BLOCKERS.md` as a design-escalation cause; the rework loop does
-  **not** silently expand scope to fix it.
+1. **test-first** — observe a failing-test commit before the feature commit.
+2. **ci-checks** — `scripts/ci-checks.sh` (tests + typecheck + lint).
+3. **runtime-verify** — a separate worker drives the TDD `## Verification plan`.
+4. **review** — a separate worker on a different model; token
+   `REVIEW_RESULT: PASS|FAIL`.
 
-The net effect: minor fixes happen inside the build without you babysitting;
-real design problems escalate visibly with a one-screen context.
-
-## Severity-honest reporting + author self-review
-
-Findings are graded and reports are grounded:
-
-- **Severity taxonomy on every finding.** `severity: blocker | major | minor |
-  nit` + `structural: true|false`. The runner halts only on `{blocker, major}`.
-  Minor + nit findings ship in the report unchanged but never gate.
-- **Author self-review first.** Before the independent review runs, the
-  author gives itself a structured self-review (mechanical lint + a brief
-  self-critique). Cheap-to-catch issues get caught cheap; the independent
-  reviewer's tokens go to the things the author couldn't see.
-- **Gate decisions grounded in artifacts.** Verdicts cite the file/line
-  evidence; the runner's report is grounded in `git diff`, not narrative.
-- **Honest report: actual diff and scope, not story.** The end-of-run report
-  carries actual file list, line counts, the scope-bound check result, and the
-  per-TDD verdict trail (every gate outcome, every rework attempt). What
-  changed is what the diff says changed.
-- **Per-requirement coverage map.** The report (and the PR body) maps every
-  requirement in the TDD's scope to its delivery evidence — `pinned` with a
-  test citation, or an honest `unverified-gap` naming what's missing. It is
-  advisory for the *human* reviewer (the four gates stay the sole automatic
-  flip authority), and it is the net that catches what gates structurally
-  can't — e.g. scope that was designed but never delivered.
+Verdicts are files under `docs/tdd/.implement-logs/<run>/<slug>/`. Progress is
+`/implement-status`. Structural / design problems still go to
+`docs/tdd/BLOCKERS.md` for `/tdd-author`.
 
 ## Build-phase learning capture
 
-Per-TDD findings carry structure (`severity`, `structural`, `pattern_tags`,
-`source` — plus rework cross-references). Throughline mines that structure at
-run-end for **recurring categorical patterns** — a finding class that appeared
-across more than one TDD or build step in this run — and surfaces them to the
-human as a single batched accept/discard prompt:
-
-- **Detection is the runner's job**, **review is yours.** The headless detached
-  runner cannot prompt mid-build, so detection writes a `candidate-learnings.json`
-  report and the harness-tracked watcher re-invokes your session at
-  run-completion. One `AskUserQuestion` (`multiSelect: true`) lets you accept or
-  discard each pattern class — *selected = accept, unselected = discard*. A run
-  with no recurring patterns skips the prompt silently.
-- **Accepted patterns persist** to `docs/tdd/LEARNINGS.md` as `## L-NNN`
-  entries — class summary, the TDDs it recurred in, and **subject-area hints**
-  (`files=[…]` glob/path set, `tags=[…]` set).
-- **The loop closes at `/tdd-author`.** When you author the next round of TDDs,
-  `/tdd-author` reads `LEARNINGS.md` and surfaces the entries whose hints
-  intersect each new TDD's scope as **advisory context**. Never blocking — a
-  signal that "this class of issue has recurred in this project's prior
-  builds." The author decides what, if anything, to adjust.
-
-The net effect: throughline learns from its own builds, but the human stays
-authoritative on what counts as a learning worth carrying forward.
+`/tdd-author` still **reads** `docs/tdd/LEARNINGS.md` if present and surfaces
+matching entries as advisory context. There is no automatic writer after the
+coprocess retirement — new `## L-NNN` entries are human-authored for now.
 
 ## Verification is observation
 
@@ -438,8 +366,7 @@ No verification framework is vendored into your repo.
 
 ## Watching a run
 
-Builds run detached, so you keep visibility without blocking or leaving your
-session:
+`/build-tdds` is an interactive parent skill. Progress:
 
 - **`/implement-status`** — an on-demand **snapshot**: completed / total TDDs,
   an estimate-labeled percent (TDD- and stage-aware), the current TDD and its
@@ -452,11 +379,9 @@ session:
   scripted/CI use without relying on signals). It only *reads* the run-state
   record, so the detached build is unaffected, and your session is intact when
   you exit.
-- **Auto-completion notification** — because the runner is launched by a
-  harness-tracked watcher (`scripts/implement-watch.sh`), you don't *have*
-  to poll. When the run terminates (done or paused), your session is
-  auto-re-invoked with `IMPLEMENT_RUN_COMPLETE` + the run state — and any
-  recurring-pattern learnings review (see Workflow §3) opens at that point.
+- **Session survival** — `/build-tdds` is an interactive parent skill. Progress
+  is whatever the harness does; `/implement-status` is the snapshot. There is
+  no detached coprocess watcher.
 - **One-screen halt context** — when the run pauses for human attention, the
   status output shows the `halt_cause` (a value from a single closed enum)
   plus the TDD, the gate, the artifact pointer, and the action needed. No
@@ -602,15 +527,12 @@ want to run the eval suites locally before relying on the gates:
 
 ```
 chmod +x hooks/format-and-lint.sh hooks/throughline-session-reconcile.sh \
-         scripts/implement.sh scripts/ci-checks.sh scripts/status.sh
+         scripts/ci-checks.sh scripts/status.sh
 bash tests/implement-gate.test.sh
-bash tests/run-recovery.test.sh
 bash tests/token-spend-reduction.test.sh
 bash tests/bounded-tdd-scope.test.sh
-bash tests/continuous-in-build-review.test.sh
-bash tests/bounded-rework-loop.test.sh
-bash tests/halt-taxonomy.test.sh
-bash tests/severity-honest-reporting.test.sh
+bash tests/json-helper.test.sh
+bash tests/interactive-draft-persistence.test.sh
 ```
 
 ## Caveat

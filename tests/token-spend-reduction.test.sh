@@ -9,11 +9,6 @@
 #   - scripts/lib/plan-classifier.sh::tl_classify_plan: the mechanical vs
 #     nontrivial heuristic.
 #   - the agent / skill edits that wire FR-51 into /tdd-author.
-#   - scripts/implement.sh::verify_runtime_one tiering: a `runtime-verify
-#     model=<m> (plan=<cls>)` line is written to the per-TDD log BEFORE the
-#     `claude` invocation, with the right model for each classifier outcome.
-#   - the four-gates header comment + verify-runtime-prompt sentence + implement
-#     skill Notes bullet documenting the env override.
 #
 # Run: bash tests/token-spend-reduction.test.sh
 
@@ -21,7 +16,6 @@ set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 LINT="$REPO/scripts/lib/tdd-lint.sh"
 CLS="$REPO/scripts/lib/plan-classifier.sh"
-IMPL="$REPO/scripts/implement.sh"
 FIX="$REPO/tests/fixtures/tdds"
 
 # Tally results in a tempfile so subshells can append.
@@ -168,147 +162,10 @@ echo "[agent-C] implement SKILL.md documents THROUGHLINE_RUNTIME_VERIFY_MODEL"
     || bad "expected THROUGHLINE_RUNTIME_VERIFY_MODEL in skills/implement/SKILL.md"
 )
 
-echo "[agent-D] verify-runtime-prompt.md mentions tiering / model context"
-(
-  grep -qE 'mechanical|tiers|tier|the runner chose' "$REPO/scripts/verify-runtime-prompt.md" \
-    && ok "prompt acknowledges the runner-chosen model" \
-    || bad "expected the prompt to mention runner-chosen tiering"
-)
 
-echo "[agent-E] implement.sh header comment mentions runtime-verify model tiering"
-(
-  # The four-gates enumeration's gate-3 description now refers to plan-based tiering.
-  grep -q 'tiers' "$IMPL" \
-    && ok "implement.sh header mentions tiering" \
-    || bad "expected 'tiers' in implement.sh header comment"
-)
 
-# --- verify_runtime_one runtime tiering -------------------------------------
-#
-# Stand up a stub `claude` and source implement.sh with THROUGHLINE_SOURCE_ONLY=1
-# so verify_runtime_one is callable in isolation. The stub records its --model
-# arg; we assert the per-TDD log carries the `runtime-verify model=… (plan=…)`
-# line BEFORE the claude invocation, and that the chosen model is sonnet for a
-# mechanical plan and opus (build model) for a nontrivial one. Env override
-# pinning is asserted last.
 
-setup_runtime() {
-  TMPROOT="$(mktemp -d)"
-  cd "$TMPROOT"
-  git init -q >/dev/null
-  git config user.email t@t.t; git config user.name t
-  mkdir -p docs/tdd docs/adr "$TMPROOT/stub/bin"
-  printf '# PRD\n' > docs/PRD.md
-  printf '# ADR Index\n' > docs/adr/INDEX.md
-  cat > docs/tdd/0001-mechanical.md <<'EOF'
-# TDD: mechanical
-Status: draft
-PRD refs: FR-99
-PRD-rev: deadbee
-ADR constraints: none
 
-## Approach
-stub
-
-## Verification plan
-Run the CLI and observe stdout / exit code 0. grep the log line.
-
-## Requirement traceability
-| PRD | Design element |
-|---|---|
-| FR-99 | x |
-
-## Dependencies considered
-None.
-EOF
-  cat > docs/tdd/0002-nontrivial.md <<'EOF'
-# TDD: nontrivial
-Status: draft
-PRD refs: FR-99
-PRD-rev: deadbee
-ADR constraints: none
-
-## Approach
-stub
-
-## Verification plan
-Drive a Playwright browser to /foo and observe the rendered DOM.
-
-## Requirement traceability
-| PRD | Design element |
-|---|---|
-| FR-99 | x |
-
-## Dependencies considered
-None.
-EOF
-  git add -A; git commit -qm init >/dev/null 2>&1
-  # stub claude: dump its --model arg to a file then exit 0
-  cat > "$TMPROOT/stub/bin/claude" <<'EOF'
-#!/usr/bin/env bash
-model=""
-while [ $# -gt 0 ]; do case "$1" in --model) model="$2"; shift 2;; *) shift;; esac; done
-echo "claude-model=$model" >> "$STUB_LOG"
-echo "BATCH_RESULT: OK"
-exit 0
-EOF
-  chmod +x "$TMPROOT/stub/bin/claude"
-  export PATH="$TMPROOT/stub/bin:$PATH"
-}
-
-echo "[rt-A] verify_runtime_one writes runtime-verify line + uses sonnet for mechanical plan"
-(
-  setup_runtime
-  export STUB_LOG="$TMPROOT/stub.log"
-  : > "$STUB_LOG"
-  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL"
-  MODEL=opus
-  RVMTPL="$REPO/scripts/verify-runtime-prompt.md"
-  LOGF="$TMPROOT/0001.log"; : > "$LOGF"
-  verify_runtime_one docs/tdd/0001-mechanical.md HEAD "$LOGF" >/dev/null 2>&1
-  grep -qE 'runtime-verify model=sonnet \(plan=mechanical\)' "$LOGF" \
-    && ok "log line: runtime-verify model=sonnet (plan=mechanical)" \
-    || bad "expected /runtime-verify model=sonnet \\(plan=mechanical\\)/ in log (got: $(cat "$LOGF"))"
-  grep -q 'claude-model=sonnet' "$STUB_LOG" \
-    && ok "claude was invoked with --model sonnet" \
-    || bad "expected claude --model sonnet (stub log: $(cat "$STUB_LOG"))"
-  cd "$REPO"; rm -rf "$TMPROOT"
-)
-
-echo "[rt-B] verify_runtime_one uses build model (opus) for nontrivial plan"
-(
-  setup_runtime
-  export STUB_LOG="$TMPROOT/stub.log"; : > "$STUB_LOG"
-  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL"
-  MODEL=opus
-  RVMTPL="$REPO/scripts/verify-runtime-prompt.md"
-  LOGF="$TMPROOT/0002.log"; : > "$LOGF"
-  verify_runtime_one docs/tdd/0002-nontrivial.md HEAD "$LOGF" >/dev/null 2>&1
-  grep -qE 'runtime-verify model=opus \(plan=nontrivial\)' "$LOGF" \
-    && ok "log line: runtime-verify model=opus (plan=nontrivial)" \
-    || bad "expected /runtime-verify model=opus \\(plan=nontrivial\\)/ (got: $(cat "$LOGF"))"
-  grep -q 'claude-model=opus' "$STUB_LOG" \
-    && ok "claude was invoked with --model opus" \
-    || bad "expected claude --model opus (stub log: $(cat "$STUB_LOG"))"
-  cd "$REPO"; rm -rf "$TMPROOT"
-)
-
-echo "[rt-C] THROUGHLINE_RUNTIME_VERIFY_MODEL pin wins over classifier"
-(
-  setup_runtime
-  export STUB_LOG="$TMPROOT/stub.log"; : > "$STUB_LOG"
-  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL"
-  MODEL=opus
-  RVMTPL="$REPO/scripts/verify-runtime-prompt.md"
-  LOGF="$TMPROOT/0001-pin.log"; : > "$LOGF"
-  # Mechanical plan would normally pick sonnet; pin to haiku-like 'opus'.
-  THROUGHLINE_RUNTIME_VERIFY_MODEL=opus \
-    verify_runtime_one docs/tdd/0001-mechanical.md HEAD "$LOGF" >/dev/null 2>&1
-  grep -q 'runtime-verify model=opus' "$LOGF" \
-    && ok "env override pinned the model to opus" \
-    || bad "expected env override to win (got: $(cat "$LOGF"))"
-  cd "$REPO"; rm -rf "$TMPROOT"
-)
 
 # --- Review-blocker coverage (M1/M2/M3 from the TDD 0013 review pass) --------
 # Each test below exercises a silent-failure mode the independent reviewer
@@ -357,31 +214,6 @@ EOF2
     || bad "expected stderr to mention awk crash (got: $err)"
 )
 
-echo "[rt-M3] verify_runtime_one notes classifier failure distinctly from genuine nontrivial"
-(
-  # Pre-fix: a tl_classify_plan that returns non-zero leaves cls="" and
-  # falls through to vm="$MODEL"; cls="nontrivial"; note="". The gate log
-  # line then reads `runtime-verify model=opus (plan=nontrivial)` — IDENTICAL
-  # to a genuine nontrivial classification. The fix must annotate the
-  # classifier-failed case with a distinguishing note so triage can tell
-  # error from genuine.
-  setup_runtime
-  mkdir -p "$TMPROOT/scripts/lib"
-  cat > "$TMPROOT/scripts/lib/plan-classifier.sh" <<'EOF3'
-#!/usr/bin/env bash
-tl_classify_plan() { return 2; }
-EOF3
-  SDIR="$TMPROOT/scripts"
-  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL"
-  MODEL=opus
-  RVMTPL="$REPO/scripts/verify-runtime-prompt.md"
-  LOGF="$TMPROOT/0001-cls-fail.log"; : > "$LOGF"
-  PATH="$TMPROOT/stub/bin:$PATH" verify_runtime_one docs/tdd/0001-mechanical.md HEAD "$LOGF" >/dev/null 2>&1
-  grep -q 'classifier failed' "$LOGF" \
-    && ok "log line names 'classifier failed' (distinct from genuine nontrivial)" \
-    || bad "expected /classifier failed/ in log (got: $(cat "$LOGF"))"
-  cd "$REPO"; rm -rf "$TMPROOT"
-)
 
 # --- Second review pass: deeper awk-rc + boundary findings (BL/MAJ from review 2)
 # The first re-review pass surfaced 2 blockers + 4 majors of the same NFR-4 bug
@@ -594,65 +426,7 @@ EOF2
   fi
 )
 
-echo "[rt-M1stderr] verify_runtime_one captures classifier stderr to gate log (MAJ-1 from pass 3)"
-(
-  # Pre-fix: `2>/dev/null` on the classifier call discards the only
-  # observable signal that a classifier crash occurred. If BL-2's
-  # PIPESTATUS guard doesn't fire (because production has no pipefail),
-  # there is no remaining trace of the failure for triage. The fix
-  # captures classifier stderr to the gate log so the failure is
-  # observable regardless of pipefail.
-  setup_runtime
-  mkdir -p "$TMPROOT/scripts/lib"
-  cat > "$TMPROOT/scripts/lib/plan-classifier.sh" <<'EOF3'
-#!/usr/bin/env bash
-tl_classify_plan() {
-  echo "plan-classifier: SENTINEL_CLASSIFIER_STDERR_LINE_FROM_TEST" >&2
-  return 2
-}
-EOF3
-  SDIR="$TMPROOT/scripts"
-  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL"
-  MODEL=opus
-  RVMTPL="$REPO/scripts/verify-runtime-prompt.md"
-  LOGF="$TMPROOT/0001-cls-stderr.log"; : > "$LOGF"
-  PATH="$TMPROOT/stub/bin:$PATH" verify_runtime_one docs/tdd/0001-mechanical.md HEAD "$LOGF" >/dev/null 2>&1
-  grep -q "SENTINEL_CLASSIFIER_STDERR_LINE_FROM_TEST" "$LOGF" \
-    && ok "classifier stderr captured to gate log" \
-    || bad "expected classifier stderr in gate log (got: $(cat "$LOGF"))"
-  cd "$REPO"; rm -rf "$TMPROOT"
-)
 
-echo "[rt-M2env] env-pinned verify_runtime_one notes bogus classifier output (MAJ-2 from pass 3)"
-(
-  # Pre-fix: the env-pinned branch has no `case` guard for unexpected
-  # classifier output. A stub that returns rc=0 with a bogus cls
-  # ("xyzzy") would propagate xyzzy into the gate log line — the
-  # unpinned branch sanitizes this to nontrivial with a note; the
-  # pinned branch did not.
-  setup_runtime
-  mkdir -p "$TMPROOT/scripts/lib"
-  cat > "$TMPROOT/scripts/lib/plan-classifier.sh" <<'EOF3'
-#!/usr/bin/env bash
-tl_classify_plan() { echo "xyzzy"; return 0; }
-EOF3
-  SDIR="$TMPROOT/scripts"
-  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL"
-  MODEL=opus
-  RVMTPL="$REPO/scripts/verify-runtime-prompt.md"
-  LOGF="$TMPROOT/0001-pin-bogus.log"; : > "$LOGF"
-  THROUGHLINE_RUNTIME_VERIFY_MODEL=opus \
-    PATH="$TMPROOT/stub/bin:$PATH" \
-    verify_runtime_one docs/tdd/0001-mechanical.md HEAD "$LOGF" >/dev/null 2>&1
-  if grep -q 'plan=xyzzy' "$LOGF"; then
-    bad "env-pin path passed bogus classifier output through (got: $(cat "$LOGF"))"
-  elif grep -q 'plan=nontrivial' "$LOGF"; then
-    ok "env-pin path sanitized bogus cls to nontrivial"
-  else
-    bad "expected env-pin path to sanitize bogus cls (got: $(cat "$LOGF"))"
-  fi
-  cd "$REPO"; rm -rf "$TMPROOT"
-)
 
 # --- Pass 4: plan-classifier CLI dispatcher NFR-4 gap -----------------------
 

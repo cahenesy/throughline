@@ -2,9 +2,10 @@
 # ci-checks.sh — the mechanical CI-checks gate.
 #
 # Runs the project's test suite, typecheck, and linter; exits 0 ONLY if all pass.
-# implement.sh calls this independently AFTER a build process claims success, so
-# the `ready -> implemented` flip is gated on a real, deterministic check rather
-# than on the model's own `BATCH_RESULT: OK`. "Done" is verified, not asserted.
+# `/build-tdds` calls this independently AFTER the implementer worker claims
+# success, so the `ready -> implemented` flip is gated on a real, deterministic
+# check rather than on the model's own `BUILD_RESULT: OK`. "Done" is verified,
+# not asserted.
 #
 # Detection is best-effort per language. Override it explicitly for any project:
 #   CI_CHECKS_TEST_CMD="<cmd>"        run this for tests (empty string = skip tests)

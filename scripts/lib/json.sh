@@ -3,8 +3,8 @@
 # FR-69, FR-72).
 #
 # THE single source of truth for JSON string escaping, JSON string-array
-# building, and the matching quote-aware string-field read across the runner's
-# shell libs (state.sh, markers.sh, learnings.sh, drafts.sh, gates.sh). Folds
+# building, and the matching quote-aware string-field read across the live
+# shell libs (markers.sh, drafts.sh, verdicts.sh, run-record.sh). Folds
 # bugs A11/A3 (raw C0 controls reached run-state / candidate-learnings JSON)
 # and A10/A5 (the naive first-quote fragment read truncated quote-bearing
 # values).
@@ -16,7 +16,7 @@
 #     include guard (FR-74 sourced-library hygiene: no shell options set, no
 #     ambient variables leaked).
 #   - idempotently sourceable: the guard below makes a double-source (state.sh
-#     + gates.sh + learnings.sh + drafts.sh under one implement.sh) a no-op.
+#     + drafts.sh + verdicts.sh) a no-op.
 #     _TL_JSON_SOURCED is the persistent guard and is never unset.
 [ -n "${_TL_JSON_SOURCED:-}" ] && return 0
 _TL_JSON_SOURCED=1
