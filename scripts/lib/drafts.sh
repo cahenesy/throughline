@@ -15,32 +15,25 @@
 # (draft_doc always last). Two structural markers — `"interview":[` and the
 # unescaped `,"draft_doc":` that closes it — let the python3-less bash fallback
 # splice without a JSON parser: every user-supplied quote inside an answer or
-# draft_doc is backslash-escaped by json_escape, so neither marker can appear
+# draft_doc is backslash-escaped by tl_json_escape, so neither marker can appear
 # inside user content.
 #
-# Reuses TDD 0009's tl_drafts_dir/tl_repo_id (scripts/lib/repo-id.sh), TDD
-# 0015's json_escape (scripts/lib/state.sh), and the canonical C0-complete
-# tl_json_escape (scripts/lib/json.sh, TDD 0050) — sourced once here so the
-# runner and the skills share ONE escaper without duplicating it. No new
-# dependency: python3 is OPTIONAL (jq→python3→bash cascade, same as the
-# runner); mkdir, mv, printf, grep, sed, rm, date are POSIX.
+# Reuses TDD 0009's tl_drafts_dir/tl_repo_id (scripts/lib/repo-id.sh) and the
+# canonical C0-complete tl_json_escape (scripts/lib/json.sh, TDD 0050). No new
+# dependency: python3 is OPTIONAL (jq→python3→bash cascade); mkdir, mv,
+# printf, grep, sed, rm, date are POSIX.
 #
-# No top-level `set` (matching repo-id.sh / state.sh): this file is SOURCED, so
-# flipping nounset/errexit/pipefail here would leak those options into the
-# caller's shell. Each function is written to be robust on its own (explicit
-# parameter defaults, no reliance on errexit/pipefail).
+# No top-level `set` (matching repo-id.sh): this file is SOURCED, so flipping
+# nounset/errexit/pipefail here would leak those options into the caller's
+# shell. Each function is written to be robust on its own (explicit parameter
+# defaults, no reliance on errexit/pipefail).
 
 _TL_DRAFTS_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib/repo-id.sh
 . "${_TL_DRAFTS_LIB_DIR}/repo-id.sh"
-# shellcheck source=scripts/lib/state.sh
-. "${_TL_DRAFTS_LIB_DIR}/state.sh"
-# Source the canonical JSON helpers directly (TDD 0050): drafts.sh consumes
-# tl_json_escape itself, so it owns its own source line rather than relying on
-# state.sh's transitive pull. FATAL on missing per ADR 0006 (a draft written
-# with the escaper undefined would be silently corrupt); the dual
-# `return||exit` idiom is correct sourced or executed; json.sh's include guard
-# makes this a no-op when state.sh already sourced it.
+# Source the canonical JSON helpers directly (TDD 0050). FATAL on missing
+# per ADR 0006 (a draft written with the escaper undefined would be silently
+# corrupt); the dual `return||exit` idiom is correct sourced or executed.
 _jlib="${_TL_DRAFTS_LIB_DIR}/json.sh"
 # shellcheck source=scripts/lib/json.sh
 { [ -r "$_jlib" ] && . "$_jlib"; } || {
@@ -111,10 +104,10 @@ tl_draft_init() {
   local p now prd_field tmp
   p="$(tl_draft_path "$skill")" || return 1
   now="$(_tl_draft_now)"
-  if [ -n "$prd" ]; then prd_field="\"$(json_escape "$prd")\""; else prd_field="null"; fi
+  if [ -n "$prd" ]; then prd_field="\"$(tl_json_escape "$prd")\""; else prd_field="null"; fi
   tmp="$(mktemp "${p}.XXXXXX")" || return 1
   printf '{"schema":%s,"skill":"%s","started_at":%s,"updated_at":%s,"prd_rev_at_start":%s,"interview":[],"draft_doc":""}' \
-    "$TL_DRAFT_SCHEMA" "$(json_escape "$skill")" "$now" "$now" "$prd_field" >"$tmp" \
+    "$TL_DRAFT_SCHEMA" "$(tl_json_escape "$skill")" "$now" "$now" "$prd_field" >"$tmp" \
     || { rm -f "$tmp"; return 1; }
   mv "$tmp" "$p"
 }
@@ -139,7 +132,7 @@ tl_draft_read() {
 # — atomically append one entry to interview[] with the current epoch as ts and
 # bump updated_at. <kind> is restricted to the literals `question` / `decision`
 # (FR-50 defense-in-depth: there is no path to record a reviewer verdict).
-# python3 when available, else a bash JSON-builder using json_escape.
+# python3 when available, else a bash JSON-builder using tl_json_escape.
 tl_draft_append_elicit() {
   local skill="${1:?tl_draft_append_elicit: skill required}" kind="${2:-}" \
         header="${3:-}" question="${4:-}" answer="${5:-}"
@@ -175,7 +168,7 @@ PY
   else
     local obj old content head tail inner
     obj="$(printf '{"ts":%s,"kind":"%s","header":"%s","question":"%s","answer":"%s"}' \
-      "$now" "$(json_escape "$kind")" "$(tl_json_escape "$header")" \
+      "$now" "$(tl_json_escape "$kind")" "$(tl_json_escape "$header")" \
       "$(tl_json_escape "$question")" "$(tl_json_escape "$answer")")"
     old="$(sed -n 's/.*"updated_at":\([0-9]*\)[,}].*/\1/p' "$p" | head -1)"
     if [ -z "$old" ]; then

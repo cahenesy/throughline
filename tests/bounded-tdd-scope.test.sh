@@ -18,7 +18,7 @@
 #   - skills/tdd-author/SKILL.md: the two new required template sections, the
 #     step-7b refusal flow (structured multiple-choice, three options + `## Scope override`),
 #     and the `--bounds` invocation.
-#   - the FR-55 enforcement: implement.sh / build-prompt.md carry NO scope-bound
+#   - the FR-55 enforcement: /build-tdds carries NO design-time scope-bound
 #     env var and NO `scope-concern` halt cause (the build never halts on scope).
 #
 # Run: bash tests/bounded-tdd-scope.test.sh
@@ -27,8 +27,7 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 LINT="$REPO/scripts/lib/tdd-lint.sh"
 SKILL="$REPO/skills/tdd-author/SKILL.md"
 AGENT="$REPO/agents/design-reviewer.md"
-IMPL="$REPO/scripts/implement.sh"
-BUILDP="$REPO/scripts/build-prompt.md"
+BUILD_SKILL="$REPO/skills/implement/SKILL.md"
 
 RESULTS="$(mktemp)"; export RESULTS
 ok()  { printf 'ok\n'   >>"$RESULTS"; printf '  ok   — %s\n' "$1"; }
@@ -432,30 +431,20 @@ echo "[bounds-touched-bare-ok] a bare-but-extractable touched-files path does NO
   esac
 )
 
-echo "[bounds-parser-agreement] all THREE touched-files readers agree byte-for-byte on one fixture (Verification §2)"
+echo "[bounds-parser-agreement] tdd-lint wrapper and touched-files.sh agree byte-for-byte (Verification §2)"
 (
-  # Stage the fixture at docs/tdd/<slug>.md under a temp repo so the
-  # <repo> <slug>-signature _touched_files_of_tdd resolves to the SAME file the
-  # path-signature readers see.
   TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT; mkdir -p "$TMP/docs/tdd"; f="$TMP/docs/tdd/9009.md"
   make_extract_forms "$f"
   agree="$(
-    export STATE_DIR="$TMP/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
-    export INTEGRATION="master" CHANGE="ci" LOGDIR="$TMP"
-    mkdir -p "$STATE_DIR"
-    TDDS=()
-    # implement.sh brings _rework_touched_files (gates) + _touched_files_of_tdd
-    # (learnings); tdd-lint.sh brings _tl_extract_touched_paths.
-    THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" 2>/dev/null || { printf 'SOURCE_FAIL impl'; exit 0; }
+    source "$REPO/scripts/lib/touched-files.sh" 2>/dev/null || { printf 'SOURCE_FAIL tf'; exit 0; }
     source "$LINT" 2>/dev/null || { printf 'SOURCE_FAIL lint'; exit 0; }
-    a="$(_rework_touched_files "$f")"
+    a="$(tl_extract_touched_paths "$f")"
     b="$(_tl_extract_touched_paths "$f")"
-    c="$(_touched_files_of_tdd "$TMP" 9009)"
-    if [ "$a" = "$b" ] && [ "$b" = "$c" ]; then printf 'AGREE'
-    else printf 'DIFF a=[%s] b=[%s] c=[%s]' "$a" "$b" "$c"; fi
+    if [ "$a" = "$b" ]; then printf 'AGREE'
+    else printf 'DIFF a=[%s] b=[%s]' "$a" "$b"; fi
   )"
-  [ "$agree" = "AGREE" ] && ok "all three readers emit byte-identical output (single source of truth, 3-way drift guard)" \
-    || bad "parser drift across the three readers: $agree"
+  [ "$agree" = "AGREE" ] && ok "tdd-lint and touched-files.sh emit byte-identical output" \
+    || bad "parser drift across the two readers: $agree"
 )
 
 echo "[bounds-single-source] the inlined-extractor guard catches a planted copy and the real repo is clean (Verification §2)"
@@ -513,18 +502,15 @@ echo "[skill-7b] step 7b wires the --bounds pre-pass + the refusal flow"
     || bad "expected '## Scope override' in $SKILL"
 )
 
-# --- FR-55 enforcement / §5: no /implement-side scope check -----------------
+# --- FR-55 enforcement / §5: no /build-tdds-side scope check -----------------
 echo "[fr55-no-impl-check] the build side carries no scope-bound logic"
 (
-  grep -q 'THROUGHLINE_TDD_MAX_' "$IMPL" \
-    && bad "implement.sh must not reference the design-time scope-bound env vars (FR-55 / §5)" \
-    || ok "implement.sh carries no THROUGHLINE_TDD_MAX_* (scope is a design gate, not a build gate)"
-  grep -q 'scope-concern' "$IMPL" \
-    && bad "implement.sh must not carry a 'scope-concern' halt cause (FR-55 / §5)" \
-    || ok "implement.sh has no 'scope-concern' halt cause"
-  grep -q 'THROUGHLINE_TDD_MAX_\|scope-concern' "$BUILDP" \
-    && bad "build-prompt.md must not add a scope check (FR-55 / §5)" \
-    || ok "build-prompt.md adds no scope check"
+  grep -q 'THROUGHLINE_TDD_MAX_' "$BUILD_SKILL" \
+    && bad "/build-tdds must not reference the design-time scope-bound env vars (FR-55 / §5)" \
+    || ok "/build-tdds carries no THROUGHLINE_TDD_MAX_* (scope is a design gate, not a build gate)"
+  grep -q 'scope-concern' "$BUILD_SKILL" \
+    && bad "/build-tdds must not carry a 'scope-concern' halt cause (FR-55 / §5)" \
+    || ok "/build-tdds has no 'scope-concern' halt cause"
 )
 
 # --- TDD 0049 / FR-53,54,67(a): annotation-robust single-source extractor ----
@@ -543,33 +529,6 @@ echo "[extract-forms] tl_extract_touched_paths returns the real path for every a
   { printf '%s\n' "$mal" | grep -q 'stray' && [ "$(printf '%s\n' "$mal" | grep -c .)" = "1" ]; } \
     && ok "malformed mode reports exactly the one no-path bullet" \
     || bad "malformed mode wrong: [$mal]"
-)
-
-echo "[gates-annotated-membership] an in-scope edit to a file declared with the annotated form does NOT trip structural-finding(a) through gates.sh (Verification §3)"
-(
-  D="$(mktemp -d)"; trap 'rm -rf "$D"' EXIT; cd "$D" 2>/dev/null || { bad "cd failed"; exit 0; }
-  export STATE_DIR="$D/state.d" STATE_STARTED_AT=1000 STATE_MODE="sequential"
-  export INTEGRATION="master" CHANGE="ci" LOGDIR="$D"; mkdir -p "$STATE_DIR"; TDDS=()
-  THROUGHLINE_SOURCE_ONLY=1 source "$IMPL" 2>/dev/null || { bad "could not source implement.sh"; exit 0; }
-  git init -q -b master; git config user.email t@t.t; git config user.name t
-  printf 'base\n' > base.txt; git add -A; git commit -qm base >/dev/null
-  mkdir -p docs/tdd
-  cat > docs/tdd/0099-annot.md <<'EOF'
-# TDD 0099: annotated-path fixture
-Status: draft
-
-## Touched files
-- `src/a.txt` (post) — the in-scope file
-EOF
-  git add -A; git commit -qm "build start" >/dev/null; BS="$(git rev-parse HEAD)"
-  mkdir -p src; printf 'l1\nl2\nl3\n' > src/a.txt
-  git add -A; git commit -qm "rework: in-scope edit" >/dev/null; NH="$(git rev-parse HEAD)"
-  out="$(_rework_pre_pass 0099-annot docs/tdd/0099-annot.md "$NH" "$BS" "$BS" 8)"; rc=$?
-  [ "$rc" -eq 0 ] && ok "pre-pass clears the annotated-path in-scope edit (rc 0)" \
-    || bad "annotated-path in-scope edit should clear (rc=$rc, out=$out)"
-  printf '%s\n' "$out" | grep -q 'structural-finding(a)' \
-    && bad "annotated form wrongly tripped structural-finding(a): $out" \
-    || ok "no false structural-finding(a) for the annotated declaration"
 )
 
 echo "[delegate-fence-anchor] count and extract agree through the md.sh delegate: a ~~~-fenced bullet is excluded and a two-space /^- / bullet is counted (TDD 0055 §6, A21/A23)"
