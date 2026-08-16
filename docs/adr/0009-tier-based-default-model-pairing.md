@@ -1,5 +1,5 @@
 # 0009. Tier-based default model pairing (latest top tier builds; prior-gen top tier reviews)
-Status: accepted
+Status: superseded by 0014
 Date: 2026-06-12
 Scope: workflow / gate-architecture / model-diversity
 
