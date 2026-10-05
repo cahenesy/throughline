@@ -675,6 +675,40 @@ if [ "$STUB_MODE" = none ]; then
   ev '{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"text","text":"'"$nonce"'"}]}}'
   ev '{"type":"result","subtype":"success","is_error":false}'; exit 0
 fi
+# Real shapes observed on Claude Code 2.1.289 (2026-10-05): a session that is
+# rate-limited before it dispatches, and the async Agent tool (the tool_result
+# is only an ack; the outcome is the task_notification; the reply is the
+# subagent's SubagentHandback). The ack's prompt, task_started's prompt and
+# the parent's own text all echo the nonce: none of them may count.
+case "$STUB_MODE" in
+  ratelimited)
+    ev '{"type":"assistant","parent_tool_use_id":null,"error":"rate_limit","message":{"model":"<synthetic>","content":[{"type":"text","text":"Session limit reached, resets 7pm"}]}}'
+    ev '{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"result":"Session limit reached, resets 7pm"}'
+    exit 0 ;;
+  async*)
+    ev '{"type":"assistant","parent_tool_use_id":null,"message":{"model":"claude-opus-5-5","content":[{"type":"tool_use","id":"toolu_A","name":"Agent","input":{"subagent_type":"general-purpose","description":"probe","model":"'"$model"'","prompt":"Reply with exactly '"$nonce"'"}}]}}'
+    if [ "$model" = claude-nonexistent-0 ]; then
+      ev '{"type":"user","parent_tool_use_id":null,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_A","is_error":true,"content":"<tool_use_error>InputValidationError: expected one of sonnet|opus|haiku|fable</tool_use_error>"}]},"tool_use_result":"InputValidationError"}'
+      ev '{"type":"result","subtype":"success","is_error":false}'; exit 0
+    fi
+    ev '{"type":"system","subtype":"task_started","task_id":"a1","tool_use_id":"toolu_A","prompt":"Reply with exactly '"$nonce"'"}'
+    ev '{"type":"user","parent_tool_use_id":null,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_A","content":[{"type":"text","text":"Async agent launched successfully.\nagentId: a1"}]}]},"tool_use_result":{"isAsync":true,"status":"async_launched","agentId":"a1","resolvedModel":"claude-fable-5-1","prompt":"Reply with exactly '"$nonce"'"}}'
+    ev '{"type":"assistant","parent_tool_use_id":null,"message":{"model":"claude-opus-5-5","content":[{"type":"text","text":"done '"$nonce"'"}]}}'
+    sm=claude-fable-5-1; [ "$STUB_MODE" = asyncsub ] && sm=claude-opus-5-5
+    case "$STUB_MODE" in
+      async|asyncsub)
+        ev '{"type":"assistant","parent_tool_use_id":"toolu_A","message":{"model":"'"$sm"'","content":[{"type":"tool_use","id":"toolu_H","name":"SubagentHandback","input":{"message":"'"$nonce"'"}}]}}'
+        ev '{"type":"system","subtype":"task_notification","task_id":"a1","tool_use_id":"toolu_A","status":"completed","summary":"This agent report was delivered to you as a message (its SubagentHandback call)."}' ;;
+      asyncnoreply)
+        ev '{"type":"assistant","parent_tool_use_id":"toolu_A","message":{"model":"claude-fable-5-1","content":[{"type":"tool_use","id":"toolu_H","name":"SubagentHandback","input":{"message":"something else"}}]}}'
+        ev '{"type":"system","subtype":"task_notification","task_id":"a1","tool_use_id":"toolu_A","status":"completed","summary":"delivered"}' ;;
+      asyncfail)
+        ev '{"type":"assistant","parent_tool_use_id":"toolu_A","error":"rate_limit","message":{"model":"<synthetic>","content":[{"type":"text","text":"Fable 5.1 requires usage credits."}]}}'
+        ev '{"type":"system","subtype":"task_notification","task_id":"a1","tool_use_id":"toolu_A","status":"failed","summary":"Agent terminated early due to an API error: Fable 5.1 requires usage credits. (error type rate_limit, HTTP 429, model sent to the API: claude-fable-5-1)"}' ;;
+    esac
+    ev '{"type":"result","subtype":"success","is_error":false}'
+    exit 0 ;;
+esac
 dm=",\"model\":\"$model\""; [ "$STUB_MODE" = nomodel ] && dm=""
 ev '{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Agent","input":{"subagent_type":"general-purpose","description":"probe"'"$dm"',"prompt":"Reply with exactly '"$nonce"'"}}]}}'
 ev '{"type":"assistant","parent_tool_use_id":"toolu_1","message":{"content":[{"type":"text","text":"'"$nonce"'"}]}}'
@@ -712,6 +746,28 @@ STUB
   [ "$RC" -eq 1 ] && ok "[14] no tool_result (malformed run) → exit 1" || bad "[14] none: rc=$RC out='$OUT'"
   probe nomodel
   [ "$RC" -eq 1 ] && ok "no Agent dispatch on the stated model → exit 1" || bad "nomodel: rc=$RC out='$OUT'"
+  probe async
+  [ "$RC" -eq 0 ] && ok "[14] async shape: completed task_notification + SubagentHandback nonce on the requested family → exit 0" \
+    || bad "[14] async: rc=$RC out='$OUT'"
+  probe asyncfail
+  [ "$RC" -eq 3 ] && printf '%s' "$OUT" | grep -q '^PROBE_BLOCKED: P1: .*requires usage credits' \
+    && ok "[14] async shape: task_notification failed (usage credits; the parent echoes the nonce) → exit 3" \
+    || bad "[14] asyncfail: rc=$RC out='$OUT'"
+  probe asyncsub
+  [ "$RC" -eq 3 ] && printf '%s' "$OUT" | grep -q '^PROBE_BLOCKED: .*ran as claude-opus-5-5.*substituted' \
+    && ok "[14] async shape: the subagent answered on another family → exit 3 (silent substitution)" \
+    || bad "[14] asyncsub: rc=$RC out='$OUT'"
+  probe asyncnoreply
+  [ "$RC" -eq 3 ] && printf '%s' "$OUT" | grep -q '^PROBE_BLOCKED: P1: ' \
+    && ok "async shape: completed without the nonce in the reply (ack / task_started / parent echoes ignored) → exit 3" \
+    || bad "asyncnoreply: rc=$RC out='$OUT'"
+  probe asyncnonote
+  [ "$RC" -eq 1 ] && printf '%s' "$OUT" | grep -q 'no task_notification' \
+    && ok "async ack without a task_notification → exit 1, named" || bad "asyncnonote: rc=$RC out='$OUT'"
+  probe ratelimited
+  [ "$RC" -eq 1 ] && printf '%s' "$OUT" | grep -q 'rate/usage limit (transient)' \
+    && ok "a session rate-limited before it dispatches → exit 1 naming a rate/usage limit (FR-41 transient)" \
+    || bad "ratelimited: rc=$RC out='$OUT'"
   env -i HOME="$H" PATH="/usr/bin:/bin" THROUGHLINE_PROBE_CLAUDE="$ROOT/no-such-claude" bash "$PROBE" >/dev/null 2>&1; rc=$?
   [ "$rc" -eq 1 ] && ok "no claude binary → exit 1" || bad "missing claude: rc=$rc"
 ) || true
