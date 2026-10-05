@@ -530,9 +530,9 @@ scope concern this gate missed.
 
 **7b. Independent design critique (gate — do not skip).** Before opening the design
 PR, get an INDEPENDENT critique of the whole authored set. Spawn the
-`design-reviewer` subagent — it runs in fresh context on a
-different model than you authored in, so it does not share your blind spots. It
-reads the PRD, the TDD(s), and the accepted ADRs and checks requirement
+`design-reviewer` subagent — it runs in a fresh worker that is not this session
+and inherits this session's model (FR-10); independence is the fresh context,
+not a distinct model name. It reads the PRD, the TDD(s), and the accepted ADRs and checks requirement
 traceability, interface specification, the REQUIRED alternatives analysis, ADR
 conflicts, and scope coherence, ending with `DESIGN_REVIEW: PASS` or
 `DESIGN_REVIEW: BLOCK <reason>`.

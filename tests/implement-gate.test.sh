@@ -6,7 +6,8 @@
 #
 # Coprocess/runner evals were removed with the implement.sh body (TDD 0063+).
 # This aggregator keeps the 0063 stub/status observations and the live
-# 0060–0062 helpers: plugin-root, verdicts, run-record, build-tdds-skill.
+# 0060–0062 helpers: plugin-root, verdicts, run-record, build-tdds-skill,
+# and the 0064 model-roles eval.
 #
 # Run: bash tests/implement-gate.test.sh
 set -uo pipefail
@@ -189,9 +190,10 @@ PASS="$(grep -c '^ok$'   "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
 echo "=== 0063 observations: $PASS passed, $FAIL failed ==="
 
-# 0060–0062 evals (kept). Each file is invoked only when it exists.
+# 0060–0062 evals (kept) + 0064 model-roles. Each file is invoked only when
+# it exists.
 EVAL_FAIL=0
-for ev in plugin-root verdicts run-record build-tdds-skill; do
+for ev in plugin-root verdicts run-record build-tdds-skill model-roles; do
   f="$(dirname "$0")/${ev}.test.sh"
   if [ -f "$f" ]; then
     echo

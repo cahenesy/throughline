@@ -1,6 +1,6 @@
 # TDD 0064: Model roles and parent-model observation
 
-Status: draft
+Status: implemented
 PRD refs: NFR-3, FR-52, FR-87, FR-10, FR-15, FR-50
 PRD-rev: f6ef178
 ADR constraints: 0004, 0005, 0006, 0010, 0011, 0013, 0015
