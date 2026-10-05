@@ -1,5 +1,5 @@
 # 0014. Model capability by job (fresh worker, not a different named model)
-Status: accepted
+Status: superseded by 0015
 Date: 2026-08-16
 Scope: workflow / gate-architecture / model-selection
 Supersedes: 0009

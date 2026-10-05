@@ -1,190 +1,174 @@
-# TDD 0065: Parent-session model check (FR-86)
+# TDD 0065: Parent-session light-tier check (FR-86)
 
 Status: draft
-PRD refs: FR-86
-PRD-rev: 5dbf968
-ADR constraints: 0004, 0005, 0006, 0010, 0014
+PRD refs: FR-86, NFR-3, NFR-4
+PRD-rev: f6ef178
+ADR constraints: 0004, 0005, 0006, 0010, 0015
 
 ## Approach
-`/prd-author`, `/tdd-author`, and `/build-tdds` compare the **parent
-session** model to the harness’s current most-capable coding model
-**each invoke**. There is no shipped family/rank/alias table.
+FR-86 is now narrow. `/prd-author`, `/tdd-author`, and `/build-tdds`
+read the parent session's model. If it is on the light tier, or it
+cannot be read, the skill warns and asks Continue / Stop before the
+interview or build proceeds. Any other model proceeds silently. There
+is no vendor web fetch and no "most capable" comparison (both removed
+from 0065-rev1).
 
-Observation is a **session artifact** (not self-report). Comparison is
-a **this-turn official-docs fetch** (not training memory, not Models
-API recency). Cannot observe or cannot fetch/judge → **unreadable** →
-the same warn+ask as a weaker session. A session on the fetched
-top-tier, or newer, produces no warning.
+All logic lives in one executable function in `scripts/lib/models.sh`
+that reuses TDD 0064's `tl_parent_model` and `tl_model_tier`. Each skill
+carries an identical, marker-tagged bash block that calls it. The eval
+**extracts and runs** that block from each skill file, so a block that
+fails in a clean shell (the 0064-rev1 defect: a function that does not
+exist in a `bash -c` child) fails the eval.
 
-Stacks on 0064: dispatch ids stay in `models.sh`. This TDD does not
-add a second literal and does not change `tl_resolve_models`.
+Stacks on 0064.
 
 ## Components & interfaces
-Add the same numbered block to all three skills, immediately after the
-existing source/resume preamble and **before** the interview or queue
-work (FR-86: before the interview or build proceeds).
+**`tl_fr86_message`** (added to `scripts/lib/models.sh`). No args.
+Calls `tl_parent_model`; on rc 1 captures its stderr reason. Prints:
 
-**1. Observe** the parent model from the harness session artifact.
+| Case | stdout (exactly one line, or nothing) |
+|---|---|
+| parent readable, `tl_model_tier` = `above` | nothing |
+| parent readable, tier `light` | `throughline: parent session model <id> is on the light tier; judgment work in this session inherits it. Continue, or stop and change the model.` |
+| unreadable | `throughline: parent session model could not be read (<reason>). Continue, or stop and change the model.` |
 
-- Grok: if `GROK_SESSION_ID` is unset or empty → unreadable. Else
-  read `${GROK_HOME:-$HOME/.grok}/sessions/<url-encoded-cwd>/$GROK_SESSION_ID/summary.json`
-  field `current_model_id` (string). Missing file, unreadable JSON, or
-  empty/absent field → unreadable. `cwd` is `$PWD` first (the session
-  cwd the harness actually keys on), then `git rev-parse --show-toplevel`
-  if that path is missing. Encoding: percent-encode the absolute path
-  including the leading slash (example: `/home/chris/hogv/open-source/throughline`
-  → `%2Fhome%2Fchris%2Fhogv%2Fopen-source%2Fthroughline`). Do not
-  follow `summary.json` outside `$GROK_HOME/sessions/`.
-- Claude: if `CLAUDE_CODE_SESSION_ID` is unset or empty → unreadable.
-  Else stream `~/.claude/projects/<encoded-cwd>/$CLAUDE_CODE_SESSION_ID.jsonl`
-  (do **not** slurp). Take the last JSON object whose `message.model`
-  (or top-level `model`) is a non-empty string **other than**
-  `<synthetic>`. Missing file or no such field → unreadable. Encoded
-  cwd matches Claude’s project slug: leading `/` → `-`, remaining `/`
-  → `-`, `.` → `-` (example: a `.worktrees` path becomes `--worktrees-`).
-- No other source. Do not ask the model to name itself.
+rc 0 in all three cases. rc 2 only when `models.sh` itself is
+unusable (a sourcing failure is caught by the block below first).
+`<reason>` is the text after `tl_parent_model: ` on its stderr line,
+or `unknown` if empty.
 
-**2. Fetch official docs this turn** (required; answering from memory
-is a defect). Harness pick:
+**Skill block** — identical bytes in all three skills, preceded by the
+HTML comment `<!-- tl:fr86-check -->` on its own line, then a fenced
+`bash` block:
+```
+_tl_src="${CLAUDE_PLUGIN_ROOT:-${GROK_PLUGIN_ROOT:-}}"
+. "${_tl_src}/scripts/lib/plugin-root.sh" || { echo "throughline: cannot source plugin-root.sh" >&2; exit 1; }
+. "$(tl_plugin_root)/scripts/lib/models.sh" || { echo "throughline: cannot source models.sh" >&2; exit 1; }
+tl_fr86_message
+```
+Every function is defined in the same shell that calls it; no
+`bash -c` child, no function crossing a process boundary.
 
-- Claude Code parent: fetch
-  `https://platform.claude.com/docs/en/about-claude/models/overview`
-  (most-capable widely released coding model) and
-  `https://code.claude.com/docs/en/model-config` (aliases `best` /
-  `fable` / `opus` / `sonnet` / `haiku`).
-- Grok Build parent: fetch
-  `https://docs.x.ai/developers/models` (flagship / coding model).
+Skill prose after the block (same in all three): "If the block printed
+a line, show that line to the user and ask a structured question with
+exactly two options, `Continue` and `Stop`. `Stop` ends the skill with
+no interview, no draft init, no lock, and no queue. `Continue` proceeds.
+If the block printed nothing, proceed without asking. If the block
+exits non-zero, show its stderr and stop (fail closed)."
 
-Fetch fail (network, non-200, empty body) → unreadable. Do not fall
-back to a cached table or to `models.sh` literals for this compare.
-
-**3. Judge** from the fetched page(s) plus the observed id: is the
-observed session weaker than the page’s current most-capable coding
-model, equal to it, or newer? Alias resolution is allowed **from the
-fetched page** (e.g. `fable` ↔ `claude-fable-5`). Recency-only
-(list order / created_at) is forbidden: a post-flagship mid-tier
-must still count as weaker.
-
-**4. Warn+ask** (structured Continue / Stop) when the outcome is
-**weaker** or **unreadable**. Pinned warning lines:
-
-- weaker:
-  `throughline: parent session model <observed> is below the most-capable coding model on this harness (<top> from <url>). Continue, or stop and change the model.`
-- unreadable:
-  `throughline: parent session model could not be read or the official models page could not be fetched. Continue, or stop and change the model.`
-
-Continue → proceed with the existing skill. Stop → halt; no interview
-and no build work. Equal or newer → no warning.
-
-Do **not** insert a rank table (`fable > opus > sonnet`, numeric
-`grok-X.Y` compare, or an allowlist of ids) into any skill or script.
-The fetched page is the only compare source.
+Placement:
+- `skills/prd-author/SKILL.md` — after step 0 (resume check), before
+  step 1. The draft is not initialized on `Stop` (it is lazy anyway).
+- `skills/tdd-author/SKILL.md` — after `## 0. Resume check`, before
+  `## 1.`.
+- `skills/implement/SKILL.md` — new section after `## 1. Source
+  helpers`, before `## 2. Lock`. On `Continue` with an unreadable
+  parent, 0066 records `parent=unknown`.
 
 ## Data & state
-None. No cache file. No env override for the FR-86 bar (the bar is
-the page). Dispatch overrides remain 0064 / `models.sh`.
+None. Reads the session transcript / Grok `summary.json` via
+`tl_parent_model` (read-only). No cache, no env override for the check.
 
 ## Sequencing / implementation plan
-1. Insert the Observe → Fetch → Judge → Warn+ask block into
-   `skills/prd-author/SKILL.md` (after step 0, before step 1).
-2. Same block in `skills/tdd-author/SKILL.md` (after step 0, before
-   step 1).
-3. Same block in `skills/implement/SKILL.md` (after step 1 source,
-   before step 2 lock / resume). `/build-tdds` still runs 0064’s
-   FR-87 pin warning later; the two warnings are distinct.
-4. Add `tests/parent-session-model-check.test.sh`; register it in
+1. Add `tl_fr86_message` to `scripts/lib/models.sh`.
+2. Insert the marker + block + prose into the three skills.
+3. Add `tests/parent-session-check.test.sh` (extracts and runs each
+   skill's block with fixtures); register it in
    `tests/implement-gate.test.sh`.
 
 ## Failure modes & edge cases
-- **Real:** a Sonnet parent does the eval from memory and names itself
-  top-tier. Mitigation: skill forbids memory; evals assert the fetch
-  URLs and the words `this turn` / `not from memory` appear in all
-  three skills.
-- **Real:** `summary.json` / jsonl path built from cwd is a trust
-  boundary. Mitigation: path must stay under the harness sessions
-  root; no `..` after encoding.
-- **Real:** fetch fail on every airplane / CI skill-eval. Mitigation:
-  product path warns+asks (honest). Eval path never hits the network;
-  it only greps the skill text (L-011: missing skill file is
-  infra-fail, not ok).
-- **Overblown:** mid-session `/model` switch leaving a stale
-  `current_model_id`. Grok docs say the field is the model in use;
-  accept last artifact write as the observation.
-- **Unspoken:** FR-86 as written compares to the NFR-3 **binding**.
-  This TDD compares to the **live vendor top-tier**. A session on
-  our own `models.sh` default will start warning the morning a new
-  flagship ships, until 0064’s literals are rebound. That nag is
-  the rebind signal, not a second id table.
+**Real risks**
+- A skill's block drifts from the others (hand edit). Mitigation: the
+  eval asserts the three extracted blocks are byte-identical.
+- `tl_parent_model` unreadable on every run after a transcript format
+  change → the question appears every time. Honest by design
+  (NFR-4: unreadable is warn+ask, not a silent skip); the reason in
+  parentheses tells the operator why.
+- The block runs before `/prd-author`'s draft helper is sourced; a
+  `Stop` must leave no draft. Mitigation: placement before any
+  `tl_draft_init` (which is lazy) — eval observation 6.
+
+**Overblown risks**
+- A mid-session `/model` switch: the newest assistant line wins, so the
+  check reflects the model in use at invoke time.
+- Grok sessions: same function, Grok branch of `tl_parent_model`.
+
+**Unspoken risks**
+- An operator who deliberately authors on a light model gets the
+  question every invoke. Accepted: FR-86 says warn+ask; it is one
+  keystroke and states the cost tradeoff.
+- The `<!-- tl:fr86-check -->` marker is the eval's extraction anchor.
+  If a later edit removes it, the eval fails closed ("marker not found
+  in <skill>") rather than passing on nothing.
 
 ## Verification plan
-- **Surface:** the three skill files (required block + warning
-  strings + URLs). No runtime network in CI.
-- **Observation points:**
-  1. Each of `skills/prd-author/SKILL.md`, `skills/tdd-author/SKILL.md`,
-     `skills/implement/SKILL.md` contains `GROK_SESSION_ID`,
-     `current_model_id`, `CLAUDE_CODE_SESSION_ID`, the three fetch
-     URLs above, `not from memory` (or `this turn`), and both pinned
-     warning prefixes (`is below the most-capable coding model` and
-     `could not be read or the official models page`).
-  2. None of the three contains a rank table: `grep -n 'fable > opus\\|opus > sonnet\\|fable>opus' ` exits 1 on each file.
-  3. None of the three tells the parent to proceed silently when the
-     model is unreadable (`grep -n 'unreadable' ` matches a warn+ask
-     sentence, not a skip).
-  4. Missing skill file: the eval’s grep on that path is infra-fail
-     (exit ≥2 → `bad`, never `ok`) (L-001).
-  5. `scripts/lib/models.sh` is byte-identical to 0064’s pinned
-     function (this TDD does not touch it).
-- **PASS:** 1–5 hold.
+- **Surface:** stdout / rc of the extracted skill block, run as
+  `env -i HOME=<tmp> PATH="$PATH" CLAUDE_PLUGIN_ROOT=<repo> CLAUDE_CONFIG_DIR=<tmp>/.claude [CLAUDE_CODE_SESSION_ID=<sid>] bash <extracted.sh>`.
+  No network.
+- **Extraction:** for each of the three skills, take the first fenced
+  `bash` block after the line `<!-- tl:fr86-check -->`. Marker or block
+  missing, or the skill file unreadable → `bad` (infra-fail, L-001).
+- **Observation points → expected (PASS):**
+  1. The three extracted blocks are byte-identical.
+  2. Fixture transcript, newest assistant `message.model` = `claude-opus-5-5` → block stdout empty, rc 0.
+  3. Same with `claude-fable-5-1` → empty, rc 0.
+  4. Same with `claude-sonnet-5-5` → stdout exactly the light line with `<id>` = `claude-sonnet-5-5`, rc 0. With `claude-haiku-4-5` → light line naming it.
+  5. `CLAUDE_CODE_SESSION_ID` unset → stdout exactly `throughline: parent session model could not be read (no session id). Continue, or stop and change the model.`, rc 0. Session id set but no transcript → reason `transcript not found`.
+  6. `CLAUDE_PLUGIN_ROOT` pointing at an empty dir → block rc ≠ 0 and stderr contains `cannot source` (fail closed).
+  7. Each skill's prose within 15 lines after the block contains `Continue`, `Stop`, and `fail closed` (grep with the file-readable precheck).
+  8. `grep -c 'platform.claude.com\|docs.x.ai\|this turn' ` over the three skills totals 0 (rev1's fetch removed), with each file asserted readable first.
+- **PASS:** 1–8 hold.
 
 ## Evaluation rubric
 | Criterion | High-quality | Acceptable | Failing |
 |---|---|---|---|
-| requirement traceability | Every in-scope FR/NFR maps to a named component or skill step | One mapping is slightly indirect but still named | An in-scope FR/NFR is missing or only hand-waved |
-| interface concreteness | models.sh dispatch ids, inherit spawn, live-fetch compare, and warn+ask are specified with inputs/outputs | One interface is slightly implicit but implementable | A reader cannot tell where dispatch ids live vs where FR-86 looks up |
-| alternatives-analysis substance | Live official-docs fetch named; static rank map and Models-API recency rejected with reasons | One rejected alternative is thin but present | No rejected alternative, or none considered |
-| verification-plan actionability | Observable surface, observation points, and PASS values named | Observations are concrete but one fixture is slightly underspecified | Non-actionable plan, or the section is missing |
-| scope-bound adherence | Touched files within bounds; estimates padded; exceptions declared | One justified inline exception | Over bound with no exception, or undeclared files |
-| naming consistency | build=/review=/verify=, inherit, unreadable→warn+ask used the same way in both TDDs | One synonym that still refers to the same thing | Same concept named two ways across the set |
-| no static rank map | FR-86 compare is a this-turn official-docs fetch; no shipped family/rank table | Fetch sources named; one fallback sentence is slightly loose | A hardcoded fable>opus>sonnet (or similar) table is the compare |
+| requirement traceability | Every in-scope FR/NFR (NFR-3, FR-10, FR-15(d), FR-52, FR-86, FR-87, FR-88) maps to a named function, skill step, or run-record field | One mapping indirect but named | An in-scope requirement missing or hand-waved |
+| interface concreteness | Every new helper (`tl_resolve_models`, `tl_parent_model`, tier placement, run-record setters) has its signature, stdout format, and return codes pinned | One helper's error return implicit | A reader cannot tell what a helper prints or returns |
+| executable verification | Every skill snippet and helper the design adds is run by an eval, not only grepped; missing file / empty output / grep exit 2 is infra-fail, never ok | One check is text-only with a stated reason | A snippet is pinned in prose but never executed (the 0064 failure) |
+| alternatives-analysis substance | Each new mechanism names ≥1 concrete rejected alternative with reason (live fetch, rank table, frontmatter effort, rebuild-on-escalate) | One rejection thin | None given |
+| verification-plan actionability | Surface, observation points, PASS values named, including the live fell-back probe and its BLOCKED rule | One fixture underspecified | Missing or non-actionable |
+| scope-bound adherence | Each TDD ≤8 files, ≤500 body lines; estimates padded; exceptions declared | One justified inline exception | Over a bound with no exception |
+| naming consistency | `inherit`, `light`, `escalation`, `escalated`/`already-top`/`fell-back`, `parent=unknown` spelled identically across all four TDDs and ADR 0015 | One synonym | Same concept named two ways |
 
 ## Requirement traceability
 | Requirement | Design element |
 |---|---|
-| FR-86 observe | Session artifact (`current_model_id` / jsonl `message.model`) |
-| FR-86 compare | This-turn fetch of the named official URLs; judge weaker/equal/newer from the page |
-| FR-86 weaker or unreadable | Pinned warn+ask Continue/Stop before interview or build |
-| FR-86 equal or newer | No warning |
-| NFR-4 honesty | Unreadable is warn+ask, never silent skip |
+| FR-86 read the parent model | `tl_parent_model` (0064), called by `tl_fr86_message` |
+| FR-86 light tier → warn+ask | light line + Continue/Stop prose; observation 4 |
+| FR-86 unreadable → warn+ask, not skip, not hard stop | unreadable line + Continue/Stop; observation 5 |
+| FR-86 above light → no warning, no fetch | empty stdout; observations 2, 3, 8 |
+| FR-86 before interview/build | placement in each skill; observation 6/7 |
+| NFR-3 operator owns the model choice | no most-capable comparison |
+| NFR-4 honesty | unreadable reason printed; fail closed on source failure |
 
 ## Dependencies considered
-No new libraries (skill uses the harness fetch/browse already
-available). Rejected: **static family/rank table** in `models.sh`
-(goes stale; user-forbidden). Rejected: **Anthropic/xAI Models API
-recency** as capability (Sonnet 5 and Opus 5 shipped after Fable 5
-and are not more capable). Rejected: **model self-report** of its
-own id (not an artifact; FR-70 spirit).
+No new libraries. Rejected: **0065-rev1's this-turn fetch of vendor
+model pages** (FR-86 non-goal now; fragile offline; judged "most
+capable", the wrong bar). Rejected: **skill prose that tells the model
+to read the transcript itself** (unexecutable by an eval; the 0064-rev1
+class). Rejected: **a separate `session-check.sh` library** (one more
+source line in three skills; `models.sh` already owns observation and
+tiers).
 
 ## PRD conflicts surfaced (and resolution)
-FR-86’s sentence “compare … to the harness’s latest top-tier binding
-(NFR-3)” names the binding as the bar. This TDD uses the **live
-vendor top-tier** from the fetched page, which can be newer than
-`models.sh`. Resolution (interview): intentional — the nag on a
-stale binding is the rebind signal. Recorded in Failure modes.
+None. FR-86 was rewritten to match this design (PR #181).
 
 ## Decisions to promote (ADR candidates)
-None beyond the 0009 successor already required by 0064.
+Covered by ADR 0015 (no live discovery; light-tier check only).
 
 ## Touched files
-- `skills/prd-author/SKILL.md` — FR-86 block after resume check
-- `skills/tdd-author/SKILL.md` — same block
-- `skills/implement/SKILL.md` — same block before lock/queue
-- `tests/parent-session-model-check.test.sh` — skill-text eval
+- `scripts/lib/models.sh` — add `tl_fr86_message`
+- `skills/prd-author/SKILL.md` — marker + FR-86 block + prose
+- `skills/tdd-author/SKILL.md` — marker + FR-86 block + prose
+- `skills/implement/SKILL.md` — FR-86 section before the lock
+- `tests/parent-session-check.test.sh` — extracts and runs each skill block
 - `tests/implement-gate.test.sh` — register the new eval
 
 ## Expected diff size
-- `skills/prd-author/SKILL.md` — 55 lines
-- `skills/tdd-author/SKILL.md` — 55 lines
-- `skills/implement/SKILL.md` — 55 lines
-- `tests/parent-session-model-check.test.sh` — 150 lines
+- `scripts/lib/models.sh` — 40 lines
+- `skills/prd-author/SKILL.md` — 22 lines
+- `skills/tdd-author/SKILL.md` — 22 lines
+- `skills/implement/SKILL.md` — 24 lines
+- `tests/parent-session-check.test.sh` — 210 lines
 - `tests/implement-gate.test.sh` — 12 lines
-Total expected diff: 327 lines across 5 files.
+Total expected diff: 330 lines across 6 files.
