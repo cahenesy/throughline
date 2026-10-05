@@ -133,6 +133,12 @@ T="$CFG/projects/-tmp-proj/$SID.jsonl"
   T2="$CFG/projects/-tmp-proj/1-trailing.jsonl"
   { cat "$T"; printf '%s' '{"type":"assistant","message":{"model":"claude-par'; } >"$T2"
   m CLAUDE_CONFIG_DIR="$CFG" CLAUDE_CODE_SESSION_ID=1-trailing 'tl_parent_model'; eq "[9] partial newest line skipped" claude-opus-5-5
+  # Key order reversed + a newer user line carrying "model": defeats a raw
+  # first-match OR last-match regex; only a JSON .message.model parse passes.
+  { printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Agent","input":{"model":"haiku"}}],"model":"claude-opus-5-5"}}'
+    printf '%s\n' '{"type":"user","message":{"role":"user","content":[]},"toolUseResult":{"model":"haiku"}}'
+  } >"$CFG/projects/-tmp-proj/4-order.jsonl"
+  m CLAUDE_CONFIG_DIR="$CFG" CLAUDE_CODE_SESSION_ID=4-order 'tl_parent_model'; eq "[9] key order / user-line model ignored" claude-opus-5-5
   mkdir -p "$H/.claude/projects/-x"; cp "$T" "$H/.claude/projects/-x/2-home.jsonl"
   m CLAUDE_CODE_SESSION_ID=2-home 'tl_parent_model'; eq "[9] default \$HOME/.claude" claude-opus-5-5
   SHIM="$ROOT/shim"; SHIM0="$ROOT/shim0"; mkdir -p "$SHIM" "$SHIM0"
