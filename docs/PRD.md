@@ -14,13 +14,20 @@
 > per-step review, automatic in-invocation rework) are retired; see Non-goals
 > and the retired-FR list under Requirements.
 >
-> **This update (model capability by job):** review independence is a fresh
-> worker, not a different named model. Judgment work (author PRDs and TDDs,
-> write and review code and tests, review designs, classify `/build-tdds`
-> halts) defaults to the most capable model on the harness. The only cheap
-> model slot is mechanical runtime-verify (FR-52). A parent session that is
-> below that default, or whose model cannot be read, warns and asks
-> continue/stop.
+> **Earlier update (model capability by job):** review independence is a
+> fresh worker, not a different named model. That still holds.
+>
+> **This update (model cost/performance by job):** the bar is the best
+> cost-to-performance model for each job, not the most capable model.
+> throughline no longer picks the judgment model: judgment workers inherit
+> the parent session's model and effort, so the operator's `/model` choice
+> (or the harness default) is the control. Mechanical runtime-verify runs on
+> a light tier, never more expensive than the parent, at low effort.
+> `/build-tdds` can escalate a TDD's judgment workers to the harness's most
+> capable model — on operator request, or automatically when a gate
+> FAILed and the TDD was resumed without revision. An unusable
+> escalation target falls back to the parent model with a warning. The
+> parent-session check warns only for a light-tier or unreadable parent.
 
 ## Problem & context
 
@@ -168,13 +175,14 @@ plugin updates, and consumer repos do not accumulate plugin-generated noise.
   `accepted` ADRs bind new TDDs.
 - **FR-10 Self-review + independent design-critique gate.** Before opening the design
   PR it self-reviews, then spawns the `design-reviewer` in a fresh context that is
-  not the author's session (NFR-3). The reviewer defaults to the most capable
-  model on the harness; it is not required to use a different model name than
-  the author. It blocks on untraced requirements, under-specified interfaces, a
-  missing alternatives analysis, a missing or non-actionable verification plan
-  (see FR-23), or ADR conflicts; the verdict rides in the PR body. — Acceptance:
-  a design PR whose critique verdict was produced in the `/tdd-author` parent
-  session does not satisfy this gate; a design PR whose critique worker used
+  not the author's session (NFR-3). The reviewer inherits the `/tdd-author`
+  parent session's model (FR-87); it is not required to use a different model
+  name than the author and is never escalated (FR-88). It blocks on untraced
+  requirements, under-specified interfaces, a missing alternatives analysis,
+  a missing or non-actionable verification plan (see FR-23), or ADR
+  conflicts; the verdict rides in the PR body. — Acceptance: a design PR
+  whose critique verdict was produced in the `/tdd-author` parent session
+  does not satisfy this gate; a design PR whose critique worker used
   the same model name as the parent is not rejected for that reason.
 - **FR-11 Design phase gate.** It commits the TDD set + any promoted ADRs together on
   a `docs/design/<slug>` branch and opens the design PR; it never auto-merges.
@@ -210,8 +218,9 @@ plugin updates, and consumer repos do not accumulate plugin-generated noise.
   artifact is driven to where the change is observable and the TDD's verification
   observations hold (see FR-25); and (d) an independent review produced in a
   context that is not the author's (NFR-3), written as an
-  artifact that reads `PASS` or `FAIL` (see FR-82). The reviewer defaults to
-  the most capable model on the harness; a different model name than the
+  artifact that reads `PASS` or `FAIL` (see FR-82). The reviewer runs on the
+  same model as the implementer for that TDD — the parent session's model, or
+  the escalated model when FR-88 applies; a different model name than the
   implementer is not required. Named review plugins
   (pr-review-toolkit, throughline security-reviewer, Superpowers reviewers) are
   used when present; they are not required to flip. Self-reported success is not
@@ -460,20 +469,25 @@ relaxes verdict honesty (NFR-4); both are reversible per-run via env overrides.
 - **FR-52 Verification-gate model tiering.** The runtime-verify gate (FR-25)
   is run on a model the runner picks based on the TDD's verification plan:
   mechanical observations (CLI exit code, log line grep, file presence, HTTP
-  status code) run on a cheaper model — this is the only job that defaults
-  off the most-capable model (NFR-3); verification plans requiring
-  browser/UI driving, multi-step interactive flows, or judgment about
-  ambiguous outputs run on the most-capable default. The tier is the
-  requirement and the concrete model binding is an implementation default,
-  pinnable unconditionally via `THROUGHLINE_RUNTIME_VERIFY_MODEL`.
+  status code) run on the harness's light tier at low effort — this is the
+  only job that does not inherit the parent session's model (NFR-3). The
+  light tier is never a model more expensive than the parent: when the
+  parent is itself on or below the light tier, mechanical verify runs on the
+  parent's model. Verification plans requiring browser/UI driving,
+  multi-step interactive flows, or judgment about ambiguous outputs are
+  judgment work and run on the TDD's judgment model (the parent's, or the
+  escalated model under FR-88). The tier is the requirement and the concrete
+  light-tier binding is an implementation default, pinnable unconditionally
+  via `THROUGHLINE_RUNTIME_VERIFY_MODEL`.
   The tiering preserves NFR-4 verdict
   honesty unconditionally — neither model is permitted to emit a false PASS
   on a verification it could not actually observe. — Acceptance: the per-TDD
   log records `runtime-verify model=<m> (plan=<cls>)` before each
   runtime-verify worker; for a TDD with a mechanical verification plan
-  `<m>` is the runner's cheaper-tier default (or the env-pinned value);
+  `<m>` is the light-tier binding, or the parent's model when the parent
+  is not more expensive than that binding (or the env-pinned value);
   for a TDD with a nontrivial
-  plan `<m>` is the most-capable default (or the env-pinned value); for a
+  plan `<m>` is the TDD's judgment model (or the env-pinned value); for a
   TDD whose mechanical plan describes
   an observation the artifact fails, the verdict line is
   `VERIFY_RUNTIME: FAIL` (not a false PASS).
@@ -788,34 +802,78 @@ can use.
   `/throughline:implement`.
 
 ### Model selection
-- **FR-86 Parent-session model check.** `/prd-author`, `/tdd-author`, and
-  `/build-tdds` compare the parent session's model to the harness's latest
-  top-tier binding (NFR-3). If the observed model is weaker than that
-  binding, or the session model cannot be read, the skill warns and asks
-  the user to continue or stop so they can change the model. A session on
-  the latest top-tier binding, or on a newer model than that binding,
-  proceeds without that warning. Supported harnesses expose the session
-  model; an unreadable model is a defect with the same warn-and-ask shape,
-  not a silent skip and not a hard stop. — Acceptance: invoking `/prd-author`,
-  `/tdd-author`, or `/build-tdds` in a parent session whose observed model
-  is weaker than the latest top-tier binding, or whose model cannot be
+- **FR-86 Parent-session light-tier check.** `/prd-author`, `/tdd-author`,
+  and `/build-tdds` read the parent session's model. If it is on the
+  harness's light tier (the FR-52 mechanical tier), or it cannot be read,
+  the skill warns and asks the user to continue or stop so they can change
+  the model. Any model above the light tier proceeds without that warning —
+  throughline does not compare the parent to the most capable model, and
+  does not fetch a vendor models page to decide. An unreadable model is a
+  defect with the same warn-and-ask shape, not a silent skip and not a hard
+  stop. — Acceptance: invoking `/prd-author`, `/tdd-author`, or `/build-tdds`
+  in a parent session on the light-tier model, or whose model cannot be
   read, surfaces a warning and a continue/stop choice before the interview
-  or build proceeds; invoking any of those skills in a parent session on
-  the latest top-tier binding (or newer) produces no such warning.
-- **FR-87 Judgment-worker defaults and cheaper-pin warning.** The
-  implementer worker, the FR-15(d) reviewer worker, the FR-10
-  design-reviewer worker, and a non-mechanical runtime-verify worker
-  default to the latest top-tier binding. A cheaper env/flag pin on the
-  implementer or reviewer (`THROUGHLINE_BUILD_MODEL`,
-  `THROUGHLINE_REVIEW_MODEL`, or the equivalent flag) is honored: the run
-  warns that the slot is below the most-capable default and continues.
-  Mechanical runtime-verify stays on the cheaper default (FR-52) and is
-  not this warning. — Acceptance: a `/build-tdds` run with no model
-  overrides records implementer and reviewer on the latest top-tier
-  binding; the same run with `THROUGHLINE_REVIEW_MODEL` set to a weaker
-  id records that weaker reviewer, emits a below-default warning, and
-  still dispatches the reviewer; a mechanical-plan verify does not emit
-  that warning for using the cheaper verify default.
+  or build proceeds; invoking any of those skills in a parent session on a
+  model above the light tier (e.g. the harness's default, or its most
+  capable model) produces no such warning and no network fetch.
+- **FR-87 Judgment workers inherit the parent; pins and light-pin warning.**
+  The implementer worker, the FR-15(d) reviewer worker, the FR-10
+  design-reviewer worker, and a non-mechanical runtime-verify worker run on
+  the parent session's model and effort unless FR-88 escalation applies.
+  throughline ships no default judgment model. Mechanical runtime-verify
+  runs on the light tier at low effort (FR-52). An env/flag pin
+  (`THROUGHLINE_BUILD_MODEL`, `THROUGHLINE_REVIEW_MODEL`,
+  `THROUGHLINE_RUNTIME_VERIFY_MODEL`, and an effort pin per slot, or the
+  equivalent flag) wins over both inheritance and escalation. A pin that
+  puts the implementer or reviewer on the light tier is honored: the run
+  warns that a judgment slot is on the light tier and continues. Pinning a
+  judgment slot to any other model emits no warning. The `/build-tdds`
+  queue confirmation (step "Confirm queue + mode") names the model and
+  effort each worker will use before anything is dispatched. — Acceptance:
+  a `/build-tdds` run with no pins started in a session on model `M` at
+  effort `E` shows `M`/`E` for implementer and reviewer in the queue
+  confirmation and records `M` for both in the run record; the same run
+  started on a different model `M2` records `M2`; a run with
+  `THROUGHLINE_REVIEW_MODEL` set to the light-tier model records that
+  reviewer, emits a light-tier warning, and still dispatches the reviewer;
+  a run with `THROUGHLINE_REVIEW_MODEL` set to a non-light model emits no
+  warning; a mechanical-plan verify records the light tier at low effort
+  and emits no warning.
+- **FR-88 Escalation to the most capable model.** `/build-tdds` can run a
+  TDD's judgment workers (implementer, FR-15(d) reviewer, non-mechanical
+  runtime-verify — all of them together, never one alone) on the harness's
+  most capable model instead of the parent's. Escalation happens in exactly
+  two cases: (a) the operator requests it for the run (a run may be a
+  single TDD); (b) a resume or recover of a TDD whose halt was a gate
+  `FAIL` verdict (any FR-15 gate; not `BLOCKED`, `SKIP`, or a transient
+  pause), where that TDD's file on the integration branch is unchanged
+  since the halt. A TDD revised since the halt is not escalated (the spec,
+  not the model, was at fault); the operator can still request (a). An
+  env/flag pin on a slot (FR-87) keeps that slot on its pin; the remaining
+  unpinned judgment slots escalate together. The operator can decline (b) for a run.
+  Escalation applies only to `/build-tdds`; the FR-10 design-reviewer is
+  never escalated. "Most capable" is a maintained implementation binding
+  with an env override, not a live lookup; it may lag a vendor release.
+  Outcomes, each recorded per TDD in the run record and printed as one
+  line: `escalated` (workers ran on the escalation model); `already-top`
+  (the parent already is the escalation model — no change);
+  `fell-back` (the escalation model was unavailable, refused, or the
+  harness cannot start a worker on a different model — workers ran on the
+  parent's model, with a warning naming the reason). A fallback is
+  detected when the worker fails to start or is refused, not after an
+  inactivity timeout. Effort is inherited from the parent (or pinned)
+  whether or not the TDD is escalated. — Acceptance: with no pins, a
+  `/build-tdds` run with escalation requested from a session on the
+  harness default shows the most capable model for that TDD's
+  implementer and reviewer in the queue confirmation and records
+  `escalation=escalated`; the same request from a session already on the
+  most capable model records `escalation=already-top`; a resume of a TDD
+  whose review gate FAILed with the TDD file unchanged records
+  `escalation=escalated` without an operator request, while the same
+  resume after a TDD edit records no escalation; with the escalation
+  binding set to a model the account cannot use, the run prints a
+  fallback warning, records `escalation=fell-back`, and the TDD's gates
+  still run on the parent's model.
 
 ### Quality hook & delegation
 - **FR-21 Format + lint hook.** A `format-and-lint` PostToolUse hook formats then
@@ -843,26 +901,32 @@ can use.
   harness-native workers so the interactive session stays clean; the
   workflow is one fresh session per command. There is no requirement that
   those workers be detached `claude -p` processes.
-- **NFR-3 Model capability by job.** Judgment work defaults to the most
-  capable model on the harness (the latest top-tier model). That set is: authoring
-  requirements (`/prd-author`), authoring TDDs (`/tdd-author`), the
-  `/build-tdds` parent session, writing code and tests (the implementer
-  worker), reviewing code and tests (the FR-15(d) reviewer), reviewing
-  designs (the FR-10 design-reviewer), and runtime-verify when the plan is
-  not mechanical (FR-52). The only job that defaults to a cheaper model is
-  mechanical runtime-verify (exit code, log line, file presence, HTTP
-  status). Review independence is a fresh worker — a context that is not
-  the author's session — not a different named model: the reviewer may use
-  the same model name as the author. Concrete model ids live at one
-  binding site as implementation defaults; rebinding them when a new
-  generation ships is an implementation change, not a requirements change.
-  Session-model and override surfaces are FR-86 and FR-87. — Acceptance: a
-  TDD whose only review text lives in the implementer's session or report
-  does not flip to `implemented`; a TDD whose review artifact was written
-  by a separate worker on the same model name as the implementer is not
-  rejected for that reason; unset defaults put implementer and reviewer on
-  the latest top-tier binding and put mechanical verify on the cheaper
-  binding.
+- **NFR-3 Model cost/performance by job.** The bar is the best
+  cost-to-performance model for each job, and the operator owns that
+  choice through the parent session's model and effort. Judgment work runs
+  on the parent session's model and effort: authoring requirements
+  (`/prd-author`), authoring TDDs (`/tdd-author`), the `/build-tdds` parent
+  session, writing code and tests (the implementer worker), reviewing code
+  and tests (the FR-15(d) reviewer), reviewing designs (the FR-10
+  design-reviewer), and runtime-verify when the plan is not mechanical
+  (FR-52). Mechanical runtime-verify (exit code, log line, file presence,
+  HTTP status) is the only job on a lighter model: the light tier at low
+  effort, never more expensive than the parent. The only job that goes
+  above the parent is an escalated `/build-tdds` TDD (FR-88). Review
+  independence is a fresh worker — a context that is not the author's
+  session — not a different named model: the reviewer may use the same
+  model name as the author. The light-tier and escalation bindings live at
+  one binding site as implementation defaults; rebinding them when a
+  vendor ships a new generation is an implementation change, not a
+  requirements change. Session-model, pin, and escalation surfaces are
+  FR-86, FR-87, and FR-88. — Acceptance: a TDD whose only review text
+  lives in the implementer's session or report does not flip to
+  `implemented`; a TDD whose review artifact was written by a separate
+  worker on the same model name as the implementer is not rejected for
+  that reason; with no pins and no escalation, the run record shows
+  implementer and reviewer on the parent session's model and mechanical
+  verify on the light tier (or the parent's model when that is not more
+  expensive).
 - **NFR-4 Verdict honesty.** Outcomes — including runtime verification (FR-25) —
   distinguish `PASS` / `FAIL` / `BLOCKED` / `SKIP`: "couldn't observe" (BLOCKED),
   "nothing to observe" (SKIP), and "design-infeasible" are never conflated with
@@ -953,6 +1017,18 @@ can use.
   independent worker is enough (NFR-3).
 - **Requiring a different named model** for review. Same-name write and
   review is allowed. Same-session self-review is not.
+- **Most capable model by default.** throughline does not pick the
+  judgment model; the parent session's model and effort are the control
+  (NFR-3, FR-87). The most capable model is used only for an escalated
+  `/build-tdds` TDD (FR-88).
+- **Live model capability discovery.** No run-time fetch of vendor model
+  pages or ranking of model ids by capability or release date. The light
+  tier and escalation target are maintained bindings with env overrides
+  (FR-52, FR-88), and FR-86 checks only for a light-tier parent.
+- **Escalating the design-reviewer.** A stronger design critique comes from
+  running `/tdd-author` on a stronger session (FR-10, FR-88).
+- **Cost accounting or budgets.** throughline shows which model and effort
+  each worker uses; it does not price runs, track spend, or cap it.
 - **Competing as a spec-driven-development framework** or any
   marketplace-growth / distribution requirement. throughline is a
   governance overlay a developer installs; it is not a Spec Kit / BMAD
@@ -971,13 +1047,20 @@ can use.
   branches to be PR'd manually.
 - The integration branch is auto-detected (`origin`'s default → `main` → `master`);
   override with `THROUGHLINE_INTEGRATION_BRANCH`.
-- Default models: implementer, reviewer, design-reviewer, `/build-tdds`
-  parent, and `/prd-author` / `/tdd-author` = the latest top-tier model on
-  that harness; mechanical runtime-verify = a cheaper model (NFR-3, FR-52,
-  FR-86, FR-87). Concrete bindings are implementation defaults, overridable
-  with a warning when a judgment slot is pinned cheaper.
-- Supported harnesses expose the parent session's model so FR-86 can
-  compare it to the latest top-tier binding.
+- Models: implementer, reviewer, design-reviewer, and non-mechanical
+  runtime-verify run on the parent session's model and effort; mechanical
+  runtime-verify runs on the light tier at low effort, never more expensive
+  than the parent; an escalated `/build-tdds` TDD runs its judgment workers
+  on the most capable model (NFR-3, FR-52, FR-86, FR-87, FR-88). The light
+  tier and escalation target are implementation bindings with env
+  overrides. Assumption: the parent session's model — the operator's
+  `/model` choice or the harness default — is the operator's
+  cost/performance decision; a parent on the most expensive model makes
+  every worker that expensive, visible in the queue confirmation.
+- Supported harnesses expose the parent session's model so FR-86 can tell
+  whether it is on the light tier. Escalation and the light tier need the
+  harness to start a worker on a model other than the parent's; a harness
+  that cannot is handled by FR-88's `fell-back` outcome.
 - At most one `/build-tdds` run is active at a time (FR-18).
 - The post-update reconciliation hook (FR-34) runs at session start when the
   harness supports that event. Repo-side file edits are required; a
@@ -1051,22 +1134,33 @@ can use.
   against `git diff` (mechanical pass vs part of FR-15(d) review) is
   design, deferred to `/tdd-author`. FR-56 is retired and is not a
   candidate.
-- **Session-model observation and comparison (FR-86).** How each supported
-  harness exposes the parent session's model id, and how "weaker than" /
-  "newer than" the latest top-tier binding is decided for a given id, is
-  design, deferred to `/tdd-author`. The PRD requires the warn-and-ask
-  surface; it does not specify the harness API.
+- **Session-model observation and tier placement (FR-86, FR-52).** How
+  each supported harness exposes the parent session's model id, and how a
+  given id is placed relative to the light-tier binding ("on or below the
+  light tier", "more expensive than the light tier"), is design, deferred
+  to `/tdd-author`. The PRD requires the warn-and-ask surface and the
+  never-more-expensive-than-the-parent cap; it does not specify the
+  harness API or the ordering mechanism.
+- **Escalation mechanics (FR-88).** How the operator requests escalation
+  (flag name, env), how a decline of automatic escalation is expressed,
+  how "TDD file unchanged since the halt" is detected, and how a refused or
+  unavailable escalation model is detected at worker start are design,
+  deferred to `/tdd-author`.
+- **Effort on harnesses without an effort control.** FR-87 inherits effort
+  and FR-52 asks for low effort on mechanical verify; on a harness that
+  exposes no effort setting, how that degrades (ignored vs recorded as
+  n/a) is design, deferred to `/tdd-author`.
 
 ## Evaluation rubric
 
-Co-created for this update (model capability by job). A later design gate
-and the human PR reviewer grade the PRD against these.
+Co-created for this update (model cost/performance by job). A later design
+gate and the human PR reviewer grade the PRD against these.
 
 | Criterion | High-quality | Acceptable | Failing |
 |---|---|---|---|
-| requirement testability | Every changed or new requirement can be independently falsified | Most changed requirements are independently testable; at most one needs a small clarification | A changed requirement cannot be falsified, or two readings are both plausible |
-| acceptance-criterion observability | Every new or rewritten requirement states an observation of the artifact surface (command output, file contents, session prompt, log line) | Acceptance is observable but slightly underspecified | Acceptance is "X is implemented", "a test exists", or missing |
-| scope coherence | Change is only model-selection policy; four gates, human merge, dual-harness untouched except sentences that named different-model | One adjacent cross-reference cleaned up without expanding product scope | PRD grows a new product (cross-vendor review, supervisor, new phase) |
-| non-goal explicitness | Non-goals that required different-model-tier are rewritten: same-name review allowed; same-session self-review still out | Independence is the worker; at most one stale different-model phrase remains in an unrelated bullet | Non-goals still require a different named model, or drop independence entirely |
-| open-question honesty | Anything not dispositioned is under Open questions; waived items appear there; no invented HOW | Open questions lists residual HOW items | Silent invention of an unanswered product choice |
-| model-policy job split | A reader can list most-capable jobs, the cheap job (mechanical verify only), independent-worker jobs, warn+ask surfaces, and override behavior | The split is present but one job is only implied by cross-reference | Review still required to be a different named model, or cheap vs most-capable jobs are not separable |
+| requirement testability | Every changed or new requirement can be independently falsified | At most one changed requirement needs a small clarification | A changed requirement cannot be falsified, or has two plausible readings |
+| acceptance-criterion observability | Every new or rewritten requirement names a surface: queue-confirmation text, run-record fields, a warning line | Observable but one field or line is underspecified | "X is supported", "a test exists", or missing |
+| scope coherence | Only model-selection policy changes; gates, human merge, dual-harness untouched | One adjacent cross-reference cleaned up | New product surface (cost dashboards, live model discovery, cross-vendor review) |
+| non-goal explicitness | Live capability discovery, design-review escalation, and most-capable-by-default are listed as non-goals | Two of the three are explicit | PRD still implies most-capable-by-default anywhere |
+| open-question honesty | Residual HOW (tier ordering, unrevised-TDD detection, harness model read) sits under Constraints/Open questions; nothing invented | HOW items listed but terse | A product choice the interview did not settle is silently decided |
+| model-policy job split | A reader can list: inherit jobs, the light job, escalation trigger + target, fallback behavior, pin/warn rules, effort policy | One element only implied by cross-reference | Escalation trigger or fallback is ambiguous, or light tier can exceed the parent |
