@@ -24,6 +24,7 @@
 #   tl_parent_model                       parent id; rc 1 + one stderr line
 #                                         `tl_parent_model: <reason>`
 #   tl_parent_effort                      `<level> env|settings` | `unknown -`
+#   tl_fr86_message                       FR-86 warning line, or nothing
 #   tl_plan_class [tdd-path]              mechanical | nontrivial
 #   tl_resolve_models [tdd] [parent]      build=<v> review=<v> verify=<v>
 #   tl_model_sources  [tdd] [parent]      build_src=<s> review_src=<s> verify_src=<s>
@@ -212,6 +213,45 @@ tl_parent_model() {
   out="${out%%$'\n'*}"
   [ -n "$out" ] || { _tl_pm_fail "no model in $what"; return 1; }
   printf '%s\n' "$out"
+}
+
+# tl_fr86_message — the FR-86 parent-session light-tier check (TDD 0065).
+# No args. Parent readable and above the light tier → no output. On the light
+# tier → one line naming the id. Unreadable → one line carrying the reason
+# from tl_parent_model's `tl_parent_model: <reason>` stderr line (`unknown`
+# when it gave none). rc 0 in all three cases; rc 2 + a stderr diagnostic
+# only when this library is unusable. /prd-author, /tdd-author and
+# /build-tdds run it from one identical `<!-- tl:fr86-check -->` block and
+# ask Continue / Stop on a printed line. No network, no capability ranking.
+tl_fr86_message() {
+  local f out rc id tier line reason=""
+  for f in tl_parent_model tl_model_tier; do
+    [ "$(type -t "$f")" = function ] || {
+      printf 'tl_fr86_message: %s is not defined (models.sh unusable)\n' "$f" >&2
+      return 2
+    }
+  done
+  # One call with stderr folded in: on rc 0 the id is the last line (the
+  # function's final write); on failure the reason is its own prefixed line,
+  # whatever else (a tac/jq complaint) reached stderr before it.
+  out="$(tl_parent_model 2>&1)" && rc=0 || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    id="${out##*$'\n'}"
+    tier="$(tl_model_tier "$id")" || tier=""
+    case "$tier" in
+      above) return 0 ;;
+      light)
+        printf 'throughline: parent session model %s is on the light tier; judgment work in this session inherits it. Continue, or stop and change the model.\n' "$id"
+        return 0 ;;
+      *)
+        printf "tl_fr86_message: unexpected tier '%s' for parent model '%s' (models.sh unusable)\n" "$tier" "$id" >&2
+        return 2 ;;
+    esac
+  fi
+  while IFS= read -r line; do
+    case "$line" in 'tl_parent_model: '*) reason="${line#tl_parent_model: }" ;; esac
+  done <<<"$out"
+  printf 'throughline: parent session model could not be read (%s). Continue, or stop and change the model.\n' "${reason:-unknown}"
 }
 
 # tl_parent_effort — `<level> env` | `<level> settings` | `unknown -`.

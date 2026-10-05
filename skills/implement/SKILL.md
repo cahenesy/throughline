@@ -24,6 +24,26 @@ REPO="$(git rev-parse --show-toplevel)"
 
 `REPO` is the human session / integration checkout. Never pass the build worktree path as <repo-root>. Every `tl_verdict_*` and `tl_run_*` call uses `"$REPO"`.
 
+## 1a. Parent-session model check (FR-86)
+
+Before the lock and the queue, run this block as one shell command. It
+sources its own helpers, so it does not depend on step 1's shell.
+
+<!-- tl:fr86-check -->
+```bash
+_tl_src="${CLAUDE_PLUGIN_ROOT:-${GROK_PLUGIN_ROOT:-}}"
+. "${_tl_src}/scripts/lib/plugin-root.sh" || { echo "throughline: cannot source plugin-root.sh" >&2; exit 1; }
+. "$(tl_plugin_root)/scripts/lib/models.sh" || { echo "throughline: cannot source models.sh" >&2; exit 1; }
+tl_fr86_message
+```
+
+If the block printed a line, show that line to the user and ask a
+structured question with exactly two options, `Continue` and `Stop`.
+`Stop` ends the skill with no interview, no draft init, no lock, and no
+queue. `Continue` proceeds. If the block printed nothing, proceed
+without asking. If the block exits non-zero, show its stderr and stop
+(fail closed).
+
 ## 2. Lock (FR-18 / FR-43)
 
 `tl_run_lock "$REPO"`. If held by a live PID → refuse. If held by a dead
