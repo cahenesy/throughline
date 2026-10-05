@@ -28,6 +28,9 @@
 #   tl_plan_class [tdd-path]              mechanical | nontrivial
 #   tl_resolve_models [tdd] [parent]      build=<v> review=<v> verify=<v>
 #   tl_model_sources  [tdd] [parent]      build_src=<s> review_src=<s> verify_src=<s>
+#   tl_dispatch_model_arg <value>         dispatch model param; empty = none (0066)
+#   tl_model_warnings [tdd] [parent]      light-pin / effort-pin warning lines
+#   tl_models_confirm <slug> [tdd] [parent]  /build-tdds queue confirmation
 #
 # Harness: GROK_PLUGIN_ROOT non-empty → grok; else claude. Sourced, never
 # executed: no shell options set; the only top-level effects are sourcing
@@ -329,4 +332,98 @@ tl_model_sources() {
   r="$(_tl_resolve_slot review "${1:-}" "${2:-}")"
   v="$(_tl_resolve_slot verify "${1:-}" "${2:-}")"
   printf 'build_src=%s review_src=%s verify_src=%s\n' "${b##* }" "${r##* }" "${v##* }"
+}
+
+# --- /build-tdds dispatch, warnings, confirmation (TDD 0066 / FR-87) ---------
+
+# tl_dispatch_model_arg <value> — the dispatch `model` parameter for a slot
+# value. `inherit` (or empty) → no output: dispatch the worker with NO model
+# parameter, so it runs on the parent session's model. Anything else → the
+# value, to be passed exactly. rc 0.
+tl_dispatch_model_arg() {
+  case "${1:-}" in
+    ''|inherit) ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+  return 0
+}
+
+# _tl_models_resolved [tdd-path] [parent-id] — six lines from the public
+# resolvers, in order: build, build_src, review, review_src, verify,
+# verify_src. The single place the confirmation and the run record read the
+# slots from (TDD 0067 forwards its escalation arg here). Keys are fixed and in
+# order; a value is `inherit`, an alias or an id. rc 1 on a malformed line.
+_tl_models_resolved() {
+  local m s b bs r rs v vs
+  m="$(tl_resolve_models "${1:-}" "${2:-}")" || return 1
+  s="$(tl_model_sources "${1:-}" "${2:-}")" || return 1
+  case "$m" in 'build='*' review='*' verify='*) ;; *) return 1 ;; esac
+  case "$s" in 'build_src='*' review_src='*' verify_src='*) ;; *) return 1 ;; esac
+  b="${m#build=}";       b="${b%% review=*}"
+  r="${m#* review=}";    r="${r%% verify=*}"
+  v="${m##* verify=}"
+  bs="${s#build_src=}";  bs="${bs%% review_src=*}"
+  rs="${s#* review_src=}"; rs="${rs%% verify_src=*}"
+  vs="${s##* verify_src=}"
+  printf '%s\n' "$b" "$bs" "$r" "$rs" "$v" "$vs"
+}
+
+# tl_model_warnings [tdd-path] [parent-id] — zero or more warning lines, in
+# order build, review, effort pins (FR-87). A build or review pin whose model
+# is on the light tier is honored and warned about; a pin to any other model
+# is silent, and so is mechanical verify on the light binding. A per-worker
+# effort pin is reported as ignored: effort is session-wide on these
+# harnesses. rc 0; rc 1 when the resolvers fail.
+tl_model_warnings() {
+  local all b bs r rs v vs val src role env
+  all="$(_tl_models_resolved "${1:-}" "${2:-}")" || return 1
+  { IFS= read -r b; IFS= read -r bs; IFS= read -r r; IFS= read -r rs
+    IFS= read -r v; IFS= read -r vs; } <<<"$all"
+  for role in implementer reviewer; do
+    if [ "$role" = implementer ]; then val="$b" src="$bs"; else val="$r" src="$rs"; fi
+    case "$src" in
+      pin:*)
+        if [ "$(tl_model_tier "$val")" = light ]; then
+          printf 'throughline: %s=%s puts the %s on the light tier; continuing\n' \
+            "${src#pin:}" "$val" "$role"
+        fi ;;
+    esac
+  done
+  for env in THROUGHLINE_BUILD_EFFORT THROUGHLINE_REVIEW_EFFORT THROUGHLINE_RUNTIME_VERIFY_EFFORT; do
+    if [ -n "${!env:-}" ]; then
+      printf 'throughline: %s=%s ignored: per-worker effort is not supported on this harness (workers run at the session effort)\n' \
+        "$env" "${!env}"
+    fi
+  done
+  return 0
+}
+
+# _tl_model_shown <value> <parent-shown> — `inherit (<parent>)` or the value.
+_tl_model_shown() {
+  if [ "$1" = inherit ]; then printf 'inherit (%s)' "$2"; else printf '%s' "$1"; fi
+}
+
+# tl_models_confirm <slug> [tdd-path] [parent-id] — the /build-tdds queue
+# confirmation for one TDD (FR-87): parent model (`unknown` when unread), the
+# session effort and its source, then each worker's model and source. A
+# mechanical verify notes that low effort is requested but the session effort
+# applies (FR-52; no per-worker effort exists). rc 0; rc 2 without a slug;
+# rc 1 when the resolvers fail.
+tl_models_confirm() {
+  local slug="${1:-}" tdd="${2:-}" parent="${3:-}" p eff cls all b bs r rs v vs vline
+  [ -n "$slug" ] || { echo "tl_models_confirm: <slug> required" >&2; return 2; }
+  p="${parent:-unknown}"
+  eff="$(tl_parent_effort)" || return 1
+  cls="$(tl_plan_class "$tdd")" || return 1
+  all="$(_tl_models_resolved "$tdd" "$parent")" || return 1
+  { IFS= read -r b; IFS= read -r bs; IFS= read -r r; IFS= read -r rs
+    IFS= read -r v; IFS= read -r vs; } <<<"$all"
+  vline="  runtime-verify ($cls): $(_tl_model_shown "$v" "$p") [$vs]"
+  if [ "$cls" = mechanical ]; then
+    vline="$vline effort=low requested; session effort applies"
+  fi
+  printf 'models %s: parent=%s effort=%s (%s; session-wide)\n' "$slug" "$p" "${eff% *}" "${eff##* }"
+  printf '  implementer: %s [%s]\n' "$(_tl_model_shown "$b" "$p")" "$bs"
+  printf '  reviewer: %s [%s]\n' "$(_tl_model_shown "$r" "$p")" "$rs"
+  printf '%s\n' "$vline"
 }
