@@ -16,4 +16,5 @@
 | 0010 | Dual-harness overlay: shared skills and mechanical core; optional delegates | accepted (review “different-model” consequence revised by 0014) | workflow / plugin-architecture |
 | 0011 | Gate verdicts are on-disk artifacts, not transcript parses | accepted | workflow / gate-architecture / verification-integrity |
 | 0013 | Halt on gate failure after transient retry; no in-invocation rework | accepted | workflow / gate-architecture / halt-semantics |
-| 0014 | Model capability by job (fresh worker, not a different named model); supersedes 0009 | accepted | workflow / gate-architecture / model-selection |
+| 0014 | Model capability by job (fresh worker, not a different named model); supersedes 0009 | superseded by 0015 | workflow / gate-architecture / model-selection |
+| 0015 | Model cost/performance by job (inherit the parent, light tier, escalation on demand); supersedes 0014 | accepted | workflow / gate-architecture / model-selection |
