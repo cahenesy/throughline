@@ -26,11 +26,13 @@
 #   tl_parent_effort                      `<level> env|settings` | `unknown -`
 #   tl_fr86_message                       FR-86 warning line, or nothing
 #   tl_plan_class [tdd-path]              mechanical | nontrivial
-#   tl_resolve_models [tdd] [parent]      build=<v> review=<v> verify=<v>
-#   tl_model_sources  [tdd] [parent]      build_src=<s> review_src=<s> verify_src=<s>
+#   tl_resolve_models [tdd] [parent] [esc]  build=<v> review=<v> verify=<v>
+#   tl_model_sources  [tdd] [parent] [esc]  build_src=<s> review_src=<s> verify_src=<s>
 #   tl_dispatch_model_arg <value>         dispatch model param; empty = none (0066)
-#   tl_model_warnings [tdd] [parent]      light-pin / effort-pin warning lines
-#   tl_models_confirm <slug> [tdd] [parent]  /build-tdds queue confirmation
+#   tl_model_warnings [tdd] [parent] [esc] [outcome]  light/effort-pin warnings
+#   tl_models_confirm <slug> [tdd] [parent] [esc] [outcome]  queue confirmation
+#   tl_escalation_outcome [parent] [tdd]  `<outcome> <model>[ <reason>]` (0067)
+#   tl_escalation_flags <args-text>       `requested=<0|1> auto=<0|1>` (0067)
 #
 # Harness: GROK_PLUGIN_ROOT non-empty → grok; else claude. Sourced, never
 # executed: no shell options set; the only top-level effects are sourcing
@@ -283,11 +285,14 @@ tl_plan_class() {
   esac
 }
 
-# _tl_resolve_slot <build|review|verify> [tdd-path] [parent-id] — print
-# `<value> <source>`; the one rule both public resolvers share. The source is
-# a single token, so callers split on the LAST space.
+# _tl_resolve_slot <build|review|verify> [tdd-path] [parent-id]
+# [escalation-model] — print `<value> <source>`; the one rule both public
+# resolvers share. The source is a single token, so callers split on the LAST
+# space. A non-empty escalation model (TDD 0067 / FR-88) replaces every
+# `parent` source (build, review, nontrivial verify); pins keep their pin and
+# mechanical verify keeps its rule.
 _tl_resolve_slot() {
-  local slot="$1" tdd="${2:-}" parent="${3:-}" pin
+  local slot="$1" tdd="${2:-}" parent="${3:-}" esc="${4:-}" pin
   case "$slot" in
     build|review)
       if [ "$slot" = build ]; then pin=THROUGHLINE_BUILD_MODEL; else pin=THROUGHLINE_REVIEW_MODEL; fi
@@ -296,6 +301,8 @@ _tl_resolve_slot() {
       elif [ "$(tl_model_harness)" = claude ] && [ -n "${CLAUDE_CODE_SUBAGENT_MODEL:-}" ]; then
         # Claude Code applies it to every dispatch without a model: a pin.
         printf '%s pin:CLAUDE_CODE_SUBAGENT_MODEL\n' "$CLAUDE_CODE_SUBAGENT_MODEL"
+      elif [ -n "$esc" ]; then
+        printf '%s escalation\n' "$esc"
       else
         printf 'inherit parent\n'
       fi ;;
@@ -303,9 +310,12 @@ _tl_resolve_slot() {
       if [ -n "${THROUGHLINE_RUNTIME_VERIFY_MODEL:-}" ]; then
         printf '%s pin:THROUGHLINE_RUNTIME_VERIFY_MODEL\n' "$THROUGHLINE_RUNTIME_VERIFY_MODEL"
       elif [ "$(tl_plan_class "$tdd")" = nontrivial ]; then
-        _tl_resolve_slot build "$tdd" "$parent"
+        _tl_resolve_slot build "$tdd" "$parent" "$esc"
       elif [ "$(tl_model_tier "$parent")" = above ]; then
         printf '%s light\n' "$(tl_light_model)"
+      elif [ "$(tl_model_harness)" = claude ] && [ -n "${CLAUDE_CODE_SUBAGENT_MODEL:-}" ]; then
+        # Dispatched with no model, so the harness runs it on this env value.
+        printf '%s pin:CLAUDE_CODE_SUBAGENT_MODEL\n' "$CLAUDE_CODE_SUBAGENT_MODEL"
       else
         printf 'inherit parent-cap\n'   # light or unknown parent: never above it
       fi ;;
@@ -313,24 +323,26 @@ _tl_resolve_slot() {
   esac
 }
 
-# tl_resolve_models [tdd-path] [parent-id] — one line `build=<v> review=<v>
-# verify=<v>`; <v> is `inherit` (dispatch with no model) or a model id.
+# tl_resolve_models [tdd-path] [parent-id] [escalation-model] — one line
+# `build=<v> review=<v> verify=<v>`; <v> is `inherit` (dispatch with no
+# model) or a model id. With the third arg absent or empty the output is
+# exactly the two-arg (TDD 0064) output.
 tl_resolve_models() {
   local b r v
-  b="$(_tl_resolve_slot build "${1:-}" "${2:-}")"
-  r="$(_tl_resolve_slot review "${1:-}" "${2:-}")"
-  v="$(_tl_resolve_slot verify "${1:-}" "${2:-}")"
+  b="$(_tl_resolve_slot build "${1:-}" "${2:-}" "${3:-}")"
+  r="$(_tl_resolve_slot review "${1:-}" "${2:-}" "${3:-}")"
+  v="$(_tl_resolve_slot verify "${1:-}" "${2:-}" "${3:-}")"
   printf 'build=%s review=%s verify=%s\n' "${b% *}" "${r% *}" "${v% *}"
 }
 
-# tl_model_sources [tdd-path] [parent-id] — one line `build_src=<s>
-# review_src=<s> verify_src=<s>`; <s> ∈ parent, pin:<ENV-NAME>, light,
-# parent-cap.
+# tl_model_sources [tdd-path] [parent-id] [escalation-model] — one line
+# `build_src=<s> review_src=<s> verify_src=<s>`; <s> ∈ parent, pin:<ENV-NAME>,
+# light, parent-cap, escalation (only with a non-empty third arg).
 tl_model_sources() {
   local b r v
-  b="$(_tl_resolve_slot build "${1:-}" "${2:-}")"
-  r="$(_tl_resolve_slot review "${1:-}" "${2:-}")"
-  v="$(_tl_resolve_slot verify "${1:-}" "${2:-}")"
+  b="$(_tl_resolve_slot build "${1:-}" "${2:-}" "${3:-}")"
+  r="$(_tl_resolve_slot review "${1:-}" "${2:-}" "${3:-}")"
+  v="$(_tl_resolve_slot verify "${1:-}" "${2:-}" "${3:-}")"
   printf 'build_src=%s review_src=%s verify_src=%s\n' "${b##* }" "${r##* }" "${v##* }"
 }
 
@@ -348,15 +360,16 @@ tl_dispatch_model_arg() {
   return 0
 }
 
-# _tl_models_resolved [tdd-path] [parent-id] — six lines from the public
-# resolvers, in order: build, build_src, review, review_src, verify,
-# verify_src. The single place the confirmation and the run record read the
-# slots from (TDD 0067 forwards its escalation arg here). Keys are fixed and in
-# order; a value is `inherit`, an alias or an id. rc 1 on a malformed line.
+# _tl_models_resolved [tdd-path] [parent-id] [escalation-model] — six lines
+# from the public resolvers, in order: build, build_src, review, review_src,
+# verify, verify_src. The single place the confirmation and the run record
+# read the slots from (TDD 0067 forwards its escalation arg here). Keys are
+# fixed and in order; a value is `inherit`, an alias or an id. rc 1 on a
+# malformed line.
 _tl_models_resolved() {
   local m s b bs r rs v vs
-  m="$(tl_resolve_models "${1:-}" "${2:-}")" || return 1
-  s="$(tl_model_sources "${1:-}" "${2:-}")" || return 1
+  m="$(tl_resolve_models "${1:-}" "${2:-}" "${3:-}")" || return 1
+  s="$(tl_model_sources "${1:-}" "${2:-}" "${3:-}")" || return 1
   case "$m" in 'build='*' review='*' verify='*) ;; *) return 1 ;; esac
   case "$s" in 'build_src='*' review_src='*' verify_src='*) ;; *) return 1 ;; esac
   b="${m#build=}";       b="${b%% review=*}"
@@ -368,15 +381,26 @@ _tl_models_resolved() {
   printf '%s\n' "$b" "$bs" "$r" "$rs" "$v" "$vs"
 }
 
-# tl_model_warnings [tdd-path] [parent-id] — zero or more warning lines, in
-# order build, review, effort pins (FR-87). A build or review pin whose model
-# is on the light tier is honored and warned about; a pin to any other model
-# is silent, and so is mechanical verify on the light binding. A per-worker
-# effort pin is reported as ignored: effort is session-wide on these
-# harnesses. rc 0; rc 1 when the resolvers fail.
+# _tl_escalation_arg <escalation-model> <escalation-outcome> — the model to
+# forward to the resolvers: the model when the outcome is empty or
+# `escalated`, else nothing. `already-top` and `fell-back` workers are
+# dispatched without the escalation model (the tl:models-record rule), so the
+# confirmation must not show it on their slots.
+_tl_escalation_arg() {
+  case "${2:-}" in ''|escalated) printf '%s' "${1:-}" ;; esac
+}
+
+# tl_model_warnings [tdd-path] [parent-id] [escalation-model]
+# [escalation-outcome] — zero or more warning lines, in order build, review,
+# effort pins (FR-87). A build or review pin whose model is on the light tier
+# is honored and warned about; a pin to any other model is silent, and so is
+# mechanical verify on the light binding. A per-worker effort pin is reported
+# as ignored: effort is session-wide on these harnesses. The escalation args
+# (TDD 0067) are forwarded to the resolvers as in tl_models_confirm. rc 0;
+# rc 1 when the resolvers fail.
 tl_model_warnings() {
   local all b bs r rs v vs val src role env
-  all="$(_tl_models_resolved "${1:-}" "${2:-}")" || return 1
+  all="$(_tl_models_resolved "${1:-}" "${2:-}" "$(_tl_escalation_arg "${3:-}" "${4:-}")")" || return 1
   { IFS= read -r b; IFS= read -r bs; IFS= read -r r; IFS= read -r rs
     IFS= read -r v; IFS= read -r vs; } <<<"$all"
   for role in implementer reviewer; do
@@ -403,19 +427,24 @@ _tl_model_shown() {
   if [ "$1" = inherit ]; then printf 'inherit (%s)' "$2"; else printf '%s' "$1"; fi
 }
 
-# tl_models_confirm <slug> [tdd-path] [parent-id] — the /build-tdds queue
-# confirmation for one TDD (FR-87): parent model (`unknown` when unread), the
-# session effort and its source, then each worker's model and source. A
-# mechanical verify notes that low effort is requested but the session effort
-# applies (FR-52; no per-worker effort exists). rc 0; rc 2 without a slug;
-# rc 1 when the resolvers fail.
+# tl_models_confirm <slug> [tdd-path] [parent-id] [escalation-model]
+# [escalation-outcome] — the /build-tdds queue confirmation for one TDD
+# (FR-87): parent model (`unknown` when unread), the session effort and its
+# source, then each worker's model and source. A mechanical verify notes that
+# low effort is requested but the session effort applies (FR-52; no
+# per-worker effort exists). TDD 0067 / FR-88: the escalation model is
+# forwarded to the resolvers (when the outcome is empty or `escalated`), and a
+# non-empty outcome adds `  escalation: <outcome> model=<escalation-model>`.
+# Without the two extra args the output is exactly 0066's. rc 0; rc 2 without
+# a slug; rc 1 when the resolvers fail.
 tl_models_confirm() {
-  local slug="${1:-}" tdd="${2:-}" parent="${3:-}" p eff cls all b bs r rs v vs vline
+  local slug="${1:-}" tdd="${2:-}" parent="${3:-}" escm="${4:-}" esco="${5:-}"
+  local p eff cls all b bs r rs v vs vline
   [ -n "$slug" ] || { echo "tl_models_confirm: <slug> required" >&2; return 2; }
   p="${parent:-unknown}"
   eff="$(tl_parent_effort)" || return 1
   cls="$(tl_plan_class "$tdd")" || return 1
-  all="$(_tl_models_resolved "$tdd" "$parent")" || return 1
+  all="$(_tl_models_resolved "$tdd" "$parent" "$(_tl_escalation_arg "$escm" "$esco")")" || return 1
   { IFS= read -r b; IFS= read -r bs; IFS= read -r r; IFS= read -r rs
     IFS= read -r v; IFS= read -r vs; } <<<"$all"
   vline="  runtime-verify ($cls): $(_tl_model_shown "$v" "$p") [$vs]"
@@ -426,4 +455,53 @@ tl_models_confirm() {
   printf '  implementer: %s [%s]\n' "$(_tl_model_shown "$b" "$p")" "$bs"
   printf '  reviewer: %s [%s]\n' "$(_tl_model_shown "$r" "$p")" "$rs"
   printf '%s\n' "$vline"
+  if [ -n "$esco" ]; then printf '  escalation: %s model=%s\n' "$esco" "$escm"; fi
+  return 0
+}
+
+# --- /build-tdds escalation (TDD 0067 / FR-88, ADR 0015) ---------------------
+
+# tl_escalation_outcome [parent-id] [tdd-path] — one line
+# `<outcome> <model>[ <reason>]`, <model> = tl_escalation_model. Rules, in
+# order: `fell-back <model> all judgment slots pinned` when no slot of
+# `tl_model_sources <tdd-path> <parent>` has source `parent`; else
+# `already-top <model>` iff the parent is non-empty and in <model>'s family;
+# else `escalated <model>`. An empty (unreadable) parent is never
+# already-top (NFR-4). rc 0.
+tl_escalation_outcome() {
+  local parent="${1:-}" tdd="${2:-}" model src
+  model="$(tl_escalation_model)"
+  src="$(tl_model_sources "$tdd" "$parent")" || src=""
+  case " $src " in
+    *'=parent '*) ;;
+    *) printf 'fell-back %s all judgment slots pinned\n' "$model"; return 0 ;;
+  esac
+  if [ -n "$parent" ] && [ "$(tl_model_family "$parent")" = "$(tl_model_family "$model")" ]; then
+    printf 'already-top %s\n' "$model"
+  else
+    printf 'escalated %s\n' "$model"
+  fi
+  return 0
+}
+
+# tl_escalation_flags <args-text> — one line `requested=<0|1> auto=<0|1>`.
+# <args-text> (the skill's argument string) is split on whitespace, never
+# glob-expanded; only $1 is read, never the caller's "$@". requested=1 iff a
+# token is exactly `--escalate` or THROUGHLINE_ESCALATE is `1`; auto=0 iff a
+# token is exactly `--no-auto-escalate` or THROUGHLINE_AUTO_ESCALATE is `0`.
+# rc 0.
+tl_escalation_flags() {
+  local IFS=$' \t\n'
+  local req=0 aut=1 t
+  local -a toks=()
+  read -r -d '' -a toks <<<"${1:-}" || true
+  for t in ${toks[@]+"${toks[@]}"}; do
+    case "$t" in
+      --escalate)         req=1 ;;
+      --no-auto-escalate) aut=0 ;;
+    esac
+  done
+  if [ "${THROUGHLINE_ESCALATE:-}" = 1 ]; then req=1; fi
+  if [ "${THROUGHLINE_AUTO_ESCALATE:-}" = 0 ]; then aut=0; fi
+  printf 'requested=%s auto=%s\n' "$req" "$aut"
 }

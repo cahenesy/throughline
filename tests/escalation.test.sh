@@ -525,8 +525,11 @@ throughline: $SLUG escalation=already-top model=fable"
 throughline: $SLUG escalation=fell-back model=fable reason=all judgment slots pinned"
     jf "the reason is recorded" "$LOGS/r7/$SLUG.models.json" escalation_reason 'all judgment slots pinned'
     runb "$DB" CLAUDE_CODE_SESSION_ID=s-opus TL_REPO="$GR" TL_RUN=r7 TL_SLUG=0097-none TL_REQUESTED=1 TL_AUTO=1
-    want "requested for a TDD with no file → escalated (nontrivial by default)" "trigger=requested
-throughline: 0097-none escalation=escalated model=fable"
+    # The plan classifier names the missing file on stderr; stdout is exact.
+    [ "$RC" -eq 0 ] && [ "$OUT" = "trigger=requested
+throughline: 0097-none escalation=escalated model=fable" ] \
+      && ok "requested for a TDD with no file → escalated (nontrivial by default)" \
+      || bad "no-file TDD: rc=$RC out='$OUT' err='$ERR'"
   else bad "[12] infra: no run r7 (see [7])"; fi
   for miss in TL_REPO TL_RUN TL_SLUG TL_REQUESTED TL_AUTO; do
     args=(CLAUDE_CODE_SESSION_ID=s-opus)
@@ -581,14 +584,18 @@ if getblock '<!-- tl:retry-begin -->' "$RBB"; then
     [ "$RC" -eq 0 ] && [ "$(sed -n 1p "$ROOT/out")" = "report=$LOGS/r4b/$SLUG.review.txt" ] \
       && ok "[11b] block: first line is report=<run-dir>/<slug>.review.txt" || bad "[11b] block: rc=$RC out='$OUT' err='$ERR'"
     want "block output, exact" "report=$LOGS/r4b/$SLUG.review.txt
-archive=$VB/retry-1"
+archive=$VB/retry-1
+implementer_report=$LOGS/r4b/$SLUG.review.prev.txt"
+    cmp -s "$LOGS/r4b/$SLUG.review.txt" "$LOGS/r4b/$SLUG.review.prev.txt" \
+      && ok "the implementer's copy of the failed report is byte-identical" || bad "no / different report copy"
     [ "$(lsA "$VB")" = "retry-1" ] && [ "$(lsA "$VB/retry-1")" = "ci-checks.json review.json test-first.json" ] \
       && ok "[11b] block: same archive result" || bad "[11b] block dir: $(lsA "$VB") / $(lsA "$VB/retry-1")"
     jf "[11b] block" "$LOGS/r4b/$SLUG.json" status building
     m "tl_run_next_gate $(q "$GR") r4b $SLUG"; want "[11b] block: next gate test-first" test-first
     runb "$RBB" CLAUDE_CODE_SESSION_ID=s-opus TL_REPO="$GR" TL_RUN=r4b TL_SLUG="$SLUG"
     want "a second block run: no FAIL verdict left → empty report=, retry-2" "report=
-archive=$VB/retry-2"
+archive=$VB/retry-2
+implementer_report="
   fi
   for miss in TL_REPO TL_RUN TL_SLUG; do
     args=()
