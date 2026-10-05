@@ -8,6 +8,27 @@ description: Turn features described in the PRD and designed in TDDs into code a
 Interactive parent skill. It sequences workers; it is not a detached
 coprocess. Session survival is whatever the harness does.
 
+## Block contract (every `<!-- tl:… -->` block)
+
+The harness runs each shell call in a fresh shell, so a marker-tagged
+block never relies on a variable or function from an earlier call. Run
+each block as one shell command. Each block:
+
+- sources its own helpers, fail closed: plugin-root, `models.sh`, and
+  `run-record.sh` (except `tl:fr86-check`, whose bytes are shared with
+  `/prd-author` and `/tdd-author`);
+- computes `TL_PARENT="$(tl_parent_model 2>/dev/null)" || TL_PARENT=""`
+  itself when it needs the parent model;
+- reads inputs only from env vars, as `${VAR:?VAR required}`, so a
+  missing input fails loudly. Prefix the block with `export` lines that
+  carry the real values, e.g.
+  `export TL_REPO='/abs/repo' TL_RUN='20261005-174458'`.
+
+Inputs: `TL_REPO` (absolute repo root: the human checkout, never the
+worktree), `TL_RUN` (run id), `TL_SLUG` (TDD file name without `.md`),
+`TL_TDD` (absolute TDD path), `TL_QUEUE` (absolute TDD paths, one per
+line).
+
 ## 1. Source helpers (fail closed)
 
 Resolve the plugin tree from the first set of `CLAUDE_PLUGIN_ROOT` /
@@ -69,6 +90,10 @@ Ask the user a structured question: **Resume** / **Start fresh**.
   - `review` — skip 7–9; run step 10 only.
   - `flip` — skip 7–10; run step 11 only.
 
+  Before the first worker a resume dispatches, run the step 7
+  `tl:models-record` block: it records the slots against this
+  session's parent and prints the dispatch lines.
+
 Never treat partial `feat:` commits as build-gate completion. The
 test-first verdict file is the only build-complete signal.
 
@@ -91,7 +116,33 @@ timestamp `YYYYMMDD-HHMMSS`.
 
 ## 5. Confirm queue + mode
 
-Ask a structured question. Modes:
+First run this block (input `TL_QUEUE`: every queued TDD path). For
+each TDD it prints the `models <slug>:` confirmation (the parent model,
+the effort and its source, and each worker's model and source), then
+any warning lines: a judgment slot pinned to the light tier, or an
+ignored per-worker effort pin. Run it and show its output even when the
+queue has one TDD: it is the operator's only cost signal before
+dispatch (FR-87, NFR-3). Warnings do not stop the run. Non-zero exit →
+show its stderr and stop.
+
+<!-- tl:models-confirm -->
+```bash
+_tl_src="${CLAUDE_PLUGIN_ROOT:-${GROK_PLUGIN_ROOT:-}}"
+. "${_tl_src}/scripts/lib/plugin-root.sh" || { echo "throughline: cannot source plugin-root.sh" >&2; exit 1; }
+. "$(tl_plugin_root)/scripts/lib/models.sh" || { echo "throughline: cannot source models.sh" >&2; exit 1; }
+. "$(tl_plugin_root)/scripts/lib/run-record.sh" || { echo "throughline: cannot source run-record.sh" >&2; exit 1; }
+: "${TL_QUEUE:?TL_QUEUE required}"
+TL_PARENT="$(tl_parent_model 2>/dev/null)" || TL_PARENT=""
+while IFS= read -r tl_tdd; do
+  [ -n "$tl_tdd" ] || continue
+  [ -r "$tl_tdd" ] || { echo "throughline: queued TDD not readable: $tl_tdd" >&2; exit 1; }
+  tl_slug="${tl_tdd##*/}"; tl_slug="${tl_slug%.md}"
+  tl_models_confirm "$tl_slug" "$tl_tdd" "$TL_PARENT" || exit 1
+  tl_model_warnings "$tl_tdd" "$TL_PARENT" || exit 1
+done <<<"$TL_QUEUE"
+```
+
+Then ask a structured question that shows that output verbatim. Modes:
 
 - **sequential** (default) — stack `build/<run>/<slug>` on the previous
   TDD branch; one PR per TDD. Downstream `blocked` on halt (FR-16).
@@ -107,10 +158,44 @@ Call the worktree path `WT`. `REPO` stays the human checkout.
 
 ## 7. Implementer worker
 
+First run this block (inputs `TL_REPO`, `TL_RUN`, `TL_SLUG`, `TL_TDD`).
+It records the TDD's models in the sidecar
+`docs/tdd/.implement-logs/<run>/<slug>.models.json`, appends (and
+prints) `implementer model=<build> (src=<build_src>)` to the per-TDD
+log `docs/tdd/.implement-logs/<run>/<slug>.log`, then prints one
+`dispatch <worker> model=<arg>` line per worker. Non-zero exit → show
+its stderr, unlock, **stop**.
+
+<!-- tl:models-record -->
+```bash
+_tl_src="${CLAUDE_PLUGIN_ROOT:-${GROK_PLUGIN_ROOT:-}}"
+. "${_tl_src}/scripts/lib/plugin-root.sh" || { echo "throughline: cannot source plugin-root.sh" >&2; exit 1; }
+. "$(tl_plugin_root)/scripts/lib/models.sh" || { echo "throughline: cannot source models.sh" >&2; exit 1; }
+. "$(tl_plugin_root)/scripts/lib/run-record.sh" || { echo "throughline: cannot source run-record.sh" >&2; exit 1; }
+: "${TL_REPO:?TL_REPO required}" "${TL_RUN:?TL_RUN required}" "${TL_SLUG:?TL_SLUG required}" "${TL_TDD:?TL_TDD required}"
+TL_PARENT="$(tl_parent_model 2>/dev/null)" || TL_PARENT=""
+tl_run_set_models "$TL_REPO" "$TL_RUN" "$TL_SLUG" "$TL_TDD" "$TL_PARENT" || exit 1
+_tl_get() { tl_run_get_model_field "$TL_REPO" "$TL_RUN" "$TL_SLUG" "$1"; }
+tl_b="$(_tl_get build)" && tl_bs="$(_tl_get build_src)" \
+  && tl_r="$(_tl_get review)" && tl_v="$(_tl_get verify)" || exit 1
+printf 'implementer model=%s (src=%s)\n' "$tl_b" "$tl_bs" \
+  | tee -a "$TL_REPO/docs/tdd/.implement-logs/$TL_RUN/$TL_SLUG.log" || exit 1
+printf 'dispatch implementer model=%s\n' "$(tl_dispatch_model_arg "$tl_b")"
+printf 'dispatch reviewer model=%s\n' "$(tl_dispatch_model_arg "$tl_r")"
+printf 'dispatch runtime-verify model=%s\n' "$(tl_dispatch_model_arg "$tl_v")"
+```
+
+**Dispatch rule (all three workers).** Model =
+`tl_dispatch_model_arg <slot value>`, which the block prints as
+`dispatch <worker> model=<arg>`. If that prints nothing (`model=` is
+empty), dispatch the worker with **no model parameter** so it inherits
+this session's model. Otherwise pass exactly that string. Never pass
+`inherit` as a model.
+
 Dispatch **one** implementer worker. It **must not spawn children**.
 
 - Working directory = `$WT`.
-- Model = `build=` from `tl_resolve_models`.
+- Model = the `dispatch implementer` line (dispatch rule above).
 - Prompt: read the TDD + cited PRD FRs + accepted ADRs. Follow
   test-driven-development if that skill is present. Commit on the build
   branch. Do not flip Status. Do not open a PR.
@@ -148,8 +233,12 @@ After retries exhaust on a transient pattern → `paused` (never
 ## 9. Runtime-verify worker
 
 Dispatch **one** runtime-verify worker (different process/context).
-**must not spawn children.** Model = `verify=` from `tl_resolve_models`
-(pass the TDD `## Verification plan` text).
+**must not spawn children.** Model = the `dispatch runtime-verify` line
+from step 7 (dispatch rule). That slot is resolved from the TDD path
+(`tl_resolve_models <tdd-path> <parent>`, not the plan text) and
+recorded as the sidecar `verify` / `verify_class` keys. Before dispatch,
+append `runtime-verify model=<verify> (plan=<verify_class>)` to the
+per-TDD log (FR-52), with both values from the sidecar.
 
 Parent creates an empty report file and passes its path. Worker drives
 the TDD verification plan and writes a last line
@@ -163,9 +252,12 @@ SKIP (with evidence) → continue.
 
 ## 10. Reviewer worker
 
-Dispatch **one** reviewer worker on the prior-gen top-tier model
-(`review=` from `tl_resolve_models`). Read-only. **must not spawn
-children.**
+Dispatch **one** reviewer worker. Model = the `dispatch reviewer` line
+from step 7 (dispatch rule): the `review=` slot, the implementer's
+judgment model unless pinned (FR-15(d)); independence is the fresh
+worker. Before dispatch, append
+`reviewer model=<review> (src=<review_src>)` to the per-TDD log, with
+both values from the sidecar. Read-only. **must not spawn children.**
 
 Inputs: TDD path, `git diff` of the build branch vs integration,
 optional `agents/security-reviewer.md` if that file exists.
@@ -209,8 +301,16 @@ In sequential mode, remaining queued TDDs become `blocked`.
   not render it.
 - Integration branch: origin default → `main` → `master`; override
   `THROUGHLINE_INTEGRATION_BRANCH`.
-- Models: `tl_resolve_models` is the only product-name binding (ADR
-  0009). Overrides: `THROUGHLINE_BUILD_MODEL`,
-  `THROUGHLINE_REVIEW_MODEL`, `THROUGHLINE_RUNTIME_VERIFY_MODEL`.
+- Models (ADR 0015): judgment workers inherit this session's model
+  (dispatched with no model parameter) and run at the session effort;
+  mechanical runtime-verify uses the light binding in
+  `scripts/lib/models.sh`, never above the parent. Pins, as harness
+  model aliases: `THROUGHLINE_BUILD_MODEL`, `THROUGHLINE_REVIEW_MODEL`,
+  `THROUGHLINE_RUNTIME_VERIFY_MODEL`, and `CLAUDE_CODE_SUBAGENT_MODEL`
+  (every slot). A judgment slot pinned to the light tier warns and
+  continues. `THROUGHLINE_BUILD_EFFORT`, `THROUGHLINE_REVIEW_EFFORT` and
+  `THROUGHLINE_RUNTIME_VERIFY_EFFORT` are reported as ignored: there is
+  no per-worker effort. Record:
+  `docs/tdd/.implement-logs/<run>/<slug>.models.json`.
 - Sequential stacked PRs: merge bottom-up; enable auto-delete of head
   branches so GitHub retargets. Or use `--combined`.

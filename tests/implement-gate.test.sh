@@ -7,7 +7,8 @@
 # Coprocess/runner evals were removed with the implement.sh body (TDD 0063+).
 # This aggregator keeps the 0063 stub/status observations and the live
 # 0060–0062 helpers: plugin-root, verdicts, run-record, build-tdds-skill,
-# the 0064 model-roles eval, and the 0065 parent-session-check eval.
+# the 0064 model-roles eval, the 0065 parent-session-check eval, and the
+# 0066 model-dispatch eval.
 #
 # Run: bash tests/implement-gate.test.sh
 set -uo pipefail
@@ -191,11 +192,13 @@ FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
 echo "=== 0063 observations: $PASS passed, $FAIL failed ==="
 
 # 0060–0062 evals (kept) + 0064 model-roles + 0065 parent-session-check
-# (FR-86: extracts and runs each skill's tl:fr86-check block). A registered
-# eval that is missing is a failure, never a silent skip (L-011).
+# (FR-86: extracts and runs each skill's tl:fr86-check block) + 0066
+# model-dispatch (FR-87: confirmation, warnings, the models sidecar, and the
+# extracted tl:models-confirm / tl:models-record blocks). A registered eval
+# that is missing is a failure, never a silent skip (L-011).
 EVAL_FAIL=0
 for ev in plugin-root verdicts run-record build-tdds-skill model-roles \
-          parent-session-check; do
+          parent-session-check model-dispatch; do
   f="$(dirname "$0")/${ev}.test.sh"
   echo
   if [ -f "$f" ]; then

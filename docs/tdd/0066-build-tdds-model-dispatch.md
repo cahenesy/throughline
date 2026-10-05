@@ -1,6 +1,6 @@
 # TDD 0066: `/build-tdds` model dispatch, confirmation, and run record
 
-Status: draft
+Status: implemented
 PRD refs: FR-87, FR-52, FR-15, NFR-3, NFR-4
 PRD-rev: f6ef178
 ADR constraints: 0004, 0005, 0006, 0010, 0011, 0013, 0015

@@ -68,8 +68,8 @@ loses:
 | Plain Claude session | throughline |
 |---|---|
 | Design lives in transient chat; "why does this code exist?" decays with the session. | PRD + TDDs + ADRs are the persistent design-of-record. Every commit traces to an approved requirement, an approved design, and the architectural decisions it respects. |
-| "Done" is the model's say-so — it ran the tests and they passed. | Nothing flips to `implemented` until **four independent gates** pass, each in its own process: failing-test-first (read from git history, not narrative), `ci-checks.sh` (the project's CI commands), runtime verification (drive the built artifact and observe), and an independent cross-model review. |
-| The author reviews itself — same context, same blind spots, polite agreement. | The review gate runs in a separate `claude -p` on a **different model**, fanning out to specialized subagents (code review, silent-failure-hunter, security review). Different opinions, not an echo chamber. |
+| "Done" is the model's say-so — it ran the tests and they passed. | Nothing flips to `implemented` until **four independent gates** pass, each in its own process: failing-test-first (read from git history, not narrative), `ci-checks.sh` (the project's CI commands), runtime verification (drive the built artifact and observe), and an independent review in a fresh worker. |
+| The author reviews itself — same context, same blind spots, polite agreement. | The review gate runs in a **fresh worker** — a separate context that is not the author's session — fanning out to specialized subagents (code review, silent-failure-hunter, security review) when present. Independence is the fresh context; the same model is allowed. |
 | Verification means "the tests passed." | Verification means **driving the real artifact** to where a user meets it (CLI output, HTTP response, log line, DOM, file write) and confirming the TDD's named observations hold. Tests-green is necessary, never sufficient. |
 | Scope creeps. A "small fix" turns into a 540-line PR with 11 manual review-fix iterations. | Every TDD declares its **expected diff size + touched-file set** at design time. The design-critique gate refuses over-ambitious designs before any build runs. throughline's own scripts comply with the same bounds it enforces on yours. |
 | Review is end-of-build — when something's wrong, you re-do the whole build. | Review runs **continuously, per step**, against the diff range since the last cleared pass. Cleared code is never re-evaluated. A halting finding triggers a **bounded automatic rework loop** on the build model (scope-capped) inside the same `/implement` invocation — not a manual fix-loop you babysit. |
@@ -122,9 +122,9 @@ phases (`/prd-author`, `/tdd-author`, `/bootstrap-project`) pair well with
   any ADRs (it invokes `/adr-new` itself), runs the **mechanical pre-pass**
   (cheap shell lint catches missing sections, untraced FRs, scope-bound
   violations, placeholder phrases — *before* spending model time on review),
-  then the independent **design-critique gate** (a separate `claude -p` on a
-  different model from the author), and opens the **design PR** (TDDs + ADRs,
-  with the critique verdict in the body). If a previous build produced
+  then the independent **design-critique gate** (a fresh worker that is
+  not the author's session; same model allowed), and opens the **design
+  PR** (TDDs + ADRs, with the critique verdict in the body). If a previous build produced
   accepted recurring-pattern learnings in `docs/tdd/LEARNINGS.md`, `/tdd-author`
   reads them and surfaces the ones whose `files=[…]` / `tags=[…]` hints
   intersect the new TDD's scope as **advisory context** (never blocking) — a
@@ -208,7 +208,7 @@ throughline/
 │   │   ├── plugin-root.sh       # CLAUDE_PLUGIN_ROOT / GROK_PLUGIN_ROOT resolver
 │   │   ├── verdicts.sh          # file-backed gate verdicts
 │   │   ├── run-record.sh        # /build-tdds run-state (run.json + per-TDD slugs)
-│   │   ├── models.sh            # ADR 0009 model pairing
+│   │   ├── models.sh            # ADR 0015 model roles: inherit, light tier, pins, confirmation
 │   │   ├── tdd-lint.sh          # mechanical pre-pass: structural lint + placeholder + traceability; --bounds runs the TDD-scope checks
 │   │   ├── plan-classifier.sh   # mechanical / nontrivial verification-plan heuristic
 │   │   ├── json.sh              # single-source JSON helpers: tl_json_escape + tl_json_field
@@ -278,9 +278,9 @@ build nor pass the gate. On top of that, a TDD flips to `implemented` only after
    on a cost-efficient lower-tier model; nontrivial plans (browser, judgment,
    multi-step) run on the build model.
 4. **Independent review** — runs **continuously per step** during the build
-   (not only at the end), in a separate `claude -p` on a **different model**
-   from the author. Each per-step pass reads only the diff range since the
-   last cleared pass; cleared code is never re-evaluated. The reviewer fans
+   (not only at the end), in a **fresh worker** that is not the author's
+   context (the same model is allowed). Each per-step pass reads only the
+   diff range since the last cleared pass; cleared code is never re-evaluated. The reviewer fans
    out to `pr-review-toolkit:code-reviewer` + `silent-failure-hunter` +
    `throughline:security-reviewer`, and every finding carries
    `severity: blocker | major | minor | nit` + `structural: true|false`. A
@@ -330,8 +330,27 @@ unlocks and **stops** — no in-build rework loop, no per-step coprocess review.
 1. **test-first** — observe a failing-test commit before the feature commit.
 2. **ci-checks** — `scripts/ci-checks.sh` (tests + typecheck + lint).
 3. **runtime-verify** — a separate worker drives the TDD `## Verification plan`.
-4. **review** — a separate worker on a different model; token
-   `REVIEW_RESULT: PASS|FAIL`.
+4. **review** — a fresh worker (not the author's context; same model
+   allowed); token `REVIEW_RESULT: PASS|FAIL`.
+
+**Models ([ADR 0015](docs/adr/0015-model-cost-performance-by-job.md)).**
+You pick cost/performance with the session's `/model` and effort. The
+judgment workers (implementer, reviewer, and runtime-verify on a
+nontrivial plan) are dispatched with no model parameter, so they run on
+the session's model at the session's effort. Mechanical runtime-verify
+runs on the light tier (low effort requested; the session effort
+applies), never above the session's model. Pins win:
+`THROUGHLINE_BUILD_MODEL`, `THROUGHLINE_REVIEW_MODEL`,
+`THROUGHLINE_RUNTIME_VERIFY_MODEL`, and `CLAUDE_CODE_SUBAGENT_MODEL`
+(which the harness applies to every slot). Pins are harness model
+aliases (`opus`, `sonnet`, `haiku`, …), not full ids; a full id fails at
+dispatch. A judgment slot pinned to the light tier warns and continues.
+`THROUGHLINE_BUILD_EFFORT`, `THROUGHLINE_REVIEW_EFFORT` and
+`THROUGHLINE_RUNTIME_VERIFY_EFFORT` are reported as ignored: there is no
+per-worker effort. Before anything is dispatched, the queue confirmation
+shows the session model, the effort and its source, and each worker's
+model and source. Each TDD's record is
+`docs/tdd/.implement-logs/<run>/<slug>.models.json`.
 
 Verdicts are files under `docs/tdd/.implement-logs/<run>/<slug>/`. Progress is
 `/implement-status`. Structural / design problems still go to
@@ -446,9 +465,9 @@ Long work survives the messy world. Three independent mechanisms:
   into design.
 - Before the design PR, the **mechanical pre-pass** runs first (cheap shell
   lint over the authored TDD set); then the independent **design-critique
-  gate** (the `design-reviewer` agent — fresh context, a different model than
-  the author) blocks on untraced requirements, under-specified interfaces,
-  ADR conflicts, a new dependency lacking the REQUIRED alternatives
+  gate** (the `design-reviewer` agent — a fresh worker, not the author's
+  context; same model allowed) blocks on untraced requirements,
+  under-specified interfaces, ADR conflicts, a new dependency lacking the REQUIRED alternatives
   analysis, scope-bound violations, or a missing/non-actionable verification
   plan. Its verdict rides in the design PR so the human merges on an
   informed view.

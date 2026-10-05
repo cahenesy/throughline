@@ -191,3 +191,110 @@ tl_run_next_gate() {  # <repo-root> <run-id> <slug>
   # Files look complete but require_flip failed (e.g. SKIP without evidence).
   printf 'runtime-verify\n'
 }
+
+# --- per-TDD models sidecar (TDD 0066 / FR-87, NFR-4, ADR 0015) -------------
+# <logs>/<run>/<slug>.models.json: one JSON object, exactly the 17 string keys
+# below (empty when unset). It is a separate file because tl_run_set_tdd and
+# tl_run_set_pr rewrite <slug>.json with a fixed key set. Every write goes
+# through _tl_models_write, which overlays the given keys on the existing file
+# and rewrites ALL 17, so the models setter and TDD 0067's escalation setter
+# never drop each other's keys. tl_run_set_models needs models.sh sourced.
+
+_tl_models_keys() {
+  printf '%s\n' 'parent effort effort_source build build_src build_model review review_src review_model verify verify_src verify_model verify_class escalation escalation_model escalation_reason halt_tdd_blob'
+}
+
+_tl_models_key_ok() {  # <key> — rc 0 iff one of the 17 keys
+  case "${1:-}" in ''|*[!a-z_]*) return 1 ;; esac
+  case " $(_tl_models_keys) " in *" $1 "*) return 0 ;; esac
+  return 1
+}
+
+_tl_models_path() {  # <repo-root> <run-id> <slug> → the sidecar path
+  local logs
+  logs="$(_tl_run_logs "${1:-}")" || return $?
+  _tl_valid_run "${2:-}" || { echo "run-record: invalid run-id" >&2; return 2; }
+  _tl_valid_slug "${3:-}" || { echo "run-record: invalid slug '${3:-}'" >&2; return 2; }
+  printf '%s/%s/%s.models.json\n' "$logs" "$2" "$3"
+}
+
+# _tl_models_write <repo-root> <run-id> <slug> <key>=<val>… — read the sidecar
+# once (if any), overlay the given keys, write all 17 atomically. Every pair is
+# validated before anything is read or written: an unknown key or a pair
+# without `=` → rc 2, nothing written. rc 1 on io or an uninitialized run.
+_tl_models_write() {
+  local run="${2:-}" f old kv k i n body="{" sep=""
+  local -a keys vals
+  f="$(_tl_models_path "${1:-}" "$run" "${3:-}")" || return $?
+  shift 3
+  [ "$#" -gt 0 ] || { echo "run-record: _tl_models_write needs <key>=<val>" >&2; return 2; }
+  for kv in "$@"; do
+    case "$kv" in *=*) ;; *) echo "run-record: models pair '$kv' is not <key>=<val>" >&2; return 2 ;; esac
+    _tl_models_key_ok "${kv%%=*}" || { echo "run-record: unknown models key '${kv%%=*}'" >&2; return 2; }
+  done
+  [ -f "${f%/*}/run.json" ] || { echo "run-record: run $run not initialized" >&2; return 1; }
+  old=""
+  if [ -f "$f" ]; then old="$(cat "$f")" || return 1; fi
+  IFS=' ' read -r -a keys <<<"$(_tl_models_keys)"
+  n="${#keys[@]}"
+  for (( i = 0; i < n; i++ )); do
+    vals[i]=""
+    if [ -n "$old" ]; then
+      # Trailing `x` keeps a value's own trailing newlines through $(…).
+      vals[i]="$(printf '%s' "$old" | tl_json_field "${keys[i]}"; printf x)"
+      vals[i]="${vals[i]%x}"
+    fi
+  done
+  for kv in "$@"; do
+    k="${kv%%=*}"
+    for (( i = 0; i < n; i++ )); do
+      if [ "${keys[i]}" = "$k" ]; then vals[i]="${kv#*=}"; fi
+    done
+  done
+  for (( i = 0; i < n; i++ )); do
+    body="$body$sep\"${keys[i]}\":\"$(tl_json_escape "${vals[i]}")\""
+    sep=","
+  done
+  _tl_run_atomic "$f" "$body}" || { echo "run-record: cannot write $f" >&2; return 1; }
+}
+
+# _tl_slot_model <value> <parent-shown> — what a slot actually runs on: the
+# parent for `inherit` (`unknown` when unread), else the value.
+_tl_slot_model() {
+  if [ "$1" = inherit ]; then printf '%s' "$2"; else printf '%s' "$1"; fi
+}
+
+# tl_run_set_models <repo-root> <run-id> <slug> <tdd-path> [parent-id] —
+# record the TDD's resolved slots (tl_resolve_models / tl_model_sources), plan
+# class, session effort and parent (`unknown` when empty) in the sidecar.
+# Escalation keys are kept. TDD 0067 adds an optional 6th arg.
+tl_run_set_models() {
+  local repo="${1:-}" run="${2:-}" slug="${3:-}" tdd="${4:-}" parent="${5:-}"
+  local p eff cls all b bs r rs v vs k
+  _tl_models_path "$repo" "$run" "$slug" >/dev/null || return $?
+  { [ -n "$tdd" ] && [ -r "$tdd" ]; } || { echo "run-record: tl_run_set_models: TDD '$tdd' not readable" >&2; return 2; }
+  for k in _tl_models_resolved tl_parent_effort tl_plan_class; do
+    [ "$(type -t "$k")" = function ] || { echo "run-record: $k is not defined (source models.sh)" >&2; return 2; }
+  done
+  p="${parent:-unknown}"
+  all="$(_tl_models_resolved "$tdd" "$parent")" || { echo "run-record: cannot resolve models for $slug" >&2; return 1; }
+  { IFS= read -r b; IFS= read -r bs; IFS= read -r r; IFS= read -r rs
+    IFS= read -r v; IFS= read -r vs; } <<<"$all"
+  eff="$(tl_parent_effort)" || return 1
+  cls="$(tl_plan_class "$tdd")" || return 1
+  _tl_models_write "$repo" "$run" "$slug" \
+    parent="$p" effort="${eff% *}" effort_source="${eff##* }" verify_class="$cls" \
+    build="$b" build_src="$bs" build_model="$(_tl_slot_model "$b" "$p")" \
+    review="$r" review_src="$rs" review_model="$(_tl_slot_model "$r" "$p")" \
+    verify="$v" verify_src="$vs" verify_model="$(_tl_slot_model "$v" "$p")"
+}
+
+# tl_run_get_model_field <repo-root> <run-id> <slug> <key> — print the key's
+# value (tl_json_field). rc 1 when there is no sidecar; rc 2 on a bad key.
+tl_run_get_model_field() {
+  local f
+  f="$(_tl_models_path "${1:-}" "${2:-}" "${3:-}")" || return $?
+  _tl_models_key_ok "${4:-}" || { echo "run-record: unknown models key '${4:-}'" >&2; return 2; }
+  [ -f "$f" ] || return 1
+  tl_json_field "$4" <"$f"
+}
