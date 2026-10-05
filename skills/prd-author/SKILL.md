@@ -86,6 +86,26 @@ relocated. The canonical record is `docs/PRD.md`.
      draft (NFR-4 spirit).
    - Running `/prd-author` in two working trees of the same repo at once is
      unsupported: both map to one per-repo draft and the last writer wins.
+
+**Parent-session model check (FR-86).** Before step 1, run this block as
+one shell command. It sources its own helpers, so it does not depend on
+anything step 0 sourced.
+
+<!-- tl:fr86-check -->
+```bash
+_tl_src="${CLAUDE_PLUGIN_ROOT:-${GROK_PLUGIN_ROOT:-}}"
+. "${_tl_src}/scripts/lib/plugin-root.sh" || { echo "throughline: cannot source plugin-root.sh" >&2; exit 1; }
+. "$(tl_plugin_root)/scripts/lib/models.sh" || { echo "throughline: cannot source models.sh" >&2; exit 1; }
+tl_fr86_message
+```
+
+If the block printed a line, show that line to the user and ask a
+structured question with exactly two options, `Continue` and `Stop`.
+`Stop` ends the skill with no interview, no draft init, no lock, and no
+queue. `Continue` proceeds. If the block printed nothing, proceed
+without asking. If the block exits non-zero, show its stderr and stop
+(fail closed).
+
 1. Explore the problem space. Establish what exists, who the users are, and
    what success looks like. Ingest any prior design notes (see above).
 2. **Scope check first.** If the ask is really several independent products or

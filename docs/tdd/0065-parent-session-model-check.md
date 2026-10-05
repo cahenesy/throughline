@@ -1,6 +1,6 @@
 # TDD 0065: Parent-session light-tier check (FR-86)
 
-Status: draft
+Status: implemented
 PRD refs: FR-86, NFR-3, NFR-4
 PRD-rev: f6ef178
 ADR constraints: 0004, 0005, 0006, 0010, 0015
