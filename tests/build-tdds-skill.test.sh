@@ -50,18 +50,21 @@ echo "[C] skill names require_flip, next_gate, tokens, no nested spawn"
     || bad "missing 'must not spawn children'"
 ) || true
 
-# --- [D] models.sh is the ADR 0009 binding site ------------------------------
-echo "[D] models.sh binds tl_resolve_models"
+# --- [D] models.sh is the ADR 0015 binding site (TDD 0064) -------------------
+# No pins (incl. CLAUDE_CODE_SUBAGENT_MODEL), no session id, no args → every
+# judgment slot inherits the parent session's model.
+echo "[D] models.sh binds tl_resolve_models (inherit by default)"
 ( bash -n "$MODELS" 2>"$ROOT/D.err" \
     && ok "models.sh parses" \
     || bad "models.sh bash -n failed: $(cat "$ROOT/D.err" 2>/dev/null)"
   if env -u GROK_PLUGIN_ROOT -u THROUGHLINE_BUILD_MODEL \
         -u THROUGHLINE_REVIEW_MODEL -u THROUGHLINE_RUNTIME_VERIFY_MODEL \
+        -u CLAUDE_CODE_SUBAGENT_MODEL -u CLAUDE_CODE_SESSION_ID \
         bash -c "source \"$MODELS\"; tl_resolve_models" >"$ROOT/D.out" 2>"$ROOT/D2.err"; then
     out="$(cat "$ROOT/D.out")"
-    printf '%s' "$out" | grep -qE '^build=.+ review=.+ verify=.+$' \
-      && ok "prints build= review= verify= ($out)" \
-      || bad "unexpected resolve line: $out"
+    [ "$out" = "build=inherit review=inherit verify=inherit" ] \
+      && ok "no-arg line is build=inherit review=inherit verify=inherit" \
+      || bad "unexpected resolve line: '$out' want 'build=inherit review=inherit verify=inherit'"
   else
     bad "tl_resolve_models failed: $(cat "$ROOT/D2.err")"
   fi
