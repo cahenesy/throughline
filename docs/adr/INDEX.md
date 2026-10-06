@@ -19,3 +19,4 @@
 | 0014 | Model capability by job (fresh worker, not a different named model); supersedes 0009 | superseded by 0015 | workflow / gate-architecture / model-selection |
 | 0015 | Model cost/performance by job (inherit the parent, light tier, escalation on demand); supersedes 0014 | accepted (fall-back detection consequence revised by 0016) | workflow / gate-architecture / model-selection |
 | 0016 | Escalation outcomes are judged by the model that actually ran; revises 0015's fall-back detection | accepted | workflow / gate-architecture / model-selection / verification-integrity |
+| 0017 | UX record: in-repo, self-contained HTML, delegated by role, design input not a build gate | accepted | workflow / ux / plugin-architecture |
