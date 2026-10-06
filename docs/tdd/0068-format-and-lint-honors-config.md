@@ -1,6 +1,6 @@
 # TDD 0068: format-and-lint honors the repo's configuration (FR-21, issue #180)
 
-Status: draft
+Status: implemented
 PRD refs: FR-21, FR-1, FR-2, NFR-4
 PRD-rev: f6ef178
 ADR constraints: 0004, 0005, 0006, 0010
