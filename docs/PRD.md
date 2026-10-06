@@ -4,7 +4,16 @@
 > design-of-record baseline. New capabilities are added from here via the normal
 > `/prd-author` → `/tdd-author` → `/build-tdds` flow.
 >
-> **This update (thin dual-harness overlay):** throughline remains a governance
+> **This update (UX authoring):** an optional `/ux-author` phase sits between
+> `/prd-author` and `/tdd-author`. When a PRD update marks requirements as
+> UI-bearing, `/ux-author` produces in-repo UI mocks (web or mobile) for
+> them, gets an independent critique, and opens a UX PR that the human
+> merges. `/tdd-author` then designs those requirements against the merged
+> mocks. throughline governs the phase — what is mocked, traceability to
+> requirements, the critique, the merge gate. The design work itself is
+> delegated to the design skills and tools the harness already has.
+>
+> **Earlier update (thin dual-harness overlay):** throughline remains a governance
 > overlay — PRD → TDD → ADR, phase-gate PRs, four independent gates, human merge.
 > It is no longer a Claude-only process supervisor. Authoring and `/build-tdds`
 > work on Claude Code and on Grok Build. How a worker is started, whether it
@@ -159,6 +168,148 @@ plugin updates, and consumer repos do not accumulate plugin-generated noise.
 - **FR-6 PRD phase gate.** It commits to a `docs/prd/<slug>` branch and opens a PRD
   PR; it never auto-merges (the human merge approves requirements and anchors the
   diff the design step reads).
+- **FR-89 UI-bearing marker.** `/prd-author` asks, for each new or changed
+  requirement, whether it changes what a user sees or does in a graphical
+  UI (web app or mobile app). If it does, the requirement's title carries
+  the marker `[UI]` (e.g. `**FR-120 [UI] Saved searches.**`). The marker is
+  the only signal `/ux-author` and `/tdd-author` use to decide that a
+  requirement needs mocks. — Acceptance: a PRD PR that adds a requirement
+  for a new screen shows `[UI]` in that requirement's title line; a PRD PR
+  that adds only a CLI or API requirement adds no `[UI]` marker; `grep -n
+  '\[UI\]' docs/PRD.md` lists exactly the marked requirements.
+
+### UX authoring
+An optional phase between requirements and design. It runs when a merged
+PRD update adds or changes `[UI]` requirements (FR-89). Its output is a
+point-in-time design record of the screens those requirements need,
+reviewed in a PR like every other phase. throughline owns the phase
+contract. Making the mocks is delegated to the design skills and tools
+present on the harness (FR-92), the same way discovery and engineering are
+delegated (FR-22, FR-83).
+
+- **FR-90 Delta-driven UX scope.** `/ux-author` runs once per merged PRD
+  update. It finds the `[UI]` requirements added or changed since the PRD
+  revision the latest UX set was made for (every `[UI]` requirement when
+  no UX set exists yet), and presents a screen plan for
+  approval before making anything. The plan lists each screen, the states
+  it needs, the target viewports, and the requirement ids it serves. —
+  Acceptance: invoking `/ux-author` when the PRD delta has no `[UI]`
+  requirements prints `no UI-bearing requirements in this PRD delta`,
+  creates no branch, and opens no PR; with one new `[UI]` requirement, the
+  first thing shown is a screen plan naming that requirement id.
+- **FR-91 UX artifact set.** The UX record is committed under `docs/ux/`
+  and contains:
+  - one self-contained HTML mock per screen per key state: default, plus
+    empty, loading, and error where the screen has them. A state that does
+    not apply is listed as `n/a` with a reason, never silently omitted;
+  - a flow index page that links the screens in user-flow order with plain
+    links;
+  - a UX index that maps each screen to the requirement ids it serves and
+    records the PRD revision, the target viewports, the delegates used
+    (FR-92), the declared fidelity, and the baseline source (FR-94);
+  - one PNG screenshot per screen, state, and viewport when a renderer is
+    available.
+
+  Mobile-app screens are HTML at a named device viewport that follows the
+  target platform's conventions (iOS / Android) as closely as HTML allows.
+  — Acceptance: opening the flow index in a browser with networking
+  disabled reaches every screen through its links, and each renders;
+  every in-scope `[UI]` requirement id appears in the UX index mapped to
+  at least one screen; when no renderer is available the UX PR body
+  contains a line `screenshots not rendered: <reason>` and the PR still
+  opens.
+- **FR-92 Delegated design, honest degrade.** `/ux-author` uses the design
+  skills and tools present on the harness to produce and critique the
+  mocks. It reimplements none of them, and none is required to install or
+  run it. When a delegate is present, mocks are high fidelity: they look
+  like the shipped product, with real copy, and use the project's design
+  system (FR-93). When none is present, the parent session makes the
+  mocks itself and declares the fidelity actually reached. — Acceptance:
+  on a harness with no design delegate, `/ux-author` still opens a UX PR
+  whose UX index says `delegates: none` and declares a fidelity below
+  high fidelity, and the PR body repeats both; on a harness with a
+  delegate, the UX index names it.
+- **FR-93 Design system.** In a project with an existing design system
+  (tokens, theme, component styles in the code), mocks use it. In a
+  project with none, the first UX set establishes one: the UX PR contains
+  a committed tokens/style artifact under `docs/ux/` and an ADR proposed
+  through `/adr-new` that records it. Later UX sets and the TDDs that cite
+  them honor the accepted design system. — Acceptance: the first
+  `/ux-author` run in a repo with no design system opens a PR that adds
+  both a `docs/adr/NNNN-*` ADR and a tokens artifact under `docs/ux/`; a
+  later run's mocks reference that same tokens artifact rather than
+  defining new values.
+- **FR-94 Brownfield baseline, never committed captures.** When a mocked
+  screen already exists in the product, `/ux-author` starts from its
+  current look, derived from the codebase. If the user supplies the URL
+  of a running app, `/ux-author` may capture the current screens as a
+  reference for this run only. Captured images are never committed. The
+  UX index records the baseline per screen: `code-derived`,
+  `live capture (not committed)`, or `none (new screen)`. — Acceptance:
+  after a run where the user supplied a URL, `git ls-files docs/ux` lists
+  no captured baseline image, and the UX index shows
+  `live capture (not committed)` for the captured screens.
+- **FR-95 Gaps are recorded, never invented.** When mocking exposes
+  something the requirements do not settle (an unstated error state, a
+  missing step in a flow), `/ux-author` lists it under a
+  `Requirement gaps` section of the UX PR and shows it in the mock as a
+  visibly marked placeholder. It never edits `docs/PRD.md`. A real
+  requirement change goes back through `/prd-author`. — Acceptance: `git
+  diff --name-only` of any UX PR does not include `docs/PRD.md`; a run
+  that found a gap shows a `Requirement gaps` section naming it in the PR
+  body.
+- **FR-96 In-session review before critique.** The user sees each screen
+  set (opened locally or rendered) and approves it or asks for changes
+  before the critique runs. The PR opens only for approved screen sets.
+  — Acceptance: the UX PR body lists each screen set as approved in
+  session; a screen set the user did not approve does not appear in the
+  PR.
+- **FR-97 Independent UX critique.** Before the UX PR opens, a fresh
+  worker that is not the author's session (NFR-3) critiques the UX set
+  against the PRD and the UX rubric (FR-77). It checks four things:
+  - every in-scope `[UI]` requirement maps to a screen;
+  - every screen shows its required states or records them `n/a`;
+  - accessibility basics: contrast, labels, focus order, touch-target
+    size;
+  - consistency with the design system.
+
+  It judges visual quality against the declared fidelity (FR-92). It uses
+  the harness's design-critique and accessibility delegates when present.
+  It blocks on an unmapped `[UI]` requirement or a missing required state.
+  Its verdict goes in the PR body. A resumed session runs it fresh, never
+  reusing an earlier verdict (as FR-50). — Acceptance: a UX PR body
+  carries the critique verdict and cites the rubric's criteria; a UX set
+  with a `[UI]` requirement that maps to no screen gets a blocking verdict
+  naming that requirement id.
+- **FR-98 UX phase gate.** `/ux-author` commits the UX set (and any FR-93
+  ADR) on a `docs/ux/<slug>` branch and opens a UX PR. It never merges.
+  The PR body carries the open-assumptions record (FR-75), the critique
+  verdict (FR-97), the delegates and fidelity (FR-92), and any requirement
+  gaps (FR-95). — Acceptance: after a normal run, `gh pr view` shows an
+  open PR from a `docs/ux/<slug>` branch whose body contains all four
+  sections, and the branch is unmerged.
+- **FR-99 Point-in-time record, superseded.** A UX set is the design
+  record for one PRD revision, like a TDD. A later `/ux-author` run that
+  changes a screen supersedes it: it replaces that screen's mocks, removes
+  their superseded screenshots, and updates the UX index's PRD revision.
+  Git history keeps the old versions. Shipped UI is not kept in sync with
+  mocks, nor mocks with shipped UI. — Acceptance: after a second run that
+  changes one screen, `git ls-files docs/ux` shows that screen's new
+  screenshots and none of its old ones, and screens the run did not touch
+  are byte-identical.
+- **FR-100 Authoring discipline applies to `/ux-author`.** `/ux-author` has
+  the same interactive-session guarantees as the other authoring skills:
+  - incremental draft persistence, resume, compaction survival, and draft
+    cleanup on completion (FR-46–FR-49), where mock files committed to
+    the UX branch are part of the work state;
+  - interrogator discipline (FR-75) applied to the screen plan;
+  - a co-created rubric (FR-77) that grades the UX set;
+  - the parent-session light-tier check (FR-86).
+
+  — Acceptance: killing `/ux-author` after an approved screen plan and
+  re-invoking it offers to resume with that plan; the UX PR carries a
+  rubric and an open-assumptions record; starting it in a light-tier
+  session shows the FR-86 warning.
 
 ### Design authoring
 - **FR-7 Delta-driven design.** `/tdd-author` runs once per PRD update: it establishes
@@ -186,6 +337,20 @@ plugin updates, and consumer repos do not accumulate plugin-generated noise.
   the same model name as the parent is not rejected for that reason.
 - **FR-11 Design phase gate.** It commits the TDD set + any promoted ADRs together on
   a `docs/design/<slug>` branch and opens the design PR; it never auto-merges.
+- **FR-101 Design builds on merged mocks.** For each in-scope `[UI]`
+  requirement (FR-89), `/tdd-author` needs a merged UX set that maps it to
+  at least one screen (FR-91). The TDD's requirement-traceability table
+  cites the screens each `[UI]` requirement is designed against. If no
+  merged UX set covers a `[UI]` requirement, `/tdd-author` refuses to
+  design it unless the user waives the mock. A waiver records the
+  requirement id and the user's rationale in the design PR's
+  open-assumptions record. Mocks are design input, not a build gate:
+  `/build-tdds` does not compare built UI to mocks (see Non-goals). —
+  Acceptance: `/tdd-author` on a PRD delta with an un-mocked `[UI]`
+  requirement prints a refusal naming that requirement id and naming
+  `/ux-author`; after the user waives it, the design PR body contains
+  `<FR id> — waived: <rationale>`; a TDD for a mocked `[UI]` requirement
+  has a traceability row citing a `docs/ux/` screen path.
 
 ### Decisions
 - **FR-12 Append-only ADRs.** `/adr-new` records decisions to `docs/adr/NNNN-*` with a
@@ -746,8 +911,9 @@ can use.
 
 ### Dual-harness overlay (this update)
 - **FR-79 Authoring on Claude Code and Grok Build.** `/prd-author`,
-  `/tdd-author`, `/adr-new`, and `/bootstrap-project` complete their
-  specified phase — including the phase-gate PR (FR-6, FR-11, FR-12) — when
+  `/ux-author`, `/tdd-author`, `/adr-new`, and `/bootstrap-project` complete
+  their specified phase — including the phase-gate PR (FR-6, FR-98, FR-11,
+  FR-12) — when
   invoked on Claude Code and when invoked on Grok Build. — Acceptance: on
   each harness, invoking `/prd-author` in a throughline-bootstrapped repo
   with no draft starts an interview and can open a `docs/prd/<slug>` PR;
@@ -802,15 +968,16 @@ can use.
   `/throughline:implement`.
 
 ### Model selection
-- **FR-86 Parent-session light-tier check.** `/prd-author`, `/tdd-author`,
-  and `/build-tdds` read the parent session's model. If it is on the
+- **FR-86 Parent-session light-tier check.** `/prd-author`, `/ux-author`,
+  `/tdd-author`, and `/build-tdds` read the parent session's model. If it is on the
   harness's light tier (the FR-52 mechanical tier), or it cannot be read,
   the skill warns and asks the user to continue or stop so they can change
   the model. Any model above the light tier proceeds without that warning —
   throughline does not compare the parent to the most capable model, and
   does not fetch a vendor models page to decide. An unreadable model is a
   defect with the same warn-and-ask shape, not a silent skip and not a hard
-  stop. — Acceptance: invoking `/prd-author`, `/tdd-author`, or `/build-tdds`
+  stop. — Acceptance: invoking `/prd-author`, `/ux-author`, `/tdd-author`, or
+  `/build-tdds`
   in a parent session on the light-tier model, or whose model cannot be
   read, surfaces a warning and a continue/stop choice before the interview
   or build proceeds; invoking any of those skills in a parent session on a
@@ -818,7 +985,8 @@ can use.
   capable model) produces no such warning and no network fetch.
 - **FR-87 Judgment workers inherit the parent; pins and light-pin warning.**
   The implementer worker, the FR-15(d) reviewer worker, the FR-10
-  design-reviewer worker, and a non-mechanical runtime-verify worker run on
+  design-reviewer worker, the FR-97 UX critique worker, and a
+  non-mechanical runtime-verify worker run on
   the parent session's model and effort unless FR-88 escalation applies.
   throughline ships no default judgment model. Mechanical runtime-verify
   runs on the light tier at low effort (FR-52). An env/flag pin
@@ -890,13 +1058,13 @@ can use.
   `docs/tdd/` + `docs/adr/` are canonical; `docs/superpowers/*` is transient
   input — ingested, never relocated. — Acceptance: installing throughline on
   a harness that does not have Superpowers or pr-review-toolkit still loads
-  `/prd-author`, `/tdd-author`, `/adr-new`, `/bootstrap-project`, and
-  `/build-tdds`; a `/build-tdds` flip does not fail solely because a named
+  `/prd-author`, `/ux-author`, `/tdd-author`, `/adr-new`,
+  `/bootstrap-project`, and `/build-tdds`; a `/build-tdds` flip does not fail solely because a named
   delegate plugin is absent.
 
 ### Non-functional
-- **NFR-1 Human control via merge gates.** Every phase (requirements, design,
-  implementation) ends in a PR the human merges; the plugin never merges.
+- **NFR-1 Human control via merge gates.** Every phase (requirements, UX when
+  it runs, design, implementation) ends in a PR the human merges; the plugin never merges.
 - **NFR-2 Context hygiene.** Autonomous work runs in subagents or other
   harness-native workers so the interactive session stays clean; the
   workflow is one fresh session per command. There is no requirement that
@@ -905,8 +1073,9 @@ can use.
   cost-to-performance model for each job, and the operator owns that
   choice through the parent session's model and effort. Judgment work runs
   on the parent session's model and effort: authoring requirements
-  (`/prd-author`), authoring TDDs (`/tdd-author`), the `/build-tdds` parent
-  session, writing code and tests (the implementer worker), reviewing code
+  (`/prd-author`), authoring UX mocks (`/ux-author`), authoring TDDs
+  (`/tdd-author`), reviewing UX sets (the FR-97 critique worker), the
+  `/build-tdds` parent session, writing code and tests (the implementer worker), reviewing code
   and tests (the FR-15(d) reviewer), reviewing designs (the FR-10
   design-reviewer), and runtime-verify when the plan is not mechanical
   (FR-52). Mechanical runtime-verify (exit code, log line, file presence,
@@ -1037,6 +1206,28 @@ can use.
   implement surface. The command is `/build-tdds` (FR-85).
 - **Automatic in-invocation rework** of gate findings. The human
   re-runs `/build-tdds` or revises the TDD.
+- **A throughline-owned design tool or drawing engine.** `/ux-author`
+  delegates the design work to the skills and tools on the harness
+  (FR-92). It does not reimplement layout, visual design, or critique
+  skills.
+- **A clickable prototype engine.** Flows are plain links between static
+  screen mocks (FR-91). Transitions and simulated behaviour are excluded.
+- **Native mobile rendering.** Mobile mocks are HTML at a device viewport
+  (FR-91). Native-toolkit or design-tool-native mobile mocks are not
+  required.
+- **Comparing built UI to mocks in `/build-tdds`.** Mocks are design input
+  cited by TDDs (FR-101). No visual-diff or screenshot-comparison gate is
+  added to runtime-verify or review.
+- **Keeping mocks in sync with shipped UI.** A UX set is a point-in-time
+  record (FR-99). A build that changes UI without a new UX set is not a
+  defect.
+- **Committing live-app captures.** Captured screens of a running app are
+  reference-only and never committed (FR-94).
+- **`/ux-author` editing requirements.** Gaps go back through
+  `/prd-author` (FR-95).
+- **Requiring Git LFS** for UX screenshots.
+- **Mocks for non-graphical surfaces.** CLI output, API shapes, and logs
+  are not mocked. `[UI]` covers only graphical web and mobile UI (FR-89).
 
 ## Constraints & assumptions
 
@@ -1045,6 +1236,14 @@ can use.
   install (FR-83).
 - PR creation needs a git remote + the `gh` CLI; without them, commits stay on
   branches to be PR'd manually.
+- UX screenshots (FR-91) need a renderer that can load HTML at a given
+  viewport, such as a headless browser, in the user's environment. It is
+  not an install dependency of throughline: without one, the UX PR carries
+  HTML only and says so.
+- Assumption: the harness offers design skills or tools that can produce
+  high-fidelity HTML mocks and critique them. Where it does not (possibly
+  Grok Build today), `/ux-author` runs degraded with declared fidelity
+  (FR-92) rather than failing (FR-79, FR-83).
 - The integration branch is auto-detected (`origin`'s default → `main` → `master`);
   override with `THROUGHLINE_INTEGRATION_BRANCH`.
 - Models: implementer, reviewer, design-reviewer, and non-mechanical
@@ -1151,16 +1350,32 @@ can use.
   exposes no effort setting, how that degrades (ignored vs recorded as
   n/a) is design, deferred to `/tdd-author`.
 
+- **Design delegates on Grok Build (FR-92).** Which design skills or
+  tools exist on Grok Build, and whether `/ux-author` there runs with a
+  delegate or degraded, is unverified. `/tdd-author` should investigate;
+  the PRD does not assume either answer.
+- **Delegate selection and precedence (FR-92, FR-97).** When several
+  design delegates are present (e.g. a frontend-design skill, a design
+  plugin, a Figma connection), how `/ux-author` picks among them and how
+  it detects that one is present is design, deferred to `/tdd-author`.
+- **UX record layout (FR-91).** The directory layout under `docs/ux/`,
+  the UX index format, the viewport names, and how `/tdd-author` locates
+  the screens for a requirement id are design, deferred to `/tdd-author`.
+- **`[UI]` backfill (FR-89).** Retrofitting `[UI]` markers onto
+  requirements written before this update is out of scope. Only new or
+  changed requirements are marked.
+
 ## Evaluation rubric
 
-Co-created for this update (model cost/performance by job). A later design
-gate and the human PR reviewer grade the PRD against these.
+Co-created for this update (UX authoring). A later design gate and the
+human PR reviewer grade the PRD against these.
 
 | Criterion | High-quality | Acceptable | Failing |
 |---|---|---|---|
-| requirement testability | Every changed or new requirement can be independently falsified | At most one changed requirement needs a small clarification | A changed requirement cannot be falsified, or has two plausible readings |
-| acceptance-criterion observability | Every new or rewritten requirement names a surface: queue-confirmation text, run-record fields, a warning line | Observable but one field or line is underspecified | "X is supported", "a test exists", or missing |
-| scope coherence | Only model-selection policy changes; gates, human merge, dual-harness untouched | One adjacent cross-reference cleaned up | New product surface (cost dashboards, live model discovery, cross-vendor review) |
-| non-goal explicitness | Live capability discovery, design-review escalation, and most-capable-by-default are listed as non-goals | Two of the three are explicit | PRD still implies most-capable-by-default anywhere |
-| open-question honesty | Residual HOW (tier ordering, unrevised-TDD detection, harness model read) sits under Constraints/Open questions; nothing invented | HOW items listed but terse | A product choice the interview did not settle is silently decided |
-| model-policy job split | A reader can list: inherit jobs, the light job, escalation trigger + target, fallback behavior, pin/warn rules, effort policy | One element only implied by cross-reference | Escalation trigger or fallback is ambiguous, or light tier can exceed the parent |
+| requirement testability | Every new FR has an acceptance criterion observing a file, PR body, or command output | One criterion needs a judgment call to observe | An FR says only "supports" / "is implemented" |
+| acceptance-criterion observability | Each criterion names the surface (path under `docs/ux/`, PR-body line, `/tdd-author` refusal text) | One criterion names the surface loosely | A criterion is a test-exists claim |
+| scope coherence | One effort: `/ux-author` + the `/prd-author` `[UI]` marker + `/tdd-author` consumption | One adjacent edit justified inline | Adds visual-diff gating or a design tool |
+| non-goal explicitness | Prototype engine, native rendering, visual-diff gate, mock sync, live-capture commit each listed | One exclusion implied | A rejected option is neither required nor excluded |
+| open-question honesty | Grok delegate inventory and delegate selection left open, not invented | One open item phrased as a decision | Grok support asserted as known |
+| delegation, not reinvention | FRs require using present delegates and name none as mandatory; degrade path stated | Delegates named only as examples | PRD specifies how to draw/design mocks itself |
+| cascade completeness | Every FR naming the authoring skills (FR-46–49, 75–77, 79, 81, 86, NFR-1, NFR-3) amended or listed in the cascade | One enumeration missed but listed in cascade | `/ux-author` absent from an FR that lists all authoring skills |
