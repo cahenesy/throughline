@@ -95,8 +95,41 @@ without asking. If the block exits non-zero, show its stderr and stop
 
 ## 2. Lock (FR-18 / FR-43)
 
-`tl_run_lock "$REPO"`. If held by a live PID → refuse. If held by a dead
-PID → `tl_run_lock_reclaim "$REPO"`.
+Run this block (input `TL_REPO`). The lock names this session's process
+(the first long-lived ancestor of the Bash shell, `tl_session_pid`) and
+its start time, so it outlives each Bash call; a second `/build-tdds` in
+the same session re-enters it, a dead or PID-reused owner is reclaimed,
+and a live owner in another session refuses. It prints `lock=acquired`.
+Non-zero exit → show its stderr (it names the owner PID) and **stop**.
+
+<!-- tl:lock -->
+```bash
+_tl_src="${CLAUDE_PLUGIN_ROOT:-${GROK_PLUGIN_ROOT:-}}"
+. "${_tl_src}/scripts/lib/plugin-root.sh" || { echo "throughline: cannot source plugin-root.sh" >&2; exit 1; }
+. "$(tl_plugin_root)/scripts/lib/models.sh" || { echo "throughline: cannot source models.sh" >&2; exit 1; }
+. "$(tl_plugin_root)/scripts/lib/run-record.sh" || { echo "throughline: cannot source run-record.sh" >&2; exit 1; }
+
+: "${TL_REPO:?TL_REPO required}"
+tl_run_lock "$TL_REPO" || exit 1
+echo 'lock=acquired'
+```
+
+Every "unlock" in this skill means: run this block (input `TL_REPO`). It
+removes the lock only when this session owns it or its owner is dead;
+otherwise it exits 1 with `run-record: not the lock owner` and the lock
+stays.
+
+<!-- tl:unlock -->
+```bash
+_tl_src="${CLAUDE_PLUGIN_ROOT:-${GROK_PLUGIN_ROOT:-}}"
+. "${_tl_src}/scripts/lib/plugin-root.sh" || { echo "throughline: cannot source plugin-root.sh" >&2; exit 1; }
+. "$(tl_plugin_root)/scripts/lib/models.sh" || { echo "throughline: cannot source models.sh" >&2; exit 1; }
+. "$(tl_plugin_root)/scripts/lib/run-record.sh" || { echo "throughline: cannot source run-record.sh" >&2; exit 1; }
+
+: "${TL_REPO:?TL_REPO required}"
+tl_run_unlock "$TL_REPO" || exit 1
+echo 'lock=released'
+```
 
 ## 3. Resume, Retry, or fresh (FR-39 / FR-40 / FR-88)
 
@@ -151,15 +184,15 @@ that apply.
      missing, refuse Retry for that TDD and tell the user to Start fresh.
   2. Run the step 5 `tl:escalation-decide` block for the slug **first**:
      it reads the halt-time verdicts. Then run this block (inputs
-     `TL_REPO`, `TL_RUN`, `TL_SLUG`). It prints `report=<path>` (the
-     failed gate's report, read before archiving; empty when no gate
-     verdict FAILed) and saves a copy that step 7's empty
-     `<slug>.build.txt` cannot overwrite. Then it archives the halt-time
-     verdicts into `retry-<N>/` and sets the TDD `building`, so an
-     interrupted Retry resumes from test-first, never past gates on
-     changed code. It prints `archive=<dir>` and
-     `implementer_report=<copy>`. Non-zero exit → show its stderr,
-     unlock, stop.
+     `TL_REPO`, `TL_RUN`, `TL_SLUG`); it is one `tl_run_retry_begin`
+     call. That resolves the failed gate's report (read before
+     archiving) and copies it to `<report>.prev.txt`, which step 7's
+     empty `<slug>.build.txt` cannot overwrite. Then it archives the
+     halt-time verdicts into `retry-<N>/` and sets the TDD `building`, so
+     an interrupted Retry resumes from test-first, never past gates on
+     changed code. It prints, in order, `report=<path>` (empty when no
+     gate verdict FAILed), `implementer_report=<copy>` (empty likewise)
+     and `archive=<dir>`. Non-zero exit → show its stderr, unlock, stop.
 
 <!-- tl:retry-begin -->
 ```bash
@@ -168,13 +201,7 @@ _tl_src="${CLAUDE_PLUGIN_ROOT:-${GROK_PLUGIN_ROOT:-}}"
 . "$(tl_plugin_root)/scripts/lib/models.sh" || { echo "throughline: cannot source models.sh" >&2; exit 1; }
 . "$(tl_plugin_root)/scripts/lib/run-record.sh" || { echo "throughline: cannot source run-record.sh" >&2; exit 1; }
 : "${TL_REPO:?TL_REPO required}" "${TL_RUN:?TL_RUN required}" "${TL_SLUG:?TL_SLUG required}"
-tl_report="$(tl_run_failed_report "$TL_REPO" "$TL_RUN" "$TL_SLUG")" || tl_report=""
-printf 'report=%s\n' "$tl_report"
-tl_copy=""
-if [ -n "$tl_report" ]; then tl_copy="${tl_report%.txt}.prev.txt"; cp "$tl_report" "$tl_copy" || exit 1; fi
-tl_arch="$(tl_run_retry_begin "$TL_REPO" "$TL_RUN" "$TL_SLUG")" || exit 1
-printf 'archive=%s\n' "$tl_arch"
-printf 'implementer_report=%s\n' "$tl_copy"
+tl_run_retry_begin "$TL_REPO" "$TL_RUN" "$TL_SLUG" || exit 1
 ```
 
   3. Step 5's confirmation (`TL_QUEUE` = `$REPO/docs/tdd/<slug>.md` for
@@ -343,8 +370,16 @@ the first rule that matches:
 2. **Dispatch error.** The dispatch tool returned an error, or the
    worker's completion notification reports it failed (an async worker's
    API error arrives there, not from the dispatch call):
-   - run `tl_run_set_escalation "$REPO" "$run" "$slug" fell-back <model> "dispatch error: <first line of the error>"`
-     and show the line it prints;
+   - write the raw error text with your file-write tool (never a
+     shell command; the text is untrusted) to
+     `<run-dir>/<slug>.fallback-reason.txt`;
+   - run the `tl:escalation-fellback-record` block below (inputs
+     `TL_REPO`, `TL_RUN`, `TL_SLUG`, `TL_MODEL` = the sidecar's
+     `escalation_model`, `TL_REASON_FILE` = that exact path) and show the
+     line it prints. It records reason `dispatch error: <first line>`
+     (control bytes stripped, at most 300 chars; `(no detail)` when the
+     file is missing or empty) and deletes the file, so a stale reason is
+     never reused. Non-zero exit → show its stderr, unlock, **stop**;
    - re-run the `tl:models-record` block (it now passes no escalation);
    - re-dispatch the same worker with **no model parameter**, on a fresh
      empty report.
@@ -373,6 +408,28 @@ inactivity timeout. A check that passes with an empty report is a real
 worker failure: apply the normal rules below. Non-zero exit → show its
 stderr, unlock, **stop**.
 
+<!-- tl:escalation-fellback-record -->
+```bash
+_tl_src="${CLAUDE_PLUGIN_ROOT:-${GROK_PLUGIN_ROOT:-}}"
+. "${_tl_src}/scripts/lib/plugin-root.sh" || { echo "throughline: cannot source plugin-root.sh" >&2; exit 1; }
+. "$(tl_plugin_root)/scripts/lib/models.sh" || { echo "throughline: cannot source models.sh" >&2; exit 1; }
+. "$(tl_plugin_root)/scripts/lib/run-record.sh" || { echo "throughline: cannot source run-record.sh" >&2; exit 1; }
+: "${TL_REPO:?TL_REPO required}" "${TL_RUN:?TL_RUN required}" "${TL_SLUG:?TL_SLUG required}"
+: "${TL_MODEL:?TL_MODEL required}" "${TL_REASON_FILE:?TL_REASON_FILE required}"
+[[ "$TL_MODEL" =~ ^[A-Za-z0-9._:-]+$ ]] || { echo "throughline: bad TL_MODEL" >&2; exit 2; }
+tl_run_get_model_field "$TL_REPO" "$TL_RUN" "$TL_SLUG" escalation >/dev/null 2>&1
+[ "$?" -ne 2 ] || { echo "throughline: bad TL_REPO / TL_RUN / TL_SLUG" >&2; exit 2; }
+tl_rf="$TL_REPO/docs/tdd/.implement-logs/$TL_RUN/$TL_SLUG.fallback-reason.txt"
+[ "$TL_REASON_FILE" = "$tl_rf" ] || { echo "throughline: TL_REASON_FILE must be $tl_rf" >&2; exit 2; }
+tl_line=""
+if [ -f "$tl_rf" ] && [ ! -L "$tl_rf" ]; then
+  tl_line="$(LC_ALL=C tr -d '\000-\011\013-\037\177' <"$tl_rf" | LC_ALL=C awk 'length($0) > 0 { print; exit }')"
+fi
+rm -f "$tl_rf"
+tl_line="$( { LC_ALL=C.UTF-8; } 2>/dev/null; printf '%s' "${tl_line:0:300}")"
+tl_run_set_escalation "$TL_REPO" "$TL_RUN" "$TL_SLUG" fell-back "$TL_MODEL" "dispatch error: ${tl_line:-(no detail)}" || exit 1
+```
+
 <!-- tl:escalation-verify -->
 ```bash
 _tl_src="${CLAUDE_PLUGIN_ROOT:-${GROK_PLUGIN_ROOT:-}}"
@@ -382,6 +439,7 @@ _tl_src="${CLAUDE_PLUGIN_ROOT:-${GROK_PLUGIN_ROOT:-}}"
 : "${TL_REPO:?TL_REPO required}" "${TL_RUN:?TL_RUN required}" "${TL_SLUG:?TL_SLUG required}"
 : "${TL_AGENT_ID:?TL_AGENT_ID required}" "${TL_REPORT:?TL_REPORT required}" "${TL_WT:?TL_WT required}"
 : "${TL_BASE_SHA:?TL_BASE_SHA required}" "${TL_WORKER:?TL_WORKER required}"
+[[ "$TL_BASE_SHA" =~ ^[0-9a-f]{7,64}$ ]] || { echo "run-record: bad base sha" >&2; exit 2; }
 _tl_get() { tl_run_get_model_field "$TL_REPO" "$TL_RUN" "$TL_SLUG" "$1"; }
 [ "$(_tl_get escalation 2>/dev/null)" = escalated ] || exit 0
 tl_m="$(_tl_get escalation_model)" && [ -n "$tl_m" ] || { echo "throughline: no escalation_model for $TL_SLUG" >&2; exit 1; }
@@ -420,7 +478,9 @@ unlock, **stop**.
 
 If worker exit or stderr matches `rate.?limit|usage.?limit|ECONNRESET`
 (or rc 143/130) → `tl_run_set_tdd … paused <cause>`, unlock, **stop**
-(FR-41). Genuine non-zero without that pattern → `failed` + `gate-fail`,
+(FR-41), unless this TDD is `escalated` and the text matches
+`credits_required|requires usage credits`; that is a fall-back
+(Escalation check, rule 1 exception), not a pause. Genuine non-zero without that pattern → `failed` + `gate-fail`,
 unlock, **stop**.
 
 Continue only on `BUILD_RESULT: OK`.
