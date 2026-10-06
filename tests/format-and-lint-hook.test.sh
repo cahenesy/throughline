@@ -329,6 +329,27 @@ newcase se; mkcrate; printf 'fn a() {}\n' > "$C/r/src/lib.rs"; commit "$C/r"
 run "$C/r/src/lib.rs"; RC1=$RC; run "$C/r/src/lib.rs"
 check "passing clippy stays debounced: 2nd immediate run skips clippy, rc 0" \
   '[ "$RC1" -eq 0 ] && [ "$RC" -eq 0 ] && [ "$(grep -c "^cargo clippy" "$C/calls")" -eq 1 ]'
+# (f)/(g): outside git the walk reaches shared ancestors (e.g. a planted
+# /tmp/Cargo.toml), and clippy / golangci-lint execute project code
+# (build.rs, proc macros, linter plugins). They must never run there.
+newcase sf; mkdir -p "$C/nogit/src"; printf '[package]\nname = "x"\n' > "$C/nogit/Cargo.toml"
+printf 'fn a(){}\n' > "$C/nogit/src/lib.rs"
+if git -C "$C/nogit" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  bad "(f) precondition: $C/nogit must be outside any git work tree"
+else
+  run "$C/nogit/src/lib.rs"
+  check "(f) Rust file outside git under a planted Cargo.toml: cargo never runs, rc 0" \
+    '[ "$RC" -eq 0 ] && calls_empty'
+fi
+newcase sg; mkdir -p "$C/nogit/p"; printf 'module x\n' > "$C/nogit/go.mod"
+printf 'run:\n  timeout: 1m\n' > "$C/nogit/.golangci.yml"; printf 'package p\n' > "$C/nogit/p/a.go"
+if git -C "$C/nogit" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  bad "(g) precondition: $C/nogit must be outside any git work tree"
+else
+  run "$C/nogit/p/a.go"
+  check "(g) Go file outside git under a planted go.mod + .golangci.yml: golangci-lint never runs, rc 0" \
+    '[ "$RC" -eq 0 ] && calls_empty'
+fi
 
 # --- [6] no --fix anywhere ---------------------------------------------------
 echo "[6] no tool was ever called with --fix"
