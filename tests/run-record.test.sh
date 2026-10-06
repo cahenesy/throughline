@@ -93,35 +93,42 @@ echo "[D] unknown halt_cause rejected"
   [ "$rc" -eq 2 ] && ok "unknown cause → rc 2" || bad "unknown cause rc=$rc want 2"
 ) || true
 
-# --- [E] lock: live PID holds; dead PID reclaimable --------------------------
-echo "[E] tl_run_lock reclaim when PID is dead (FR-43)"
+# --- [E] lock: live owner holds; dead owner reclaimable ---------------------
+# TDD 0069: the lock line is `pid=<pid> start=<lstart>`; owners are passed
+# explicitly ("<pid> <start>") as real sleeper processes.
+echo "[E] tl_run_lock reclaim when the owner is dead (FR-43)"
 ( R="$ROOT/e"; mkdir -p "$R"
   src "tl_run_init \"$R\" r"
   lock="$R/docs/tdd/.implement-logs/.run.lock"
-  # Stale lock: PID that is not alive.
-  printf '1\n' >"$lock"   # PID 1 is init — usually alive. Use a high unused pid.
+  lst() { ps -o lstart= -p "$1" 2>/dev/null | awk '{$1=$1; print}'; }
+  sleep 30 & live=$!
+  sleep 30 & other=$!
+  own="$live $(lst "$live")"; oth="$other $(lst "$other")"
+  # Stale legacy lock: a bare PID that is not alive.
   printf '999999\n' >"$lock"
   set +e
-  src "tl_run_lock_reclaim \"$R\""; rc=$?
+  src "tl_run_lock_reclaim \"$R\" \"$own\""; rc=$?
   set -e
-  [ "$rc" -eq 0 ] && ok "reclaim succeeds when PID is dead" \
+  [ "$rc" -eq 0 ] && ok "reclaim succeeds when the PID is dead" \
     || bad "reclaim rc=$rc want 0"
-  # After reclaim, lock should hold this (sub)shell's... actually src is a
-  # new bash, so the lock PID is that child's (now dead). Re-read: reclaim
-  # writes $$ of the src bash, which has exited. That's OK for this case —
-  # we only asserted reclaim rc 0.
+  [ "$(head -n 1 "$lock")" = "pid=$live start=$(lst "$live")" ] \
+    && ok "lock line is pid=<pid> start=<start>" || bad "lock line '$(head -n 1 "$lock")'"
 
-  # Held by a live background PID.
-  sleep 30 &
-  live=$!
+  # Held by a live owner: another owner is refused.
+  set +e
+  src "tl_run_lock \"$R\" \"$oth\""; rc=$?
+  set -e
+  [ "$rc" -ne 0 ] && ok "lock held by a live owner is refused" \
+    || bad "lock accepted while a live owner held it"
+  # Legacy bare live PID is refused too.
   printf '%s\n' "$live" >"$lock"
   set +e
-  src "tl_run_lock \"$R\""; rc=$?
+  src "tl_run_lock \"$R\" \"$oth\""; rc=$?
   set -e
-  kill "$live" 2>/dev/null || true
-  wait "$live" 2>/dev/null || true
-  [ "$rc" -ne 0 ] && ok "lock held by live PID is refused" \
-    || bad "lock accepted while live PID held it"
+  kill "$live" "$other" 2>/dev/null || true
+  wait "$live" "$other" 2>/dev/null || true
+  [ "$rc" -ne 0 ] && ok "legacy lock held by a live PID is refused" \
+    || bad "legacy live lock accepted"
 ) || true
 
 # --- [F] next_gate order + flip ----------------------------------------------
