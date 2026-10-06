@@ -13,13 +13,17 @@
 # pre-sourced, no positional args, inputs only from TL_* env vars —
 #   env -i HOME=<tmp> PATH="$PATH" CLAUDE_PLUGIN_ROOT=<repo> \
 #     CLAUDE_CONFIG_DIR=<tmp>/.claude CLAUDE_CODE_SESSION_ID=<sid> TL_…=… bash <block>
-# No network. Observation 14 (the live probe) runs only in the runtime-verify
-# gate; here tests/live/escalation-probe.sh is checked statically and its exit
-# classification is driven against a stub `claude` (THROUGHLINE_PROBE_CLAUDE).
+# Worker transcripts (ADR 0016) are fixtures at
+#   <tmp>/.claude/projects/<p>/<sid>/subagents/agent-<id>.jsonl
+# read by tl_worker_actual_model / tl_escalation_verify and the extracted
+# tl:escalation-verify block. No network. Observation 15 (the live probe) runs
+# only in the runtime-verify gate; here tests/live/escalation-probe.sh is
+# checked statically and its exit classification is driven against a stub
+# `claude` (THROUGHLINE_PROBE_CLAUDE) that also writes the worker transcripts.
 # A missing marker, block or file is a FAIL (infra, L-001/L-011), never a skip.
-# Observation numbers [1]–[14] (incl. 11b, 11c) are the TDD's Verification
-# plan; [13] is the one text-only check (stated reason: it covers
-# dispatch-tool behavior and the interactive menu, which an eval cannot run).
+# Observation numbers [1]–[15] are TDD 0067 revision 2's Verification plan;
+# [14] is the one text-only check (stated reason: it covers dispatch-tool
+# behavior and the interactive menu, which an eval cannot run).
 #
 # Written red-first. Run: bash tests/escalation.test.sh
 set -uo pipefail
@@ -192,8 +196,8 @@ decide() {  # <run> <requested> <auto> — tl_escalation_decide on the fixture
 }
 
 echo "[0] the new functions are defined after sourcing models.sh + run-record.sh"
-( m 'for f in tl_escalation_outcome tl_escalation_flags tl_run_latest_run tl_run_retry_candidates tl_run_retry_begin tl_run_failed_report tl_run_set_halt_blob tl_escalation_decide tl_run_set_escalation tl_escalation_fellback_check; do [ "$(type -t "$f")" = function ] || echo "missing $f"; done'
-  [ "$RC" -eq 0 ] && [ -z "$OUT" ] && [ -z "$ERR" ] && ok "all ten functions defined; sourcing is silent" \
+( m 'for f in tl_escalation_outcome tl_escalation_flags tl_run_latest_run tl_run_retry_candidates tl_run_retry_begin tl_run_failed_report tl_run_set_halt_blob tl_escalation_decide tl_run_set_escalation tl_escalation_fellback_check tl_worker_actual_model tl_escalation_verify; do [ "$(type -t "$f")" = function ] || echo "missing $f"; done'
+  [ "$RC" -eq 0 ] && [ -z "$OUT" ] && [ -z "$ERR" ] && ok "all twelve functions defined; sourcing is silent" \
     || bad "rc=$RC out='$OUT' err='$ERR'"
 ) || true
 
@@ -402,29 +406,112 @@ echo "[9] tl_escalation_fellback_check"
   m "tl_escalation_fellback_check $(q "$FULL") $(q "$WT") $BASE bogus"; rc_quiet "worker bogus → rc 2" 2
 ) || true
 
-echo "[10] the extracted tl:escalation-flags block"
+echo "[10] tl_worker_actual_model reads the worker transcript"
+# mk_worker <sid> <agent-id> <model…> — a worker transcript under the fixture
+# config dir: a user line, a tool_use line whose INPUT names another model (a
+# regex over raw lines would see it), one assistant line per <model> (`-` = a
+# truncated line), plus a `<synthetic>` harness line.
+SA="$TP/s-opus/subagents"
+mk_worker() {
+  local sid="$1" aid="$2" d="$TP/$1/subagents" mdl; shift 2
+  mkdir -p "$d" || return 1
+  { printf '%s\n' '{"type":"user","message":{"role":"user","content":"Reply with exactly 1"}}'
+    printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"\"model\":\"claude-haiku-4-5\""}]}}'
+    for mdl in "$@"; do
+      case "$mdl" in
+        -) printf '%s\n' '{"type":"assistant","message":{"model":"claude-son' ;;
+        '<synthetic>') printf '%s\n' '{"type":"assistant","message":{"model":"<synthetic>","content":[{"type":"text","text":"API Error"}]}}' ;;
+        *) printf '{"type":"assistant","message":{"model":"%s","content":[{"type":"tool_use","name":"Agent","input":{"model":"claude-mythos-1"}}]}}\n' "$mdl" ;;
+      esac
+    done
+  } >"$d/agent-$aid.jsonl"
+}
+mk_worker s-opus aopus claude-opus-5-5 '<synthetic>' - claude-opus-5-5
+mk_worker s-opus afo claude-fable-5-1 claude-opus-5-5 claude-fable-5-1
+mk_worker s-opus afable claude-fable-5-1 claude-fable-5-1
+mk_worker s-opus asyn '<synthetic>' -
+WAM() { m CLAUDE_CONFIG_DIR="$H/.claude" "$@"; }
+WAM CLAUDE_CODE_SESSION_ID=s-opus 'tl_worker_actual_model aopus'
+want "[10] two opus lines, a <synthetic> line and a truncated line → claude-opus-5-5" claude-opus-5-5
+WAM CLAUDE_CODE_SESSION_ID=s-opus 'tl_worker_actual_model afo'
+want "[10] fable then opus → both, in order of first appearance" "claude-fable-5-1
+claude-opus-5-5"
+WAM CLAUDE_CODE_SESSION_ID=s-opus 'tl_worker_actual_model afable'; want "fable only → claude-fable-5-1" claude-fable-5-1
+wam_fail() {  # <label> <why>
+  if [ "$RC" -eq 1 ] && [ ! -s "$ROOT/out" ] && [ "$ERR" = "tl_worker_actual_model: $2" ]; then ok "$1"
+  else bad "$1: rc=$RC out='$OUT' err='$ERR' want rc 1, no stdout, stderr 'tl_worker_actual_model: $2'"; fi
+}
+WAM CLAUDE_CODE_SESSION_ID=s-opus "tl_worker_actual_model ../x"; wam_fail "[10] ../x → bad agent id" "bad agent id"
+WAM CLAUDE_CODE_SESSION_ID=s-opus "tl_worker_actual_model ''"; wam_fail "empty agent id → bad agent id" "bad agent id"
+WAM 'tl_worker_actual_model aopus'; wam_fail "[10] no session id" "no session id"
+WAM CLAUDE_CODE_SESSION_ID=a/b 'tl_worker_actual_model aopus'; wam_fail "[10] a/b → bad session id" "bad session id"
+WAM CLAUDE_CODE_SESSION_ID='*' 'tl_worker_actual_model aopus'; wam_fail "a glob session id → bad session id" "bad session id"
+WAM CLAUDE_CODE_SESSION_ID=s-opus 'tl_worker_actual_model amissing'; wam_fail "[10] no file → transcript not found" "transcript not found"
+WAM CLAUDE_CODE_SESSION_ID=s-opus 'tl_worker_actual_model asyn'; wam_fail "only <synthetic> / truncated lines → no model in transcript" "no model in transcript"
+WAM CLAUDE_CODE_SESSION_ID=s-opus GROK_PLUGIN_ROOT=/x 'tl_worker_actual_model aopus'
+wam_fail "[10] GROK_PLUGIN_ROOT set → no worker artifact on this harness" "no worker artifact on this harness"
+( SPC="$ROOT/cfg dir"; mkdir -p "$SPC/projects/p q/sx/subagents" \
+    && cp "$SA/agent-afo.jsonl" "$SPC/projects/p q/sx/subagents/agent-aq.jsonl" \
+    || { bad "infra: spaced config dir"; exit 0; }
+  m CLAUDE_CONFIG_DIR="$SPC" CLAUDE_CODE_SESSION_ID=sx 'tl_worker_actual_model aq'
+  want "a config dir with a space is quoted in the glob" "claude-fable-5-1
+claude-opus-5-5"
+  m HOME="$ROOT/cfg dir/h" CLAUDE_CODE_SESSION_ID=s-opus 'tl_worker_actual_model aopus'
+  wam_fail "CLAUDE_CONFIG_DIR unset → \$HOME/.claude (here absent) → transcript not found" "transcript not found"
+) || true
+( NOJQ="$ROOT/nojq"; mkdir -p "$NOJQ"
+  for b in /usr/bin/* /bin/*; do
+    case "${b##*/}" in jq) ;; *) [ -e "$NOJQ/${b##*/}" ] || ln -s "$b" "$NOJQ/${b##*/}" 2>/dev/null ;; esac
+  done
+  [ -x "$NOJQ/python3" ] || { bad "infra: python3 not in /usr/bin or /bin (python3 arm untested)"; exit 0; }
+  env -i HOME="$H" PATH="$NOJQ" CLAUDE_CONFIG_DIR="$H/.claude" CLAUDE_CODE_SESSION_ID=s-opus \
+    bash -c ". $(q "$MODELS") || exit 97; command -v jq >/dev/null && exit 96; tl_worker_actual_model afo" >"$ROOT/out" 2>"$ROOT/err"
+  RC=$?; OUT="$(cat "$ROOT/out")"; ERR="$(cat "$ROOT/err")"; NL="$(wc -l <"$ROOT/out" | tr -d ' ')"
+  want "no jq → the python3 arm gives the same answer" "claude-fable-5-1
+claude-opus-5-5"
+) || true
+
+echo "[11] tl_escalation_verify judges by the model that actually ran"
+WAM CLAUDE_CODE_SESSION_ID=s-opus 'tl_escalation_verify aopus fable'
+want "[11] opus-only, escalation fable → fell-back harness ran claude-opus-5-5" "fell-back harness ran claude-opus-5-5"
+WAM CLAUDE_CODE_SESSION_ID=s-opus 'tl_escalation_verify aopus opus'
+want "[11] opus-only, escalation opus (alias ↔ id family match, used by P3) → escalated" escalated
+WAM CLAUDE_CODE_SESSION_ID=s-opus 'tl_escalation_verify afable fable'; want "[11] fable-only → escalated" escalated
+WAM CLAUDE_CODE_SESSION_ID=s-opus 'tl_escalation_verify afo fable'
+want "[11] fable then opus → fell-back harness ran claude-opus-5-5" "fell-back harness ran claude-opus-5-5"
+WAM CLAUDE_CODE_SESSION_ID=s-opus 'tl_escalation_verify amissing fable'
+want "[11] missing → fell-back actual model unverified (transcript not found)" "fell-back actual model unverified (transcript not found)"
+WAM 'tl_escalation_verify afable fable'
+want "no session id → fell-back actual model unverified (no session id)" "fell-back actual model unverified (no session id)"
+WAM CLAUDE_CODE_SESSION_ID=s-opus 'tl_escalation_verify ../x fable'
+want "bad agent id → fell-back actual model unverified (bad agent id)" "fell-back actual model unverified (bad agent id)"
+WAM CLAUDE_CODE_SESSION_ID=s-opus GROK_PLUGIN_ROOT=/x 'tl_escalation_verify afable grok-4.6'
+want "Grok → fell-back actual model unverified (no worker artifact on this harness)" \
+  "fell-back actual model unverified (no worker artifact on this harness)"
+
+echo "[12] the extracted tl:escalation-flags block"
 FB="$ROOT/blocks/flags.sh"
 if getblock '<!-- tl:escalation-flags -->' "$FB"; then
-  runb "$FB" TL_ARGS='--escalate'; want "[10] TL_ARGS='--escalate'" "requested=1 auto=1"
+  runb "$FB" TL_ARGS='--escalate'; want "[12] TL_ARGS='--escalate'" "requested=1 auto=1"
   runb "$FB" TL_ARGS=''; want "TL_ARGS='' (no arguments) is valid" "requested=0 auto=1"
   runb "$FB" TL_ARGS='docs/tdd/0099-x.md --no-auto-escalate'; want "path + --no-auto-escalate" "requested=0 auto=0"
   runb "$FB" TL_ARGS='' THROUGHLINE_ESCALATE=1; want "THROUGHLINE_ESCALATE=1 through the block" "requested=1 auto=1"
-  runb "$FB"; fail_closed "[10] TL_ARGS unset → rc≠0, stderr names TL_ARGS" TL_ARGS
+  runb "$FB"; fail_closed "[12] TL_ARGS unset → rc≠0, stderr names TL_ARGS" TL_ARGS
   runb "$FB" TL_ARGS='--escalate' CLAUDE_PLUGIN_ROOT="$PART"
   fail_closed "run-record.sh missing from the plugin root → fails closed" 'cannot source run-record.sh'
-else bad "[10] infra: no tl:escalation-flags block to run"; fi
+else bad "[12] infra: no tl:escalation-flags block to run"; fi
 
-echo "[11] the extracted tl:retry-candidates block"
+echo "[12] the extracted tl:retry-candidates block"
 RCB="$ROOT/blocks/retry-candidates.sh"
 if getblock '<!-- tl:retry-candidates -->' "$RCB"; then
   if mkrun r11 failed gate-fail PASS PASS - FAIL; then
     m "tl_run_latest_run $(q "$GR")"; want "tl_run_latest_run → the run latest points to" r11
     runb "$RCB" TL_REPO="$GR"
-    want "[11] all-terminal fixture 4 + latest → run=<id> and the slug" "run=r11
+    want "[12] all-terminal fixture 4 + latest → run=<id> and the slug" "run=r11
 $SLUG"
   fi
   NLR="$ROOT/nolatest"; mkdir -p "$NLR"
-  runb "$RCB" TL_REPO="$NLR"; silent "[11] no latest → nothing, rc 0"
+  runb "$RCB" TL_REPO="$NLR"; silent "[12] no latest → nothing, rc 0"
   m "tl_run_latest_run $(q "$NLR")"; rc_quiet "tl_run_latest_run with no latest → rc 1, no output" 1
   DG="$ROOT/dangle"; mkdir -p "$DG/docs/tdd/.implement-logs"; ln -s "$ROOT/gone" "$DG/docs/tdd/.implement-logs/latest"
   runb "$RCB" TL_REPO="$DG"; silent "dangling latest → nothing, rc 0"
@@ -432,19 +519,19 @@ $SLUG"
   runb "$RCB"; fail_closed "TL_REPO unset → rc≠0, stderr names TL_REPO" TL_REPO
   runb "$RCB" TL_REPO="$GR" CLAUDE_PLUGIN_ROOT="$PART"
   fail_closed "run-record.sh missing from the plugin root → fails closed" 'cannot source run-record.sh'
-else bad "[11] infra: no tl:retry-candidates block to run"; fi
+else bad "[12] infra: no tl:retry-candidates block to run"; fi
 ( m "tl_run_retry_candidates $(q "$GR") ../x"; rc_quiet "tl_run_retry_candidates invalid run → rc 2" 2
   m "tl_run_retry_candidates $(q "$GR") r-none"; rc_quiet "tl_run_retry_candidates unknown run → rc 2" 2
   [ "$R4OK" = 1 ] && { m "tl_run_retry_candidates $(q "$GR") r6p"; want "the models sidecar and run.json are not fragments" "$SLUG"; }
 ) || true
 
-echo "[11c] tl_run_failed_report"
-( [ "$R4OK" = 1 ] || { bad "[11c] infra: no fixture 4"; exit 0; }
-  m "tl_run_failed_report $(q "$GR") r4 $SLUG"; want "[11c] review FAIL → the review report" "$LOGS/r4/$SLUG.review.txt"
-  m "tl_run_failed_report $(q "$GR") r6p $SLUG"; rc_quiet "[11c] every verdict PASS → rc 1, no output" 1
+echo "[12] tl_run_failed_report"
+( [ "$R4OK" = 1 ] || { bad "[12] infra: no fixture 4"; exit 0; }
+  m "tl_run_failed_report $(q "$GR") r4 $SLUG"; want "[12] review FAIL → the review report" "$LOGS/r4/$SLUG.review.txt"
+  m "tl_run_failed_report $(q "$GR") r6p $SLUG"; rc_quiet "[12] every verdict PASS → rc 1, no output" 1
   if mkrun r11c failed gate-fail PASS PASS - FAIL; then
     rm -f "$LOGS/r11c/$SLUG.review.txt"
-    m "tl_run_failed_report $(q "$GR") r11c $SLUG"; rc_quiet "[11c] the FAIL verdict's report deleted → rc 1" 1
+    m "tl_run_failed_report $(q "$GR") r11c $SLUG"; rc_quiet "[12] the FAIL verdict's report deleted → rc 1" 1
   fi
   if mkrun r11d failed gate-fail FAIL - - FAIL; then
     m "tl_run_failed_report $(q "$GR") r11d $SLUG"; want "first FAIL in gate order; test-first → build" "$LOGS/r11d/$SLUG.build.txt"
@@ -457,24 +544,26 @@ echo "[11c] tl_run_failed_report"
   fi
 ) || true
 
-echo "[12] the extracted tl:escalation-decide block, then 0066's confirm/record blocks"
+echo "[13] the extracted tl:escalation-decide block, then 0066's confirm/record blocks"
 DB="$ROOT/blocks/decide.sh"; CB="$ROOT/blocks/confirm.sh"; RB="$ROOT/blocks/record.sh"
 S4="$LOGS/r4/$SLUG.models.json"
 getblock '<!-- tl:models-confirm -->' "$CB"; HAVE_CB=$?
 getblock '<!-- tl:models-record -->' "$RB"; HAVE_RB=$?
+VB="$ROOT/blocks/escalation-verify.sh"
+getblock '<!-- tl:escalation-verify -->' "$VB"; HAVE_VB=$?
 if getblock '<!-- tl:escalation-decide -->' "$DB"; then
   if [ "$R4OK" = 1 ]; then
     runb "$DB" CLAUDE_CODE_SESSION_ID=s-opus TL_REPO="$GR" TL_RUN=r4 TL_SLUG="$SLUG" TL_REQUESTED=0 TL_AUTO=1
-    want "[12] fixture 4, auto, parent opus → trigger + outcome line" "trigger=auto
+    want "[13] fixture 4, auto, parent opus → trigger + outcome line" "trigger=auto
 throughline: $SLUG escalation=escalated model=fable"
-    jf "[12] sidecar records it" "$S4" escalation escalated
-    jf "[12] sidecar records it" "$S4" escalation_model fable
+    jf "[13] sidecar records it" "$S4" escalation escalated
+    jf "[13] sidecar records it" "$S4" escalation_model fable
     jf "the halt blob is kept" "$S4" halt_tdd_blob "$BLOB"
-    keys17 "[12] sidecar" "$S4"
+    keys17 "[13] sidecar" "$S4"
     if [ "$HAVE_CB" = 0 ]; then
       runb "$CB" CLAUDE_CODE_SESSION_ID=s-opus TL_QUEUE="$GTDD" TL_REPO="$GR" TL_RUN=r4
-      out_line "[12] confirm shows the escalation line" '  escalation: escalated model=fable'
-      out_line "[12] confirm shows implementer: fable [escalation]" '  implementer: fable [escalation]'
+      out_line "[13] confirm shows the escalation line" '  escalation: escalated model=fable'
+      out_line "[13] confirm shows implementer: fable [escalation]" '  implementer: fable [escalation]'
       want "confirm, exact" "models $SLUG: parent=claude-opus-5-5 effort=unknown (-; session-wide)
   implementer: fable [escalation]
   reviewer: fable [escalation]
@@ -485,7 +574,7 @@ throughline: $SLUG escalation=escalated model=fable"
   implementer: inherit (claude-opus-5-5) [parent]
   reviewer: inherit (claude-opus-5-5) [parent]
   runtime-verify (nontrivial): inherit (claude-opus-5-5) [parent]"
-    else bad "[12] infra: no tl:models-confirm block"; fi
+    else bad "[13] infra: no tl:models-confirm block"; fi
     if [ "$HAVE_RB" = 0 ]; then
       runb "$RB" CLAUDE_CODE_SESSION_ID=s-opus TL_REPO="$GR" TL_RUN=r4 TL_SLUG="$SLUG" TL_TDD="$GTDD"
       [ "$RC" -eq 0 ] && [ -z "$ERR" ] && ok "record block with escalated sidecar: rc 0" || bad "record: rc=$RC err='$ERR'"
@@ -496,6 +585,30 @@ throughline: $SLUG escalation=escalated model=fable"
       jf "record block, escalated" "$S4" build_src escalation
       jf "record block, escalated" "$S4" build_model fable
       jf "record block keeps the outcome" "$S4" escalation escalated
+      # [13] then tl:escalation-verify: the implementer ran, but its transcript
+      # shows Opus answered (silent substitution, run 20261005-174458).
+      if [ "$HAVE_VB" = 0 ]; then
+        VREP="$ROOT/vrep.txt"; printf 'BUILD_RESULT: OK\n' >"$VREP"
+        VBASE="$(git -C "$GR" rev-parse HEAD 2>/dev/null)"
+        runb "$VB" CLAUDE_CODE_SESSION_ID=s-opus TL_REPO="$GR" TL_RUN=r4 TL_SLUG="$SLUG" TL_AGENT_ID=aopus \
+          TL_REPORT="$VREP" TL_WT="$GR" TL_BASE_SHA="$VBASE" TL_WORKER=implementer
+        want "[13] escalation-verify, opus-only worker → fell-back recorded, output kept" \
+"throughline: $SLUG escalation=fell-back model=fable reason=harness ran claude-opus-5-5
+action=keep"
+        jf "[13] verify → sidecar" "$S4" escalation fell-back
+        jf "[13] verify → sidecar" "$S4" escalation_model fable
+        jf "[13] verify → sidecar" "$S4" escalation_reason 'harness ran claude-opus-5-5'
+        keys17 "[13] sidecar after verify" "$S4"
+        runb "$RB" CLAUDE_CODE_SESSION_ID=s-opus TL_REPO="$GR" TL_RUN=r4 TL_SLUG="$SLUG" TL_TDD="$GTDD"
+        out_line "[13] re-run tl:models-record → implementer: inherit" 'implementer model=inherit (src=parent)'
+        out_line "[13] re-run tl:models-record → no model parameter" 'dispatch implementer model='
+        out_line "[13] re-run tl:models-record → reviewer inherits too" 'dispatch reviewer model='
+        jf "[13] after the substitution" "$S4" build inherit
+        runb "$VB" CLAUDE_CODE_SESSION_ID=s-opus TL_REPO="$GR" TL_RUN=r4 TL_SLUG="$SLUG" TL_AGENT_ID=afable \
+          TL_REPORT="$VREP" TL_WT="$GR" TL_BASE_SHA="$VBASE" TL_WORKER=review
+        silent "[13] an inherited worker after the fall-back is never verified (prints nothing)"
+        jf "[13] the fall-back record stays final" "$S4" escalation_reason 'harness ran claude-opus-5-5'
+      else bad "[13] infra: no tl:escalation-verify block"; fi
       m "tl_run_set_escalation $(q "$GR") r4 $SLUG fell-back fable 'dispatch error: model unavailable'"
       want "fall-back recorded with its one line" \
         "throughline: $SLUG escalation=fell-back model=fable reason=dispatch error: model unavailable"
@@ -510,7 +623,7 @@ throughline: $SLUG escalation=escalated model=fable"
         out_line "confirm after fell-back: outcome line" '  escalation: fell-back model=fable'
         out_line "confirm after fell-back: the parent again" '  implementer: inherit (claude-opus-5-5) [parent]'
       fi
-    else bad "[12] infra: no tl:models-record block"; fi
+    else bad "[13] infra: no tl:models-record block"; fi
   fi
   if [ -f "$LOGS/r7/run.json" ]; then
     runb "$DB" CLAUDE_CODE_SESSION_ID=s-opus TL_REPO="$GR" TL_RUN=r7 TL_SLUG="$SLUG" TL_REQUESTED=0 TL_AUTO=1
@@ -530,14 +643,14 @@ throughline: $SLUG escalation=fell-back model=fable reason=all judgment slots pi
 throughline: 0097-none escalation=escalated model=fable" ] \
       && ok "requested for a TDD with no file → escalated (nontrivial by default)" \
       || bad "no-file TDD: rc=$RC out='$OUT' err='$ERR'"
-  else bad "[12] infra: no run r7 (see [7])"; fi
+  else bad "[13] infra: no run r7 (see [7])"; fi
   for miss in TL_REPO TL_RUN TL_SLUG TL_REQUESTED TL_AUTO; do
     args=(CLAUDE_CODE_SESSION_ID=s-opus)
     for v in "TL_REPO=$GR" "TL_RUN=r7" "TL_SLUG=0090-miss" "TL_REQUESTED=1" "TL_AUTO=1"; do
       [ "${v%%=*}" = "$miss" ] || args+=("$v")
     done
     runb "$DB" "${args[@]}"
-    fail_closed "[12] $miss unset → rc≠0, stderr names $miss" "$miss"
+    fail_closed "[13] $miss unset → rc≠0, stderr names $miss" "$miss"
   done
   [ ! -e "$LOGS/r7/0090-miss.models.json" ] && ok "a missing input writes nothing" || bad "written despite a missing input"
   runb "$DB" CLAUDE_CODE_SESSION_ID=s-opus TL_REPO="$GR" TL_RUN=r7 TL_SLUG=../evil TL_REQUESTED=1 TL_AUTO=1
@@ -545,24 +658,74 @@ throughline: 0097-none escalation=escalated model=fable" ] \
   runb "$DB" CLAUDE_CODE_SESSION_ID=s-opus TL_REPO="$GR" TL_RUN=r7 TL_SLUG="$SLUG" TL_REQUESTED=1 TL_AUTO=1 \
     CLAUDE_PLUGIN_ROOT="$PART"
   fail_closed "run-record.sh missing from the plugin root → fails closed" 'cannot source run-record.sh'
-else bad "[12] infra: no tl:escalation-decide block to run"; fi
+else bad "[13] infra: no tl:escalation-decide block to run"; fi
 
-echo "[11b] tl_run_retry_begin archives the verdicts; the extracted tl:retry-begin block"
+echo "[13] the extracted tl:escalation-verify block: each post-worker arm"
+if [ "$HAVE_VB" = 0 ] && [ "$FIXOK" = 1 ]; then
+  VREP="$ROOT/vrep.txt"; printf 'BUILD_RESULT: OK\n' >"$VREP"; VEMPTY="$ROOT/vrep.empty"; : >"$VEMPTY"
+  VBASE="$(git -C "$GR" rev-parse HEAD 2>/dev/null)"; SV="$LOGS/r13v/$SLUG.models.json"
+  esc_reset() { m "tl_run_set_escalation $(q "$GR") r13v $SLUG escalated fable >/dev/null"; }
+  m "tl_run_init $(q "$GR") r13v && tl_run_set_tdd $(q "$GR") r13v $SLUG building && tl_run_set_escalation $(q "$GR") r13v $SLUG escalated fable >/dev/null"
+  [ "$RC" -eq 0 ] || bad "infra: run r13v: rc=$RC err='$ERR'"
+  vrun() { runb "$VB" CLAUDE_CODE_SESSION_ID=s-opus TL_REPO="$GR" TL_RUN=r13v TL_SLUG="$SLUG" TL_WT="$GR" TL_BASE_SHA="$VBASE" "$@"; }
+  vrun TL_AGENT_ID=afable TL_REPORT="$VREP" TL_WORKER=implementer
+  want "fable-only worker → escalation held, nothing written" "action=none"
+  jf "escalation held" "$SV" escalation escalated
+  jf "escalation held" "$SV" escalation_reason ""
+  vrun TL_AGENT_ID=afable TL_REPORT="$VEMPTY" TL_WORKER=implementer
+  want "empty report, no commits → dispatch-error arm: fell-back + re-dispatch" \
+"throughline: $SLUG escalation=fell-back model=fable reason=no report, no commits
+action=redispatch"
+  jf "fallback check reason recorded" "$SV" escalation_reason 'no report, no commits'
+  esc_reset
+  vrun TL_AGENT_ID=amissing TL_REPORT="$VREP" TL_WORKER=verify
+  want "unreadable actual model → fell-back unverified, output kept" \
+"throughline: $SLUG escalation=fell-back model=fable reason=actual model unverified (transcript not found)
+action=keep"
+  esc_reset
+  vrun TL_AGENT_ID=afo TL_REPORT="$VREP" TL_WORKER=review
+  want "fable then opus → fell-back harness ran claude-opus-5-5" \
+"throughline: $SLUG escalation=fell-back model=fable reason=harness ran claude-opus-5-5
+action=keep"
+  m "tl_run_set_escalation $(q "$GR") r13v $SLUG already-top fable >/dev/null"
+  vrun TL_AGENT_ID=aopus TL_REPORT="$VREP" TL_WORKER=review
+  silent "already-top → the worker inherited; never verified"
+  jf "already-top kept" "$SV" escalation already-top
+  esc_reset
+  vrun TL_AGENT_ID=afable TL_REPORT="$VREP" TL_WORKER=bogus
+  [ "$RC" -ne 0 ] && [ "$(jq -r .escalation "$SV" 2>/dev/null)" = escalated ] \
+    && ok "TL_WORKER=bogus → rc≠0, nothing recorded" || bad "bogus worker: rc=$RC out='$OUT' err='$ERR'"
+  for miss in TL_REPO TL_RUN TL_SLUG TL_AGENT_ID TL_REPORT TL_WT TL_BASE_SHA TL_WORKER; do
+    args=(CLAUDE_CODE_SESSION_ID=s-opus)
+    for v in "TL_REPO=$GR" "TL_RUN=r13v" "TL_SLUG=$SLUG" "TL_AGENT_ID=aopus" "TL_REPORT=$VREP" \
+             "TL_WT=$GR" "TL_BASE_SHA=$VBASE" "TL_WORKER=implementer"; do
+      [ "${v%%=*}" = "$miss" ] || args+=("$v")
+    done
+    runb "$VB" "${args[@]}"
+    fail_closed "$miss unset → rc≠0, stderr names $miss" "$miss"
+  done
+  jf "a missing input records nothing" "$SV" escalation escalated
+  runb "$VB" CLAUDE_CODE_SESSION_ID=s-opus TL_REPO="$GR" TL_RUN=r13v TL_SLUG="$SLUG" TL_AGENT_ID=aopus \
+    TL_REPORT="$VREP" TL_WT="$GR" TL_BASE_SHA="$VBASE" TL_WORKER=implementer CLAUDE_PLUGIN_ROOT="$PART"
+  fail_closed "run-record.sh missing from the plugin root → fails closed" 'cannot source run-record.sh'
+else bad "[13] infra: no tl:escalation-verify block / fixture repo"; fi
+
+echo "[12] tl_run_retry_begin archives the verdicts; the extracted tl:retry-begin block"
 VD="$LOGS/r4/$SLUG"
-( [ "$R4OK" = 1 ] || { bad "[11b] infra: no fixture 4"; exit 0; }
+( [ "$R4OK" = 1 ] || { bad "[12] infra: no fixture 4"; exit 0; }
   [ "$(lsA "$VD")" = "ci-checks.json review.json test-first.json" ] && ok "precondition: three halt-time verdicts" \
     || bad "infra: verdict dir before retry: $(lsA "$VD")"
-  m "tl_run_retry_begin $(q "$GR") r4 $SLUG"; want "[11b] prints the archive dir" "$VD/retry-1"
-  [ "$(lsA "$VD")" = "retry-1" ] && ok "[11b] the verdict dir holds only retry-1/" || bad "[11b] verdict dir: $(lsA "$VD")"
+  m "tl_run_retry_begin $(q "$GR") r4 $SLUG"; want "[12] prints the archive dir" "$VD/retry-1"
+  [ "$(lsA "$VD")" = "retry-1" ] && ok "[12] the verdict dir holds only retry-1/" || bad "[12] verdict dir: $(lsA "$VD")"
   [ "$(lsA "$VD/retry-1")" = "ci-checks.json review.json test-first.json" ] \
-    && ok "[11b] retry-1/ holds all three verdict files" || bad "[11b] retry-1: $(lsA "$VD/retry-1")"
-  jf "[11b] fragment" "$LOGS/r4/$SLUG.json" status building
-  jf "[11b] fragment" "$LOGS/r4/$SLUG.json" halt_cause ""
-  m "tl_run_next_gate $(q "$GR") r4 $SLUG"; want "[11b] tl_run_next_gate → test-first" test-first
+    && ok "[12] retry-1/ holds all three verdict files" || bad "[12] retry-1: $(lsA "$VD/retry-1")"
+  jf "[12] fragment" "$LOGS/r4/$SLUG.json" status building
+  jf "[12] fragment" "$LOGS/r4/$SLUG.json" halt_cause ""
+  m "tl_run_next_gate $(q "$GR") r4 $SLUG"; want "[12] tl_run_next_gate → test-first" test-first
   [ -f "$LOGS/r4/$SLUG.review.txt" ] && ok "report .txt files in the run dir root are not moved" \
     || bad "the review report moved or vanished"
   decide r4 0 1; want "after retry-begin auto no longer applies (accepted)" none
-  m "tl_run_retry_begin $(q "$GR") r4 $SLUG"; want "[11b] a second call → retry-2/" "$VD/retry-2"
+  m "tl_run_retry_begin $(q "$GR") r4 $SLUG"; want "[12] a second call → retry-2/" "$VD/retry-2"
   [ "$(lsA "$VD")" = "retry-1 retry-2" ] && [ "$(lsA "$VD/retry-1")" = "ci-checks.json review.json test-first.json" ] \
     && [ "$(lsA "$VD/retry-2")" = "" ] && ok "retry-1 kept, retry-2 empty" || bad "after 2nd: $(lsA "$VD") / $(lsA "$VD/retry-2")"
   if mkrun r11g failed gate-fail PASS PASS - FAIL; then
@@ -582,16 +745,16 @@ if getblock '<!-- tl:retry-begin -->' "$RBB"; then
     VB="$LOGS/r4b/$SLUG"
     runb "$RBB" CLAUDE_CODE_SESSION_ID=s-opus TL_REPO="$GR" TL_RUN=r4b TL_SLUG="$SLUG"
     [ "$RC" -eq 0 ] && [ "$(sed -n 1p "$ROOT/out")" = "report=$LOGS/r4b/$SLUG.review.txt" ] \
-      && ok "[11b] block: first line is report=<run-dir>/<slug>.review.txt" || bad "[11b] block: rc=$RC out='$OUT' err='$ERR'"
+      && ok "[12] block: first line is report=<run-dir>/<slug>.review.txt" || bad "[12] block: rc=$RC out='$OUT' err='$ERR'"
     want "block output, exact" "report=$LOGS/r4b/$SLUG.review.txt
 archive=$VB/retry-1
 implementer_report=$LOGS/r4b/$SLUG.review.prev.txt"
     cmp -s "$LOGS/r4b/$SLUG.review.txt" "$LOGS/r4b/$SLUG.review.prev.txt" \
       && ok "the implementer's copy of the failed report is byte-identical" || bad "no / different report copy"
     [ "$(lsA "$VB")" = "retry-1" ] && [ "$(lsA "$VB/retry-1")" = "ci-checks.json review.json test-first.json" ] \
-      && ok "[11b] block: same archive result" || bad "[11b] block dir: $(lsA "$VB") / $(lsA "$VB/retry-1")"
-    jf "[11b] block" "$LOGS/r4b/$SLUG.json" status building
-    m "tl_run_next_gate $(q "$GR") r4b $SLUG"; want "[11b] block: next gate test-first" test-first
+      && ok "[12] block: same archive result" || bad "[12] block dir: $(lsA "$VB") / $(lsA "$VB/retry-1")"
+    jf "[12] block" "$LOGS/r4b/$SLUG.json" status building
+    m "tl_run_next_gate $(q "$GR") r4b $SLUG"; want "[12] block: next gate test-first" test-first
     runb "$RBB" CLAUDE_CODE_SESSION_ID=s-opus TL_REPO="$GR" TL_RUN=r4b TL_SLUG="$SLUG"
     want "a second block run: no FAIL verdict left → empty report=, retry-2" "report=
 archive=$VB/retry-2
@@ -601,11 +764,11 @@ implementer_report="
     args=()
     for v in "TL_REPO=$GR" "TL_RUN=r4b" "TL_SLUG=$SLUG"; do [ "${v%%=*}" = "$miss" ] || args+=("$v"); done
     runb "$RBB" "${args[@]}"
-    fail_closed "[11b] $miss unset → rc≠0, stderr names $miss" "$miss"
+    fail_closed "[12] $miss unset → rc≠0, stderr names $miss" "$miss"
   done
   runb "$RBB" TL_REPO="$GR" TL_RUN=r4b TL_SLUG="$SLUG" CLAUDE_PLUGIN_ROOT="$PART"
   fail_closed "run-record.sh missing from the plugin root → fails closed" 'cannot source run-record.sh'
-else bad "[11b] infra: no tl:retry-begin block to run"; fi
+else bad "[12] infra: no tl:retry-begin block to run"; fi
 
 echo "[placement] each block sits in its step"
 place() {  # <marker> <after-ERE> <before-ERE>
@@ -621,15 +784,17 @@ place '<!-- tl:escalation-flags -->'  '^## 1\. '  '^## 2\. '
 place '<!-- tl:retry-candidates -->'  '^## 3\. '  '^## 4\. '
 place '<!-- tl:retry-begin -->'       '^## 3\. '  '^## 4\. '
 place '<!-- tl:escalation-decide -->' '^## 4\. '  '^<!-- tl:models-confirm -->$'
+place '<!-- tl:escalation-verify -->' '^## 7\. '  '^## 8\. '
 
-echo "[13] text check: Retry, flags, fall-back dispatch rule"
+echo "[14] text check: Retry, flags, fall-back dispatch rule"
 ( if [ -r "$SKILL" ] && [ -s "$SKILL" ]; then
     for s in 'Retry' '--escalate' '--no-auto-escalate' 'no model parameter' 'transient' \
-             'tl_escalation_fellback_check' 'tl_run_set_halt_blob' 'tl_run_set_escalation'; do
-      grep -qF -- "$s" "$SKILL" && ok "[13] SKILL.md contains '$s'" || bad "[13] SKILL.md lacks '$s'"
+             'tl_escalation_fellback_check' 'tl_run_set_halt_blob' 'tl_run_set_escalation' \
+             'credits_required' 'tl_escalation_verify'; do
+      grep -qF -- "$s" "$SKILL" && ok "[14] SKILL.md contains '$s'" || bad "[14] SKILL.md lacks '$s'"
     done
     J="$(tr '\n' ' ' <"$SKILL" | tr -s ' ')"
-    if [ -z "$J" ]; then bad "[13] infra: line-joined SKILL.md is empty"
+    if [ -z "$J" ]; then bad "[14] infra: line-joined SKILL.md is empty"
     else
       case "$J" in
         *'(every slot)'*) bad "SKILL.md still says CLAUDE_CODE_SUBAGENT_MODEL applies to every slot" ;;
@@ -640,17 +805,34 @@ echo "[13] text check: Retry, flags, fall-back dispatch rule"
         *) bad "SKILL.md lacks 'every worker dispatched without a model parameter'" ;;
       esac
     fi
-  else bad "[13] infra: $SKILL missing/unreadable/empty (L-001)"; fi
+  else bad "[14] infra: $SKILL missing/unreadable/empty (L-001)"; fi
 ) || true
 
-echo "[14] tests/live/escalation-probe.sh: static checks + exit classification against a stub claude"
+echo "[14] post-worker rule order in step 7: transient → dispatch error → tl_escalation_verify"
+( if [ -r "$SKILL" ] && [ -s "$SKILL" ]; then
+    s7="$(grep -n -m1 '^## 7\. ' "$SKILL" | cut -d: -f1)"
+    s8="$(grep -n -m1 '^## 8\. ' "$SKILL" | cut -d: -f1)"
+    at() { awk -v a="$s7" -v z="$s8" -v p="$1" 'NR > a && NR < z && index($0, p) { print NR; exit }' "$SKILL"; }
+    t="$(at '**Transient error**')"; d="$(at '**Dispatch error.**')"; v="$(at '**Otherwise**, run `tl_escalation_verify`')"
+    if [ -n "$s7" ] && [ -n "$s8" ] && [ -n "$t" ] && [ -n "$d" ] && [ -n "$v" ] && [ "$t" -lt "$d" ] && [ "$d" -lt "$v" ]; then
+      ok "[14] transient ($t) → dispatch error ($d) → tl_escalation_verify ($v), all in step 7"
+    else bad "[14] rule order in step 7: transient='$t' dispatch='$d' verify='$v' (step 7 '$s7'..'$s8')"; fi
+    J="$(sed -n "${s7:-1},${s8:-1}p" "$SKILL" | tr '\n' ' ' | tr -s ' ')"
+    for x in 'credits_required' 'output is kept' 'never verified' 'no model parameter'; do
+      case "$J" in *"$x"*) ok "[14] step 7 says '$x'" ;; *) bad "[14] step 7 lacks '$x'" ;; esac
+    done
+  else bad "[14] infra: $SKILL missing/unreadable/empty (L-001)"; fi
+) || true
+
+echo "[15] tests/live/escalation-probe.sh: static checks + classification against a stub claude"
 ( if [ -f "$PROBE" ] && [ -r "$PROBE" ] && [ -s "$PROBE" ]; then
-    [ -x "$PROBE" ] && ok "[14] the probe is executable" || bad "[14] the probe is not executable"
-    bash -n "$PROBE" 2>"$ROOT/p.err" && ok "[14] the probe parses (bash -n)" || bad "[14] bash -n: $(cat "$ROOT/p.err")"
-    for s in 'stream-json' 'claude-nonexistent-0' 'tl_escalation_model' 'PROBE_BLOCKED' 'mktemp -d' 'trap'; do
+    [ -x "$PROBE" ] && ok "[15] the probe is executable" || bad "[15] the probe is not executable"
+    bash -n "$PROBE" 2>"$ROOT/p.err" && ok "[15] the probe parses (bash -n)" || bad "[15] bash -n: $(cat "$ROOT/p.err")"
+    for s in 'stream-json' 'claude-nonexistent-0' 'tl_escalation_model' 'tl_escalation_verify' \
+             'tl_worker_actual_model' 'CLAUDE_CODE_SESSION_ID' 'session_id' 'PROBE_BLOCKED' 'mktemp -d' 'trap'; do
       grep -qF -- "$s" "$PROBE" && ok "the probe names '$s'" || bad "the probe lacks '$s'"
     done
-  else bad "[14] infra: $PROBE missing/unreadable/empty"; exit 0; fi
+  else bad "[15] infra: $PROBE missing/unreadable/empty"; exit 0; fi
   if [ -r "$GATE" ]; then
     c="$(grep -c 'escalation-probe' "$GATE")"; grc=$?
     if [ "$grc" -ge 2 ] || [ -z "$c" ]; then bad "infra: grep rc=$grc on the aggregator"
@@ -658,118 +840,134 @@ echo "[14] tests/live/escalation-probe.sh: static checks + exit classification a
     else bad "tests/implement-gate.test.sh references the live probe"; fi
   else bad "infra: $GATE unreadable"; fi
   SB="$ROOT/stubbin"; mkdir -p "$SB"
-  # The stub stands in for the harness: it reads the probe's prompt (last arg),
-  # emits stream-json, and logs its argv. Every mode also emits a truncated
-  # line, a subagent message (parent_tool_use_id set) and a parent reply that
-  # carry the nonce: neither may count — only the Agent tool_result does.
+  # The stub stands in for the harness (shapes observed on Claude Code 2.1.289,
+  # 2026-10-05): it reads the probe's prompt (last arg), emits stream-json with
+  # a system/init session_id, and writes the worker transcript the real
+  # harness writes at $CLAUDE_CONFIG_DIR/projects/<p>/<sid>/subagents/agent-<id>.jsonl.
+  # P1 = fable, P2 = claude-nonexistent-0, P3 = opus.
   cat >"$SB/claude" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$STUB_LOG"
 prompt="${!#}"
 model="$(printf '%s' "$prompt" | sed -n 's/.*model "\([^"]*\)".*/\1/p' | head -n 1)"
 nonce="$(printf '%s' "$prompt" | grep -oE 'Reply with exactly [0-9a-f]+' | head -n 1 | sed 's/.* //')"
+case "$model" in fable) p=p1 ;; claude-nonexistent-0) p=p2 ;; opus) p=p3 ;; *) p=px ;; esac
+sid="s-$p-0000"; aid="ag$p"
 ev() { printf '%s\n' "$1"; }
-ev '{"type":"system","subtype":"init","model":"claude-opus-5-5"}'
+cfg="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"; tdir="$cfg/projects/-stub-proj/$sid/subagents"
+worker() {  # <model…> — the worker transcript
+  local m; mkdir -p "$tdir"
+  { printf '%s\n' '{"type":"user","message":{"role":"user","content":"Reply with exactly '"$nonce"'"}}'
+    for m in "$@"; do printf '{"type":"assistant","message":{"model":"%s","content":[{"type":"text","text":"%s"}]}}\n' "$m" "$nonce"; done
+  } >"$tdir/agent-$aid.jsonl"
+}
+if [ "$STUB_MODE" = noinit ]; then ev '{"type":"system","subtype":"init","model":"claude-opus-5-5"}'
+else ev '{"type":"system","subtype":"init","model":"claude-opus-5-5","session_id":"'"$sid"'"}'; fi
 ev '{"type":"assist'
 if [ "$STUB_MODE" = none ]; then
   ev '{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"text","text":"'"$nonce"'"}]}}'
   ev '{"type":"result","subtype":"success","is_error":false}'; exit 0
 fi
-# Real shapes observed on Claude Code 2.1.289 (2026-10-05): a session that is
-# rate-limited before it dispatches, and the async Agent tool (the tool_result
-# is only an ack; the outcome is the task_notification; the reply is the
-# subagent's SubagentHandback). The ack's prompt, task_started's prompt and
-# the parent's own text all echo the nonce: none of them may count.
-case "$STUB_MODE" in
-  ratelimited)
-    ev '{"type":"assistant","parent_tool_use_id":null,"error":"rate_limit","message":{"model":"<synthetic>","content":[{"type":"text","text":"Session limit reached, resets 7pm"}]}}'
-    ev '{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"result":"Session limit reached, resets 7pm"}'
-    exit 0 ;;
-  async*)
-    ev '{"type":"assistant","parent_tool_use_id":null,"message":{"model":"claude-opus-5-5","content":[{"type":"tool_use","id":"toolu_A","name":"Agent","input":{"subagent_type":"general-purpose","description":"probe","model":"'"$model"'","prompt":"Reply with exactly '"$nonce"'"}}]}}'
-    if [ "$model" = claude-nonexistent-0 ]; then
-      ev '{"type":"user","parent_tool_use_id":null,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_A","is_error":true,"content":"<tool_use_error>InputValidationError: expected one of sonnet|opus|haiku|fable</tool_use_error>"}]},"tool_use_result":"InputValidationError"}'
-      ev '{"type":"result","subtype":"success","is_error":false}'; exit 0
-    fi
-    ev '{"type":"system","subtype":"task_started","task_id":"a1","tool_use_id":"toolu_A","prompt":"Reply with exactly '"$nonce"'"}'
-    ev '{"type":"user","parent_tool_use_id":null,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_A","content":[{"type":"text","text":"Async agent launched successfully.\nagentId: a1"}]}]},"tool_use_result":{"isAsync":true,"status":"async_launched","agentId":"a1","resolvedModel":"claude-fable-5-1","prompt":"Reply with exactly '"$nonce"'"}}'
-    ev '{"type":"assistant","parent_tool_use_id":null,"message":{"model":"claude-opus-5-5","content":[{"type":"text","text":"done '"$nonce"'"}]}}'
-    sm=claude-fable-5-1; [ "$STUB_MODE" = asyncsub ] && sm=claude-opus-5-5
-    case "$STUB_MODE" in
-      async|asyncsub)
-        ev '{"type":"assistant","parent_tool_use_id":"toolu_A","message":{"model":"'"$sm"'","content":[{"type":"tool_use","id":"toolu_H","name":"SubagentHandback","input":{"message":"'"$nonce"'"}}]}}'
-        ev '{"type":"system","subtype":"task_notification","task_id":"a1","tool_use_id":"toolu_A","status":"completed","summary":"This agent report was delivered to you as a message (its SubagentHandback call)."}' ;;
-      asyncnoreply)
-        ev '{"type":"assistant","parent_tool_use_id":"toolu_A","message":{"model":"claude-fable-5-1","content":[{"type":"tool_use","id":"toolu_H","name":"SubagentHandback","input":{"message":"something else"}}]}}'
-        ev '{"type":"system","subtype":"task_notification","task_id":"a1","tool_use_id":"toolu_A","status":"completed","summary":"delivered"}' ;;
-      asyncfail)
-        ev '{"type":"assistant","parent_tool_use_id":"toolu_A","error":"rate_limit","message":{"model":"<synthetic>","content":[{"type":"text","text":"Fable 5.1 requires usage credits."}]}}'
-        ev '{"type":"system","subtype":"task_notification","task_id":"a1","tool_use_id":"toolu_A","status":"failed","summary":"Agent terminated early due to an API error: Fable 5.1 requires usage credits. (error type rate_limit, HTTP 429, model sent to the API: claude-fable-5-1)"}' ;;
-    esac
-    ev '{"type":"result","subtype":"success","is_error":false}'
-    exit 0 ;;
+if [ "$STUB_MODE" = ratelimited ]; then
+  ev '{"type":"assistant","parent_tool_use_id":null,"error":"rate_limit","message":{"model":"<synthetic>","content":[{"type":"text","text":"You have hit your session limit, resets 7pm"}]}}'
+  ev '{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"result":"You have hit your session limit, resets 7pm"}'
+  exit 0
+fi
+ev '{"type":"assistant","parent_tool_use_id":null,"message":{"model":"claude-opus-5-5","content":[{"type":"tool_use","id":"toolu_A","name":"Agent","input":{"subagent_type":"general-purpose","description":"probe","model":"'"$model"'","prompt":"Reply with exactly '"$nonce"'"}}]}}'
+if [ "$p" = p2 ] && [ "$STUB_MODE" != p2answered ]; then
+  ev '{"type":"user","parent_tool_use_id":null,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_A","is_error":true,"content":"<tool_use_error>InputValidationError: expected one of sonnet|opus|haiku|fable</tool_use_error>"}]},"tool_use_result":"InputValidationError"}'
+  ev '{"type":"result","subtype":"success","is_error":false}'; exit 0
+fi
+resolved="claude-opus-5-5"; [ "$p" = p1 ] && resolved=claude-fable-5-1
+ev '{"type":"system","subtype":"task_started","task_id":"'"$aid"'","tool_use_id":"toolu_A","prompt":"Reply with exactly '"$nonce"'"}'
+ev '{"type":"user","parent_tool_use_id":null,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_A","content":[{"type":"text","text":"Async agent launched successfully.\nagentId: '"$aid"'"}]}]},"tool_use_result":{"isAsync":true,"status":"async_launched","agentId":"'"$aid"'","resolvedModel":"'"$resolved"'","prompt":"Reply with exactly '"$nonce"'"}}'
+refuse() {  # <text> [errorCode]
+  [ -z "${2:-}" ] || ev '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","errorCode":"'"$2"'"}}'
+  ev '{"type":"assistant","parent_tool_use_id":"toolu_A","error":"rate_limit","message":{"model":"<synthetic>","content":[{"type":"text","text":"'"$1"'"}]}}'
+  mkdir -p "$tdir" && printf '%s\n' '{"type":"assistant","message":{"model":"<synthetic>","content":[]}}' >"$tdir/agent-$aid.jsonl"
+  ev '{"type":"system","subtype":"task_notification","task_id":"'"$aid"'","tool_use_id":"toolu_A","status":"failed","summary":"Agent terminated early due to an API error: '"$1"' (error type rate_limit, HTTP 429, model sent to the API: '"$resolved"')"}'
+  ev '{"type":"result","subtype":"success","is_error":false}'; exit 0
+}
+answer() {  # <stream-model> <transcript models…|-> — a completed worker
+  local sm="$1"; shift
+  [ "$1" = - ] || worker "$@"
+  ev '{"type":"assistant","parent_tool_use_id":"toolu_A","message":{"model":"'"$sm"'","content":[{"type":"tool_use","id":"toolu_H","name":"SubagentHandback","input":{"message":"'"$nonce"'"}}]}}'
+  ev '{"type":"system","subtype":"task_notification","task_id":"'"$aid"'","tool_use_id":"toolu_A","status":"completed","summary":"delivered (its SubagentHandback call)"}'
+  ev '{"type":"assistant","parent_tool_use_id":null,"message":{"model":"claude-opus-5-5","content":[{"type":"text","text":"done"}]}}'
+  ev '{"type":"result","subtype":"success","is_error":false}'; exit 0
+}
+case "$STUB_MODE:$p" in
+  refused:p1|notranscript:p1|lie:p1|p2answered:p1|noinit:p1)
+    refuse 'Fable 5.1 requires usage credits. Switch to another model.' credits_required ;;
+  p1ratelimit:p1) refuse 'You have hit your session limit, resets 7pm' ;;
+  pass:p1)        answer claude-fable-5-1 claude-fable-5-1 claude-fable-5-1 ;;
+  subst:p1)       answer claude-opus-5-5 claude-opus-5-5 ;;
+  p1notranscript:p1) answer claude-fable-5-1 - ;;
+  lie:p3)         answer claude-opus-5-5 claude-fable-5-1 ;;
+  notranscript:p3) answer claude-opus-5-5 - ;;
+  p3wrong:p3)     answer claude-sonnet-5-5 claude-sonnet-5-5 ;;
+  p3wrong:p1)     refuse 'Fable 5.1 requires usage credits.' credits_required ;;
+  p1notranscript:p3|subst:p3|pass:p3|*:p3|p2answered:p2) answer claude-opus-5-5 claude-opus-5-5 ;;
 esac
-dm=",\"model\":\"$model\""; [ "$STUB_MODE" = nomodel ] && dm=""
-ev '{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Agent","input":{"subagent_type":"general-purpose","description":"probe"'"$dm"',"prompt":"Reply with exactly '"$nonce"'"}}]}}'
-ev '{"type":"assistant","parent_tool_use_id":"toolu_1","message":{"content":[{"type":"text","text":"'"$nonce"'"}]}}'
-p2=0; [ "$model" = claude-nonexistent-0 ] && p2=1
-case "$STUB_MODE:$p2" in
-  pass:0|subst:*|nomodel:*) res='{"type":"tool_result","tool_use_id":"toolu_1","content":[{"type":"text","text":"'"$nonce"'"}]}' ;;
-  *) res='{"type":"tool_result","tool_use_id":"toolu_1","is_error":true,"content":"model unavailable"}' ;;
-esac
-ev '{"type":"user","parent_tool_use_id":null,"message":{"role":"user","content":['"$res"']}}'
-ev '{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"text","text":"done '"$nonce"'"}]}}'
 ev '{"type":"result","subtype":"success","is_error":false}'
 STUB
   chmod +x "$SB/claude"
-  probe() {  # <mode> — run the probe against the stub; sets RC OUT
-    : >"$ROOT/stub.log"
+  probe() {  # <mode> — run the probe against the stub; sets RC OUT (stdout) ERR
+    : >"$ROOT/stub.log"; rm -rf "$ROOT/pcfg"; mkdir -p "$ROOT/pcfg"
     env -i HOME="$H" PATH="$SB:$PATH" THROUGHLINE_PROBE_CLAUDE="$SB/claude" STUB_MODE="$1" \
-      STUB_LOG="$ROOT/stub.log" bash "$PROBE" >"$ROOT/out" 2>"$ROOT/err"
-    RC=$?; OUT="$(cat "$ROOT/out" "$ROOT/err")"
+      CLAUDE_CONFIG_DIR="$ROOT/pcfg" STUB_LOG="$ROOT/stub.log" bash "$PROBE" >"$ROOT/out" 2>"$ROOT/err"
+    RC=$?; OUT="$(cat "$ROOT/out")"; ERR="$(cat "$ROOT/err")"
   }
-  probe pass
-  [ "$RC" -eq 0 ] && ok "[14] P1 nonce + P2 error → exit 0" || bad "[14] pass: rc=$RC out='$OUT'"
-  [ "$(grep -c . "$ROOT/stub.log")" = 2 ] && ok "two headless sessions" || bad "stub calls: $(cat "$ROOT/stub.log")"
+  probe refused
+  if [ "$RC" -eq 0 ] && [ "$OUT" = "P1 requested=fable actual=refused verdict=fell-back
+P2 requested=claude-nonexistent-0 actual=refused verdict=fell-back
+P3 requested=opus actual=claude-opus-5-5 verdict=escalated" ]; then
+    ok "[15] this account's shape: P1 credits refusal → fell-back, P2 refused, P3 positive control escalated → exit 0"
+  else bad "[15] refused: rc=$RC out='$OUT' err='$ERR'"; fi
+  [ "$(grep -c . "$ROOT/stub.log")" = 3 ] && ok "three headless sessions" || bad "stub calls: $(cat "$ROOT/stub.log")"
   for a in '-p' '--model opus' '--output-format stream-json' '--verbose'; do
     grep -qF -- "$a" "$ROOT/stub.log" && ok "the probe passes '$a'" || bad "the probe does not pass '$a': $(cat "$ROOT/stub.log")"
   done
   grep -qF 'model "fable"' "$ROOT/stub.log" && grep -qF 'model "claude-nonexistent-0"' "$ROOT/stub.log" \
-    && ok "P1 asks for tl_escalation_model, P2 for claude-nonexistent-0" || bad "probe models: $(cat "$ROOT/stub.log")"
-  probe p1fail
-  [ "$RC" -eq 3 ] && printf '%s' "$OUT" | grep -q '^PROBE_BLOCKED: ' \
-    && ok "[14] P1 tool_result is_error (parent echoes the nonce) → exit 3 PROBE_BLOCKED" || bad "[14] p1fail: rc=$RC out='$OUT'"
+    && grep -qF 'model "opus"' "$ROOT/stub.log" \
+    && ok "P1 asks for tl_escalation_model, P2 for claude-nonexistent-0, P3 for opus" || bad "probe models: $(cat "$ROOT/stub.log")"
+  probe pass
+  [ "$RC" -eq 0 ] && printf '%s\n' "$OUT" | grep -qxF 'P1 requested=fable actual=claude-fable-5-1 verdict=escalated' \
+    && ok "[15] P1 answered on the requested family → escalated, exit 0" || bad "[15] pass: rc=$RC out='$OUT' err='$ERR'"
   probe subst
-  [ "$RC" -eq 3 ] && printf '%s' "$OUT" | grep -q '^PROBE_BLOCKED: ' \
-    && ok "[14] P2 returned the nonce (silent substitution) → exit 3 PROBE_BLOCKED" || bad "[14] subst: rc=$RC out='$OUT'"
-  probe none
-  [ "$RC" -eq 1 ] && ok "[14] no tool_result (malformed run) → exit 1" || bad "[14] none: rc=$RC out='$OUT'"
-  probe nomodel
-  [ "$RC" -eq 1 ] && ok "no Agent dispatch on the stated model → exit 1" || bad "nomodel: rc=$RC out='$OUT'"
-  probe async
-  [ "$RC" -eq 0 ] && ok "[14] async shape: completed task_notification + SubagentHandback nonce on the requested family → exit 0" \
-    || bad "[14] async: rc=$RC out='$OUT'"
-  probe asyncfail
-  [ "$RC" -eq 3 ] && printf '%s' "$OUT" | grep -q '^PROBE_BLOCKED: P1: .*requires usage credits' \
-    && ok "[14] async shape: task_notification failed (usage credits; the parent echoes the nonce) → exit 3" \
-    || bad "[14] asyncfail: rc=$RC out='$OUT'"
-  probe asyncsub
-  [ "$RC" -eq 3 ] && printf '%s' "$OUT" | grep -q '^PROBE_BLOCKED: .*ran as claude-opus-5-5.*substituted' \
-    && ok "[14] async shape: the subagent answered on another family → exit 3 (silent substitution)" \
-    || bad "[14] asyncsub: rc=$RC out='$OUT'"
-  probe asyncnoreply
-  [ "$RC" -eq 3 ] && printf '%s' "$OUT" | grep -q '^PROBE_BLOCKED: P1: ' \
-    && ok "async shape: completed without the nonce in the reply (ack / task_started / parent echoes ignored) → exit 3" \
-    || bad "asyncnoreply: rc=$RC out='$OUT'"
-  probe asyncnonote
-  [ "$RC" -eq 1 ] && printf '%s' "$OUT" | grep -q 'no task_notification' \
-    && ok "async ack without a task_notification → exit 1, named" || bad "asyncnonote: rc=$RC out='$OUT'"
+  [ "$RC" -eq 0 ] && printf '%s\n' "$OUT" | grep -qxF 'P1 requested=fable actual=claude-opus-5-5 verdict=fell-back' \
+    && ok "[15] P1 silently substituted → the verifier says fell-back, as the transcript shows → exit 0" \
+    || bad "[15] subst: rc=$RC out='$OUT' err='$ERR'"
+  probe notranscript
+  [ "$RC" -eq 3 ] && printf '%s\n' "$OUT" | grep -q '^PROBE_BLOCKED: P3' \
+    && ok "[15] P3 has no worker transcript → exit 3 PROBE_BLOCKED" || bad "[15] notranscript: rc=$RC out='$OUT' err='$ERR'"
+  probe p1notranscript
+  [ "$RC" -eq 3 ] && printf '%s\n' "$OUT" | grep -q '^PROBE_BLOCKED: P1' \
+    && ok "[15] an answered P1 with no transcript → exit 3 PROBE_BLOCKED" || bad "[15] p1notranscript: rc=$RC out='$OUT' err='$ERR'"
+  probe p3wrong
+  [ "$RC" -eq 1 ] && printf '%s' "$ERR" | grep -q 'P3' \
+    && ok "[15] P3 (opus) answered by another family → classification disagrees → exit 1" || bad "p3wrong: rc=$RC out='$OUT' err='$ERR'"
+  probe lie
+  [ "$RC" -eq 1 ] && printf '%s' "$ERR" | grep -q 'disagree' \
+    && ok "[15] the stream and the transcript disagree on the model → exit 1" || bad "lie: rc=$RC out='$OUT' err='$ERR'"
+  probe p2answered
+  [ "$RC" -eq 1 ] && printf '%s' "$ERR" | grep -q 'P2' \
+    && ok "[15] P2 (nonexistent model) not refused → exit 1" || bad "p2answered: rc=$RC out='$OUT' err='$ERR'"
+  probe p1ratelimit
+  [ "$RC" -eq 1 ] && printf '%s' "$ERR" | grep -q 'session-wide limit' \
+    && ok "[15] P1 refused by a session-wide limit (not credits) → exit 1, cause named" || bad "p1ratelimit: rc=$RC out='$OUT' err='$ERR'"
   probe ratelimited
-  [ "$RC" -eq 1 ] && printf '%s' "$OUT" | grep -q 'rate/usage limit (transient)' \
-    && ok "a session rate-limited before it dispatches → exit 1 naming a rate/usage limit (FR-41 transient)" \
-    || bad "ratelimited: rc=$RC out='$OUT'"
+  [ "$RC" -eq 1 ] && printf '%s' "$ERR" | grep -q 'session-wide limit' \
+    && ok "[15] a session rate-limited before it dispatches → exit 1, cause named" || bad "ratelimited: rc=$RC out='$OUT' err='$ERR'"
+  probe none
+  [ "$RC" -eq 1 ] && ok "[15] no Agent dispatch (malformed stream) → exit 1" || bad "[15] none: rc=$RC out='$OUT' err='$ERR'"
+  probe noinit
+  [ "$RC" -eq 1 ] && printf '%s' "$ERR" | grep -q 'session_id' \
+    && ok "[15] no system/init session_id (malformed stream) → exit 1, named" || bad "noinit: rc=$RC out='$OUT' err='$ERR'"
   env -i HOME="$H" PATH="/usr/bin:/bin" THROUGHLINE_PROBE_CLAUDE="$ROOT/no-such-claude" bash "$PROBE" >/dev/null 2>&1; rc=$?
   [ "$rc" -eq 1 ] && ok "no claude binary → exit 1" || bad "missing claude: rc=$rc"
+  [ -z "$(ls -A "$ROOT/pcfg/projects" 2>/dev/null | grep -v -- '-stub-proj')" ] \
+    && ok "the probe writes nothing of its own under the config dir" || bad "probe left: $(ls -A "$ROOT/pcfg/projects")"
 ) || true
 
 echo
