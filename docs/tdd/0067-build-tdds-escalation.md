@@ -1,6 +1,6 @@
 # TDD 0067: `/build-tdds` retry and escalation to the most capable model (FR-88)
 
-Status: draft
+Status: implemented
 PRD refs: FR-88, FR-87, FR-15, FR-39, NFR-3, NFR-4
 PRD-rev: f6ef178
 ADR constraints: 0004, 0005, 0006, 0010, 0011, 0013, 0015, 0016
