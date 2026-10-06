@@ -227,6 +227,7 @@ throughline/
 │   ├── token-spend-reduction.test.sh      # eval: tdd-lint + plan classifier
 │   ├── interactive-draft-persistence.test.sh
 │   ├── bounded-tdd-scope.test.sh
+│   ├── format-and-lint-hook.test.sh       # eval: the hook vs stub tools in temp repos
 │   └── learnings-inform-tdd-author.test.sh
 └── hooks/{hooks.json, format-and-lint.sh, throughline-session-reconcile.sh}
 ```
@@ -521,6 +522,32 @@ a gate solely because they are absent:
 For the boundary to bind reliably, add a line to your CLAUDE.md, e.g.:
 *"When `/prd-author` or `/tdd-author` is invoked, that is the design step —
 do not also invoke `superpowers:brainstorming` or `writing-plans` for it."*
+
+## The format-and-lint hook
+
+`hooks/format-and-lint.sh` runs after every `Edit`/`Write` (FR-21). It honors
+the **edited repo's** configuration, discovered from the edited file's
+directory upward to its git root, never from the session's current directory:
+
+- **Lint report-only.** ruff, eslint and golangci-lint run only when the repo
+  configures them; clippy runs for any Cargo project with `cargo` on PATH.
+  clippy and golangci-lint are debounced (one run per project per 30s, unless
+  the last run failed). No linter is run with `--fix`. On failure the
+  diagnostics go to stderr and the hook exits 2, so the agent sees the rule
+  and line and fixes the root cause. JS/TS tools never run for a file outside
+  a git work tree.
+- **Format only on opt-in.** Python needs `[tool.ruff.format]` (or `[format]`
+  in `ruff.toml`); JS/TS needs a Prettier config plus a local
+  `node_modules/.bin/prettier`. Rust/Go format by convention, but only a file
+  in git whose committed copy is already formatter-clean (or that is new), so
+  a surgical edit never becomes a whole-file reformat.
+- **No tool or no config → silent no-op.** Only a missing `jq` *and*
+  `python3` is loud, because the hook then cannot read its input.
+
+**Upgrading to 3.50.0 (Python repos):** repos bootstrapped before 3.50.0 got a
+lint-only ruff config, and a lint config is no longer a format opt-in. To keep
+automatic formatting, add an (empty is fine) `[tool.ruff.format]` table to
+`pyproject.toml`, or `[format]` to `ruff.toml` / `.ruff.toml`.
 
 ## Requirements & dependencies
 

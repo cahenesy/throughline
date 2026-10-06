@@ -1,21 +1,23 @@
 #!/usr/bin/env bash
-# format-and-lint.sh — Claude Code PostToolUse hook
+# format-and-lint.sh — Claude Code PostToolUse hook (FR-21, TDD 0068)
 #
-# Formats then lints the file Claude just edited, but ONLY if the relevant tool
-# is available. On a repo with no linter configured it exits 0 silently, so it
-# never forces tooling onto a brownfield project. On a lint failure it exits 2,
-# which feeds the error back to Claude to fix at the root cause.
+# Formats then lints the file Claude just edited, honoring the EDITED REPO's
+# configuration (issue #180):
+#   1. Discovery starts from the edited file's directory and walks up to the
+#      file's git toplevel (or `/` outside a repo). It never looks at $PWD.
+#   2. Lint runs only when a linter is configured, and only REPORTS (no --fix).
+#      On failure the diagnostics go to stderr and the hook exits 2, so the
+#      agent sees the rule and line and fixes the root cause.
+#   3. Format runs only on opt-in: an explicit formatter config for Python
+#      ([tool.ruff.format] / [format]) and JS/TS (a Prettier config). Rust and
+#      Go use the language convention, but only for a file in git whose HEAD
+#      copy is already formatter-clean (or that is new to git). Rust formats
+#      through stdin so rustfmt never touches child modules.
+#   4. A missing tool or config is a silent exit 0. A missing jq AND python3
+#      stays a loud exit 2: the hook then cannot read its input at all.
 #
-# Hook input arrives as JSON on stdin (tool_input.file_path). We parse it with
-# jq, falling back to python3. If NEITHER is available we fail loudly (exit 2)
-# rather than silently skipping every edit — a quality hook that quietly stops
-# running is worse than one that complains.
-#
-# The whole-project linters (clippy, golangci-lint) are expensive, so they are
-# DEBOUNCED: at most one run per THROUGHLINE_LINT_DEBOUNCE seconds (default 30)
-# per repo. Per-file linters (eslint, ruff) are cheap and always run. The build
-# runner's ci-checks.sh + review gates are the real backstop, so a debounced skip
-# never lets a defect through unchecked.
+# The whole-project linters (clippy, golangci-lint) are DEBOUNCED: at most one
+# run per THROUGHLINE_LINT_DEBOUNCE seconds (default 30) per project root.
 set -uo pipefail
 
 input="$(cat)"
@@ -33,51 +35,219 @@ fi
 
 [ -z "${file}" ] && exit 0
 [ ! -f "${file}" ] && exit 0
-
+case "${file}" in /*) ;; *) file="${PWD}/${file}" ;; esac
+# Physical directory, so it compares cleanly with git's (physical) toplevel.
+fdir="$(cd -P "$(dirname "${file}")" 2>/dev/null && pwd -P)" || exit 0
 ext="${file##*.}"
+
 have() { command -v "$1" >/dev/null 2>&1; }
 fail() { echo "format-and-lint: $1" >&2; exit 2; }
+fail_tool() { fail "$1 reported errors in $2 (diagnostics above). Fix the root cause; do not suppress."; }
 
-# debounce <key>: returns 0 (run) at most once per window per repo, else 1 (skip).
-debounce() {
-  local key="$1" window="${THROUGHLINE_LINT_DEBOUNCE:-30}" now last
-  local id marker
-  id="$(printf '%s' "$PWD" | cksum | cut -d' ' -f1)"
-  marker="${TMPDIR:-/tmp}/throughline-lint-${id}-${key}.ts"
-  now="$(date +%s)"
-  last="$(cat "$marker" 2>/dev/null || echo 0)"
-  [ $((now - last)) -lt "$window" ] && return 1
-  echo "$now" > "$marker"; return 0
+# _tl_stop_dir <dir>: the dir's git toplevel, or `/` outside a repo.
+_tl_stop_dir() { git -C "$1" rev-parse --show-toplevel 2>/dev/null || echo /; }
+
+# _tl_find_up <dir> <test-fn>: print the first dir from <dir> up to the stop
+# dir (inclusive) where `<test-fn> <d>` returns 0; rc 1 + no output if none.
+_tl_find_up() {
+  local d="$1" fn="$2" stop
+  stop="$(_tl_stop_dir "$d")"
+  while :; do
+    if "$fn" "$d"; then printf '%s\n' "$d"; return 0; fi
+    if [ "$d" = "$stop" ] || [ "$d" = / ]; then return 1; fi
+    d="$(dirname "$d")"
+  done
 }
 
+# _tl_json_has_key <package.json> <key>: rc 0 iff <key> is a TOP-LEVEL key.
+# A key that only appears inside devDependencies does not count.
+_tl_json_has_key() {
+  local f="$1" k="$2"
+  [ -f "$f" ] || return 1
+  if have jq; then
+    jq -e --arg k "$k" 'type == "object" and has($k)' "$f" >/dev/null 2>&1
+    return
+  fi
+  if have python3; then
+    python3 -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+sys.exit(0 if isinstance(d,dict) and sys.argv[2] in d else 1)' "$f" "$k" 2>/dev/null
+    return
+  fi
+  return 1
+}
+
+# _tl_local_bin <dir> <tool>: print the first node_modules/.bin/<tool> found
+# walking up from <dir>; rc 1 if none.
+_TL_BIN=""
+_tl_has_bin() { [ -x "$1/node_modules/.bin/${_TL_BIN}" ]; }
+_tl_local_bin() {
+  local d
+  _TL_BIN="$2"
+  d="$(_tl_find_up "$1" _tl_has_bin)" || return 1
+  printf '%s\n' "$d/node_modules/.bin/$2"
+}
+
+# _tl_git_rel <file>: the file's path relative to its git toplevel.
+_tl_git_rel() {
+  local d prefix
+  d="$(dirname "$1")"
+  prefix="$(git -C "$d" rev-parse --show-prefix 2>/dev/null)" || return 1
+  printf '%s%s\n' "$prefix" "${1##*/}"
+}
+
+# _tl_git_state <file>: outside | new | tracked (HEAD:<rel> exists).
+_tl_git_state() {
+  local d rel
+  d="$(dirname "$1")"
+  if [ "$(git -C "$d" rev-parse --is-inside-work-tree 2>/dev/null)" != true ]; then
+    echo outside; return 0
+  fi
+  rel="$(_tl_git_rel "$1")" || { echo outside; return 0; }
+  if git -C "$d" cat-file -e "HEAD:${rel}" 2>/dev/null; then echo tracked; else echo new; fi
+}
+
+# _tl_head_clean <file> <check-cmd...>: rc 0 iff the file is tracked and
+# `git show HEAD:<rel> | (cd <file dir> && <check-cmd>)` exits 0 with EMPTY
+# stdout. Any error counts as not-clean.
+_tl_head_clean() {
+  local f="$1" d rel out
+  shift
+  [ "$(_tl_git_state "$f")" = tracked ] || return 1
+  d="$(dirname "$f")"
+  rel="$(_tl_git_rel "$f")" || return 1
+  out="$(git -C "$d" show "HEAD:${rel}" 2>/dev/null | (cd "$d" && "$@") 2>/dev/null)" || return 1
+  [ -z "$out" ]
+}
+
+# debounce <root> <key>: returns 0 (run) at most once per window per project
+# root, else 1 (skip). Markers live in a per-user 0700 directory; a directory
+# that is a symlink or not ours, or a marker that is a symlink, is never
+# trusted or written: the linter just runs. Marker content is used only when
+# it is all digits (bash arithmetic would otherwise evaluate `x[$(cmd)]`).
+# On run, _TL_MARKER names the marker written, so a failing run can drop it.
+_TL_MARKER=""
+debounce() {
+  local root="$1" key="$2" window="${THROUGHLINE_LINT_DEBOUNCE:-30}" now last h dir marker
+  _TL_MARKER=""
+  case "$window" in ''|*[!0-9]*) window=30 ;; esac
+  h="$(printf '%s' "$root" | cksum | cut -d' ' -f1)"
+  dir="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/throughline-lint-$(id -u)"
+  [ -L "$dir" ] && return 0
+  [ -d "$dir" ] || (umask 077; mkdir -p "$dir") 2>/dev/null || return 0
+  { [ -L "$dir" ] || [ ! -d "$dir" ] || [ ! -O "$dir" ]; } && return 0
+  marker="$dir/${h}-${key}.ts"
+  [ -L "$marker" ] && return 0
+  now="$(date +%s)"
+  last="$(cat "$marker" 2>/dev/null)"
+  case "$last" in ''|*[!0-9]*) last=0 ;; esac
+  [ $((now - last)) -lt "$window" ] && return 1
+  [ -L "$marker" ] && return 0
+  printf '%s\n' "$now" > "$marker" 2>/dev/null && _TL_MARKER="$marker"
+  return 0
+}
+# _tl_unmark: forget this run's debounce marker, so a failing project-wide lint
+# is re-run (and re-reported) on the next edit instead of passing silently.
+_tl_unmark() { [ -n "$_TL_MARKER" ] && [ ! -L "$_TL_MARKER" ] && rm -f "$_TL_MARKER"; _TL_MARKER=""; }
+
+# --- per-language config tests (each takes a directory) ---------------------
+# _tl_py_cfg_file <dir>: print the ruff config that governs <dir>, in ruff's
+# precedence (ruff.toml > .ruff.toml > pyproject.toml with a [tool.ruff] table).
+# `[].]` is the POSIX-ERE spelling of "`]` or `.`" (a backslash is literal inside
+# a bracket expression), so `[tool.ruffle]` does not match.
+_tl_py_cfg_file() {
+  local d="$1"
+  if   [ -f "$d/ruff.toml" ];  then printf '%s\n' "$d/ruff.toml"
+  elif [ -f "$d/.ruff.toml" ]; then printf '%s\n' "$d/.ruff.toml"
+  elif [ -f "$d/pyproject.toml" ] && grep -Eq '^\[tool\.ruff[].]' "$d/pyproject.toml"; then
+    printf '%s\n' "$d/pyproject.toml"
+  else return 1; fi
+}
+_tl_has_py_cfg() { _tl_py_cfg_file "$1" >/dev/null; }
+_tl_any() { local f; for f in "$@"; do [ -e "$f" ] && return 0; done; return 1; }
+_tl_has_prettier_cfg() {
+  _tl_any "$1/.prettierrc" "$1"/.prettierrc.* "$1"/prettier.config.* \
+    || _tl_json_has_key "$1/package.json" prettier
+}
+_tl_has_eslint_cfg() {
+  _tl_any "$1"/eslint.config.* "$1"/.eslintrc* \
+    || _tl_json_has_key "$1/package.json" eslintConfig
+}
+_tl_has_cargo()    { [ -f "$1/Cargo.toml" ]; }
+_tl_has_gomod()    { [ -f "$1/go.mod" ]; }
+_tl_has_golangci() { _tl_any "$1/.golangci.yml" "$1/.golangci.yaml" "$1/.golangci.toml" "$1/.golangci.json"; }
+
 case "${ext}" in
-  js|jsx|ts|tsx|mjs|cjs)
-    have npx || exit 0
-    npx --no-install prettier --write "${file}" >/dev/null 2>&1 || true
-    if ls .eslintrc* eslint.config.* >/dev/null 2>&1 \
-       || grep -q '"eslintConfig"' package.json 2>/dev/null; then
-      npx --no-install eslint --fix "${file}" 2>&1 \
-        || fail "eslint reported errors in ${file}. Fix the root cause; do not suppress."
-    fi
-    ;;
   py)
     have ruff || exit 0
-    ruff format "${file}" >/dev/null 2>&1 || true
-    ruff check --fix "${file}" 2>&1 \
-      || fail "ruff reported errors in ${file}. Fix the root cause; do not suppress."
+    cfgdir="$(_tl_find_up "$fdir" _tl_has_py_cfg)" || exit 0
+    cfg="$(_tl_py_cfg_file "$cfgdir")"
+    fmt=0
+    case "${cfg##*/}" in
+      pyproject.toml) grep -Eq '^\[tool\.ruff\.format\]' "$cfg" && fmt=1 ;;
+      *)              grep -Eq '^\[format\]' "$cfg" && fmt=1 ;;
+    esac
+    [ "$fmt" -eq 1 ] && { ruff format "${file}" >/dev/null 2>&1 || true; }
+    ruff check --no-fix --output-format concise "${file}" 1>&2 \
+      || fail_tool ruff "${file}"
+    ;;
+  js|jsx|ts|tsx|mjs|cjs)
+    # Outside a git work tree the config/bin walk would reach shared ancestors
+    # (e.g. a planted /tmp/node_modules/.bin/prettier), so JS tools never run.
+    [ "$(_tl_git_state "${file}")" = outside ] && exit 0
+    if pdir="$(_tl_find_up "$fdir" _tl_has_prettier_cfg)" \
+       && pbin="$(_tl_local_bin "$pdir" prettier)"; then
+      (cd "$pdir" && "$pbin" --write "${file}") >/dev/null 2>&1 || true
+    fi
+    if edir="$(_tl_find_up "$fdir" _tl_has_eslint_cfg)" \
+       && ebin="$(_tl_local_bin "$edir" eslint)"; then
+      (cd "$edir" && "$ebin" "${file}") 1>&2 || fail_tool eslint "${file}"
+    fi
     ;;
   rs)
-    have rustfmt && rustfmt "${file}" >/dev/null 2>&1 || true
-    if have cargo && [ -f Cargo.toml ] && debounce clippy; then
-      cargo clippy --quiet 2>&1 \
-        || fail "clippy reported errors. Fix the root cause; do not suppress."
+    # Outside a git work tree the walk reaches shared ancestors (a planted
+    # /tmp/Cargo.toml), and clippy executes build.rs and proc macros. Formatting
+    # never applies there either, so nothing runs.
+    [ "$(_tl_git_state "${file}")" = outside ] && exit 0
+    root="$(_tl_find_up "$fdir" _tl_has_cargo)" || exit 0
+    if have rustfmt && [ ! -L "${file}" ]; then
+      ed="$(sed -n 's/^[[:space:]]*edition[[:space:]]*=[[:space:]]*"\([0-9][0-9]*\)".*/\1/p' \
+              "$root/Cargo.toml" 2>/dev/null | head -n1)"
+      ed="${ed:-2021}"
+      dofmt=0
+      case "$(_tl_git_state "${file}")" in
+        new) dofmt=1 ;;
+        tracked) _tl_head_clean "${file}" rustfmt --edition "$ed" --check && dofmt=1 ;;
+      esac
+      if [ "$dofmt" -eq 1 ] && tmp="$(mktemp 2>/dev/null)"; then
+        trap 'rm -f "$tmp"' EXIT
+        if (cd "$fdir" && rustfmt --edition "$ed") < "${file}" > "$tmp" 2>/dev/null \
+           && ! cmp -s "$tmp" "${file}"; then
+          cat "$tmp" > "${file}"   # keeps the file's mode and inode
+        fi
+        rm -f "$tmp"; trap - EXIT
+      fi
+    fi
+    if have cargo && debounce "$root" clippy; then
+      (cd "$root" && cargo clippy --quiet) 1>&2 || { _tl_unmark; fail_tool clippy "$root"; }
     fi
     ;;
   go)
-    have gofmt && gofmt -w "${file}" >/dev/null 2>&1 || true
-    if have golangci-lint && debounce golangci; then
-      golangci-lint run "$(dirname "${file}")/..." 2>&1 \
-        || fail "golangci-lint reported errors. Fix the root cause; do not suppress."
+    # Outside git: same reason (golangci-lint loads project config and plugins).
+    [ "$(_tl_git_state "${file}")" = outside ] && exit 0
+    root="$(_tl_find_up "$fdir" _tl_has_gomod)" || exit 0
+    if have gofmt; then
+      dofmt=0
+      case "$(_tl_git_state "${file}")" in
+        new) dofmt=1 ;;
+        tracked) _tl_head_clean "${file}" gofmt -l && dofmt=1 ;;
+      esac
+      [ "$dofmt" -eq 1 ] && { gofmt -w "${file}" >/dev/null 2>&1 || true; }
+    fi
+    if have golangci-lint && _tl_find_up "$root" _tl_has_golangci >/dev/null \
+       && debounce "$root" golangci; then
+      if [ "$fdir" = "$root" ]; then target="./..."; else target="./${fdir#"$root"/}/..."; fi
+      (cd "$root" && golangci-lint run "$target") 1>&2 || { _tl_unmark; fail_tool golangci-lint "$root"; }
     fi
     ;;
   *) exit 0 ;;

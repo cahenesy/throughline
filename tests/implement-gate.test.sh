@@ -8,7 +8,8 @@
 # This aggregator keeps the 0063 stub/status observations and the live
 # 0060–0062 helpers: plugin-root, verdicts, run-record, build-tdds-skill,
 # the 0064 model-roles eval, the 0065 parent-session-check eval, the 0066
-# model-dispatch eval, and the 0067 escalation eval.
+# model-dispatch eval, the 0067 escalation eval, and the 0068
+# format-and-lint-hook eval.
 #
 # Run: bash tests/implement-gate.test.sh
 set -uo pipefail
@@ -197,11 +198,14 @@ echo "=== 0063 observations: $PASS passed, $FAIL failed ==="
 # extracted tl:models-confirm / tl:models-record blocks) + 0067 escalation
 # (FR-88: Retry, escalation decision/outcome, the extracted escalation blocks;
 # the live harness probe under tests/live/ is NOT run here — it belongs to
-# the runtime-verify gate). A registered eval that is missing is a failure,
+# the runtime-verify gate) + 0068 format-and-lint-hook (FR-21: the hook run
+# via stdin against stub tools in temp repos; real tools are the
+# runtime-verify gate's job). A registered eval that is missing is a failure,
 # never a silent skip (L-011).
 EVAL_FAIL=0
 for ev in plugin-root verdicts run-record build-tdds-skill model-roles \
-          parent-session-check model-dispatch escalation; do
+          parent-session-check model-dispatch escalation \
+          format-and-lint-hook; do
   f="$(dirname "$0")/${ev}.test.sh"
   echo
   if [ -f "$f" ]; then

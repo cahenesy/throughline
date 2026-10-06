@@ -107,17 +107,34 @@ it no-ops otherwise, so it never forces tooling onto a repo. Your job here is
 to make sure a linter/formatter is actually configured, per these rules:
 
 - **Greenfield:** install the default formatter + linter for the language and
-  create minimal config files.
+  create minimal config files that include the formatter opt-in: Python
+  `pyproject.toml` gets `[tool.ruff]`, `[tool.ruff.lint]` **and**
+  `[tool.ruff.format]`; JS/TS gets a `.prettierrc` and an `eslint.config.*`;
+  Rust/Go need no config.
 - **Brownfield, tooling already configured:** use what is there; do not swap
   it out.
 - **Brownfield, no linter/formatter:** do NOT silently install one. Point out
   that the repo has no configured linter/formatter and ask whether to add the
-  default before proceeding.
+  default before proceeding. If the user says yes, write the same config as
+  greenfield, opt-in included: Python `[tool.ruff]`, `[tool.ruff.lint]` and
+  `[tool.ruff.format]`; JS/TS a `.prettierrc` and an `eslint.config.*`.
 
-How the hook behaves: it formats the edited file, then runs the linter. On a
-lint failure it returns the error into the session so the fix happens at the
-root cause. The edit is already written to disk — the hook surfaces the
-failure for correction rather than reverting it.
+How the hook behaves: it finds config from the **edited file's directory**
+upward (to the file's git root), never from the current directory.
+
+- **Formatting is opt-in.** Python formats only when the governing ruff config
+  has `[tool.ruff.format]` (or `[format]` in `ruff.toml` / `.ruff.toml`); JS/TS
+  only with a Prettier config and a local `node_modules/.bin/prettier`. A
+  lint-only config is not a format opt-in.
+- **Rust/Go follow the language convention, guarded.** `rustfmt` / `gofmt`
+  run only on a file in git whose committed copy is already formatter-clean
+  (or that is new to git), so a surgical edit never becomes a whole-file
+  reformat. Rust is formatted through stdin, so child modules are untouched.
+- **Lint is report-only — never auto-fix.** No `--fix`; on a lint failure the
+  diagnostics go to stderr and the hook exits 2, so the error reaches the
+  session and the fix happens at the root cause. The edit is already written
+  to disk — the hook surfaces the failure for correction rather than
+  reverting it.
 
 ## Unit testing
 
@@ -173,7 +190,9 @@ above and created any missing design-doc scaffold:
 When the project is empty:
 
 1. Detect or ask the primary language.
-2. Install + configure the default formatter and linter; create minimal config.
+2. Install + configure the default formatter and linter; create minimal config
+   that includes the formatter opt-in (Python: `[tool.ruff.format]` alongside
+   `[tool.ruff]` / `[tool.ruff.lint]`; JS/TS: `.prettierrc` + `eslint.config.*`).
 3. Install the default test framework, then write and run one trivial passing
    test.
 4. Confirm the `format-and-lint` hook is active (it ships with this plugin).
