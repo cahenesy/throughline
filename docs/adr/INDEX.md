@@ -17,4 +17,5 @@
 | 0011 | Gate verdicts are on-disk artifacts, not transcript parses | accepted | workflow / gate-architecture / verification-integrity |
 | 0013 | Halt on gate failure after transient retry; no in-invocation rework | accepted | workflow / gate-architecture / halt-semantics |
 | 0014 | Model capability by job (fresh worker, not a different named model); supersedes 0009 | superseded by 0015 | workflow / gate-architecture / model-selection |
-| 0015 | Model cost/performance by job (inherit the parent, light tier, escalation on demand); supersedes 0014 | accepted | workflow / gate-architecture / model-selection |
+| 0015 | Model cost/performance by job (inherit the parent, light tier, escalation on demand); supersedes 0014 | accepted (fall-back detection consequence revised by 0016) | workflow / gate-architecture / model-selection |
+| 0016 | Escalation outcomes are judged by the model that actually ran; revises 0015's fall-back detection | accepted | workflow / gate-architecture / model-selection / verification-integrity |
