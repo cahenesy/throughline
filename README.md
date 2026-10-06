@@ -529,10 +529,13 @@ do not also invoke `superpowers:brainstorming` or `writing-plans` for it."*
 the **edited repo's** configuration, discovered from the edited file's
 directory upward to its git root, never from the session's current directory:
 
-- **Lint only when configured, report only.** ruff, eslint, clippy and
-  golangci-lint run only when the repo configures them, never with `--fix`.
-  On failure the diagnostics go to stderr and the hook exits 2, so the agent
-  sees the rule and line and fixes the root cause.
+- **Lint report-only.** ruff, eslint and golangci-lint run only when the repo
+  configures them; clippy runs for any Cargo project with `cargo` on PATH.
+  clippy and golangci-lint are debounced (one run per project per 30s, unless
+  the last run failed). No linter is run with `--fix`. On failure the
+  diagnostics go to stderr and the hook exits 2, so the agent sees the rule
+  and line and fixes the root cause. JS/TS tools never run for a file outside
+  a git work tree.
 - **Format only on opt-in.** Python needs `[tool.ruff.format]` (or `[format]`
   in `ruff.toml`); JS/TS needs a Prettier config plus a local
   `node_modules/.bin/prettier`. Rust/Go format by convention, but only a file

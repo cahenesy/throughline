@@ -121,16 +121,34 @@ _tl_head_clean() {
 }
 
 # debounce <root> <key>: returns 0 (run) at most once per window per project
-# root, else 1 (skip).
+# root, else 1 (skip). Markers live in a per-user 0700 directory; a directory
+# that is a symlink or not ours, or a marker that is a symlink, is never
+# trusted or written: the linter just runs. Marker content is used only when
+# it is all digits (bash arithmetic would otherwise evaluate `x[$(cmd)]`).
+# On run, _TL_MARKER names the marker written, so a failing run can drop it.
+_TL_MARKER=""
 debounce() {
-  local root="$1" key="$2" window="${THROUGHLINE_LINT_DEBOUNCE:-30}" now last id marker
-  id="$(printf '%s' "$root" | cksum | cut -d' ' -f1)"
-  marker="${TMPDIR:-/tmp}/throughline-lint-${id}-${key}.ts"
+  local root="$1" key="$2" window="${THROUGHLINE_LINT_DEBOUNCE:-30}" now last h dir marker
+  _TL_MARKER=""
+  case "$window" in ''|*[!0-9]*) window=30 ;; esac
+  h="$(printf '%s' "$root" | cksum | cut -d' ' -f1)"
+  dir="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/throughline-lint-$(id -u)"
+  [ -L "$dir" ] && return 0
+  [ -d "$dir" ] || (umask 077; mkdir -p "$dir") 2>/dev/null || return 0
+  { [ -L "$dir" ] || [ ! -d "$dir" ] || [ ! -O "$dir" ]; } && return 0
+  marker="$dir/${h}-${key}.ts"
+  [ -L "$marker" ] && return 0
   now="$(date +%s)"
-  last="$(cat "$marker" 2>/dev/null || echo 0)"
+  last="$(cat "$marker" 2>/dev/null)"
+  case "$last" in ''|*[!0-9]*) last=0 ;; esac
   [ $((now - last)) -lt "$window" ] && return 1
-  echo "$now" > "$marker"; return 0
+  [ -L "$marker" ] && return 0
+  printf '%s\n' "$now" > "$marker" 2>/dev/null && _TL_MARKER="$marker"
+  return 0
 }
+# _tl_unmark: forget this run's debounce marker, so a failing project-wide lint
+# is re-run (and re-reported) on the next edit instead of passing silently.
+_tl_unmark() { [ -n "$_TL_MARKER" ] && [ ! -L "$_TL_MARKER" ] && rm -f "$_TL_MARKER"; _TL_MARKER=""; }
 
 # --- per-language config tests (each takes a directory) ---------------------
 # _tl_py_cfg_file <dir>: print the ruff config that governs <dir>, in ruff's
@@ -174,6 +192,9 @@ case "${ext}" in
       || fail_tool ruff "${file}"
     ;;
   js|jsx|ts|tsx|mjs|cjs)
+    # Outside a git work tree the config/bin walk would reach shared ancestors
+    # (e.g. a planted /tmp/node_modules/.bin/prettier), so JS tools never run.
+    [ "$(_tl_git_state "${file}")" = outside ] && exit 0
     if pdir="$(_tl_find_up "$fdir" _tl_has_prettier_cfg)" \
        && pbin="$(_tl_local_bin "$pdir" prettier)"; then
       (cd "$pdir" && "$pbin" --write "${file}") >/dev/null 2>&1 || true
@@ -195,15 +216,16 @@ case "${ext}" in
         tracked) _tl_head_clean "${file}" rustfmt --edition "$ed" --check && dofmt=1 ;;
       esac
       if [ "$dofmt" -eq 1 ] && tmp="$(mktemp 2>/dev/null)"; then
+        trap 'rm -f "$tmp"' EXIT
         if (cd "$fdir" && rustfmt --edition "$ed") < "${file}" > "$tmp" 2>/dev/null \
            && ! cmp -s "$tmp" "${file}"; then
           cat "$tmp" > "${file}"   # keeps the file's mode and inode
         fi
-        rm -f "$tmp"
+        rm -f "$tmp"; trap - EXIT
       fi
     fi
     if have cargo && debounce "$root" clippy; then
-      (cd "$root" && cargo clippy --quiet) 1>&2 || fail_tool clippy "$root"
+      (cd "$root" && cargo clippy --quiet) 1>&2 || { _tl_unmark; fail_tool clippy "$root"; }
     fi
     ;;
   go)
@@ -219,7 +241,7 @@ case "${ext}" in
     if have golangci-lint && _tl_find_up "$root" _tl_has_golangci >/dev/null \
        && debounce "$root" golangci; then
       if [ "$fdir" = "$root" ]; then target="./..."; else target="./${fdir#"$root"/}/..."; fi
-      (cd "$root" && golangci-lint run "$target") 1>&2 || fail_tool golangci-lint "$root"
+      (cd "$root" && golangci-lint run "$target") 1>&2 || { _tl_unmark; fail_tool golangci-lint "$root"; }
     fi
     ;;
   *) exit 0 ;;
