@@ -205,6 +205,10 @@ case "${ext}" in
     fi
     ;;
   rs)
+    # Outside a git work tree the walk reaches shared ancestors (a planted
+    # /tmp/Cargo.toml), and clippy executes build.rs and proc macros. Formatting
+    # never applies there either, so nothing runs.
+    [ "$(_tl_git_state "${file}")" = outside ] && exit 0
     root="$(_tl_find_up "$fdir" _tl_has_cargo)" || exit 0
     if have rustfmt && [ ! -L "${file}" ]; then
       ed="$(sed -n 's/^[[:space:]]*edition[[:space:]]*=[[:space:]]*"\([0-9][0-9]*\)".*/\1/p' \
@@ -229,6 +233,8 @@ case "${ext}" in
     fi
     ;;
   go)
+    # Outside git: same reason (golangci-lint loads project config and plugins).
+    [ "$(_tl_git_state "${file}")" = outside ] && exit 0
     root="$(_tl_find_up "$fdir" _tl_has_gomod)" || exit 0
     if have gofmt; then
       dofmt=0
