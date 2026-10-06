@@ -715,7 +715,12 @@ VD="$LOGS/r4/$SLUG"
 ( [ "$R4OK" = 1 ] || { bad "[12] infra: no fixture 4"; exit 0; }
   [ "$(lsA "$VD")" = "ci-checks.json review.json test-first.json" ] && ok "precondition: three halt-time verdicts" \
     || bad "infra: verdict dir before retry: $(lsA "$VD")"
-  m "tl_run_retry_begin $(q "$GR") r4 $SLUG"; want "[12] prints the archive dir" "$VD/retry-1"
+  m "tl_run_retry_begin $(q "$GR") r4 $SLUG"
+  want "[12] prints report= / implementer_report= / archive=, in that order" "report=$LOGS/r4/$SLUG.review.txt
+implementer_report=$LOGS/r4/$SLUG.review.prev.txt
+archive=$VD/retry-1"
+  cmp -s "$LOGS/r4/$SLUG.review.txt" "$LOGS/r4/$SLUG.review.prev.txt" \
+    && ok "[12] the function itself copies the failed report (byte-identical)" || bad "[12] no / different report copy from the function"
   [ "$(lsA "$VD")" = "retry-1" ] && ok "[12] the verdict dir holds only retry-1/" || bad "[12] verdict dir: $(lsA "$VD")"
   [ "$(lsA "$VD/retry-1")" = "ci-checks.json review.json test-first.json" ] \
     && ok "[12] retry-1/ holds all three verdict files" || bad "[12] retry-1: $(lsA "$VD/retry-1")"
@@ -725,7 +730,9 @@ VD="$LOGS/r4/$SLUG"
   [ -f "$LOGS/r4/$SLUG.review.txt" ] && ok "report .txt files in the run dir root are not moved" \
     || bad "the review report moved or vanished"
   decide r4 0 1; want "after retry-begin auto no longer applies (accepted)" none
-  m "tl_run_retry_begin $(q "$GR") r4 $SLUG"; want "[12] a second call → retry-2/" "$VD/retry-2"
+  m "tl_run_retry_begin $(q "$GR") r4 $SLUG"; want "[12] a second call → no FAIL left, empty report=, retry-2/" "report=
+implementer_report=
+archive=$VD/retry-2"
   [ "$(lsA "$VD")" = "retry-1 retry-2" ] && [ "$(lsA "$VD/retry-1")" = "ci-checks.json review.json test-first.json" ] \
     && [ "$(lsA "$VD/retry-2")" = "" ] && ok "retry-1 kept, retry-2 empty" || bad "after 2nd: $(lsA "$VD") / $(lsA "$VD/retry-2")"
   if mkrun r11g failed gate-fail PASS PASS - FAIL; then
@@ -741,14 +748,16 @@ VD="$LOGS/r4/$SLUG"
 ) || true
 RBB="$ROOT/blocks/retry-begin.sh"
 if getblock '<!-- tl:retry-begin -->' "$RBB"; then
+  if grep -qE '(^|[^A-Za-z_])cp([^A-Za-z_]|$)' "$RBB"; then bad "[12] the tl:retry-begin block still copies the report itself (cp)"
+  else ok "[12] the tl:retry-begin block contains no cp (the function copies)"; fi
   if mkrun r4b failed gate-fail PASS PASS - FAIL; then
     VB="$LOGS/r4b/$SLUG"
     runb "$RBB" CLAUDE_CODE_SESSION_ID=s-opus TL_REPO="$GR" TL_RUN=r4b TL_SLUG="$SLUG"
     [ "$RC" -eq 0 ] && [ "$(sed -n 1p "$ROOT/out")" = "report=$LOGS/r4b/$SLUG.review.txt" ] \
       && ok "[12] block: first line is report=<run-dir>/<slug>.review.txt" || bad "[12] block: rc=$RC out='$OUT' err='$ERR'"
-    want "block output, exact" "report=$LOGS/r4b/$SLUG.review.txt
-archive=$VB/retry-1
-implementer_report=$LOGS/r4b/$SLUG.review.prev.txt"
+    want "[12] block output, exact: report=, implementer_report=, archive=" "report=$LOGS/r4b/$SLUG.review.txt
+implementer_report=$LOGS/r4b/$SLUG.review.prev.txt
+archive=$VB/retry-1"
     cmp -s "$LOGS/r4b/$SLUG.review.txt" "$LOGS/r4b/$SLUG.review.prev.txt" \
       && ok "the implementer's copy of the failed report is byte-identical" || bad "no / different report copy"
     [ "$(lsA "$VB")" = "retry-1" ] && [ "$(lsA "$VB/retry-1")" = "ci-checks.json review.json test-first.json" ] \
@@ -757,8 +766,8 @@ implementer_report=$LOGS/r4b/$SLUG.review.prev.txt"
     m "tl_run_next_gate $(q "$GR") r4b $SLUG"; want "[12] block: next gate test-first" test-first
     runb "$RBB" CLAUDE_CODE_SESSION_ID=s-opus TL_REPO="$GR" TL_RUN=r4b TL_SLUG="$SLUG"
     want "a second block run: no FAIL verdict left → empty report=, retry-2" "report=
-archive=$VB/retry-2
-implementer_report="
+implementer_report=
+archive=$VB/retry-2"
   fi
   for miss in TL_REPO TL_RUN TL_SLUG; do
     args=()

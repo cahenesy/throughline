@@ -1,6 +1,6 @@
 # TDD 0069: `/build-tdds` hardening — a lock that holds, and the 0067 follow-ups
 
-Status: draft
+Status: implemented
 PRD refs: FR-18, FR-43, FR-88, FR-41, NFR-4
 PRD-rev: f6ef178
 ADR constraints: 0005, 0006, 0011, 0013, 0015, 0016

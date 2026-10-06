@@ -138,40 +138,189 @@ tl_run_set_pr() {  # <repo-root> <run-id> <slug> <url>
 
 _tl_lock_path() { printf '%s/.run.lock\n' "$(_tl_run_logs "$1")" || return $?; }
 
-tl_run_lock() {  # <repo-root>
-  local root="${1:-}" lock pid logs
-  logs="$(_tl_run_logs "$root")" || return $?
-  mkdir -p "$logs" || return 1
-  lock="$logs/.run.lock"
-  if [ -f "$lock" ]; then
-    pid="$(tr -d ' \n' <"$lock")"
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-      echo "run-record: lock held by live PID $pid" >&2
-      return 1
-    fi
-  fi
-  printf '%s\n' "$$" >"$lock"
+# --- single-run lock (TDD 0069 / FR-18, FR-43) -------------------------------
+# The lock names the SESSION process (the first long-lived ancestor of the Bash
+# shell) and its start time, because the harness runs every Bash call in a
+# fresh shell that exits at once. Line: `pid=<pid> start=<lstart squeezed>`.
+# A legacy (3.49.0) bare-PID line is read with the old kill -0 rule. Every
+# create uses bash noclobber (O_EXCL): `mkdir` is not atomic on uutils.
+
+_TL_SESSION_SKIP=' bash sh zsh dash env timeout nohup script sudo bwrap firejail flatpak-spawn '
+
+_tl_lstart() {  # <pid> — `ps -o lstart=` with whitespace squeezed; rc 1 if none
+  local s
+  s="$(ps -o lstart= -p "$1" 2>/dev/null)" || return 1
+  s="$(printf '%s' "$s" | awk '{$1=$1; print}')"
+  [ -n "$s" ] || return 1
+  printf '%s\n' "$s"
 }
 
-tl_run_unlock() {  # <repo-root>
-  local lock
-  lock="$(_tl_lock_path "$1")" || return $?
-  rm -f "$lock"
+# tl_session_pid — print `<pid> <start>` for the first ancestor of this shell
+# whose `ps -o comm=` is not a shell/wrapper on the stop-list. PID 1 is never
+# chosen; reaching it, or a ps failure, → rc 1 with no output.
+tl_session_pid() {
+  local pid comm start depth=0
+  pid="$(ps -o ppid= -p "$$" 2>/dev/null | tr -d ' ')" || return 1
+  while :; do
+    case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$pid" -gt 1 ] || return 1
+    depth=$((depth + 1)); [ "$depth" -le 64 ] || return 1
+    comm="$(ps -o comm= -p "$pid" 2>/dev/null)" || return 1
+    comm="${comm#"${comm%%[![:space:]]*}"}"; comm="${comm%"${comm##*[![:space:]]}"}"
+    [ -n "$comm" ] || return 1
+    case "$_TL_SESSION_SKIP" in
+      *" $comm "*) pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')" || return 1 ;;
+      *) start="$(_tl_lstart "$pid")" || return 1
+         printf '%s %s\n' "$pid" "$start"; return 0 ;;
+    esac
+  done
 }
 
-tl_run_lock_reclaim() {  # <repo-root>
-  local root="${1:-}" lock pid logs
+# _tl_lock_parse <line> — sets _TL_LP_PID / _TL_LP_START. rc 0 current
+# format, rc 3 legacy bare PID (start empty), rc 1 unparseable.
+_tl_lock_parse() {
+  local l="${1:-}" p s
+  _TL_LP_PID=""; _TL_LP_START=""
+  case "$l" in
+    pid=*' start='?*)
+      p="${l#pid=}"; p="${p%% start=*}"; s="${l#* start=}"
+      case "$p" in ''|*[!0-9]*) return 1 ;; esac
+      _TL_LP_PID="$p"; _TL_LP_START="$s"; return 0 ;;
+    ''|*[!0-9]*) return 1 ;;
+    *) _TL_LP_PID="$l"; return 3 ;;
+  esac
+}
+
+# _tl_lock_live <line> — rc 0 iff the owner is alive: kill -0 and (current
+# format) the same lstart, which defeats PID reuse.
+_tl_lock_live() {
+  local rc
+  _tl_lock_parse "${1:-}"; rc=$?
+  case "$rc" in 0|3) ;; *) return 1 ;; esac
+  kill -0 "$_TL_LP_PID" 2>/dev/null || return 1
+  [ "$rc" = 3 ] && return 0
+  [ "$(_tl_lstart "$_TL_LP_PID")" = "$_TL_LP_START" ]
+}
+
+# _tl_lock_read <lock> — print the first line. rc 4 when the file vanished,
+# rc 1 when it stays empty/unparseable after 3 retries at 0.2 s.
+_tl_lock_read() {
+  local f="$1" l n=0
+  while :; do
+    [ -e "$f" ] || return 4
+    l=""; IFS= read -r l 2>/dev/null <"$f" || [ -n "$l" ] || { [ -e "$f" ] || return 4; }
+    _tl_lock_parse "$l"
+    case $? in 0|3) printf '%s\n' "$l"; return 0 ;; esac
+    [ "$n" -lt 3 ] || return 1
+    n=$((n + 1)); sleep 0.2
+  done
+}
+
+_tl_file_age() {  # <file> — seconds since its mtime; rc 1 if unreadable
+  local m
+  m="$(stat -c %Y "$1" 2>/dev/null)" || m="$(date -r "$1" +%s 2>/dev/null)" || return 1
+  case "$m" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$(( $(date +%s) - m ))"
+}
+
+# _tl_lock_guard <lock> — take the reclaim guard `<lock>.reclaim` (noclobber).
+# A guard older than 60 s is broken by an atomic mv to a unique name (only one
+# breaker's mv succeeds) and the take is retried once. rc 1 when held.
+_tl_lock_guard() {
+  local g="$1.reclaim" st age
+  (set -C; : >"$g") 2>/dev/null && return 0
+  age="$(_tl_file_age "$g")" || return 1
+  [ "$age" -gt 60 ] || return 1
+  st="$g.stale.$$.${BASHPID:-$$}"
+  mv "$g" "$st" 2>/dev/null || return 1
+  # The mv raced a fresh guard (another breaker already re-took it): put it back.
+  age="$(_tl_file_age "$st")" || age=0
+  if [ "$age" -le 60 ]; then mv -n "$st" "$g" 2>/dev/null || rm -f "$st"; return 1; fi
+  rm -f "$st"
+  (set -C; : >"$g") 2>/dev/null
+}
+
+_tl_lock_owner() {  # <owner> — validate "<pid> <start>"; sets _TL_OW_LINE
+  local p="${1%% *}" s="${1#* }"
+  case "$p" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$s" != "$1" ] && [ -n "$s" ] || return 1
+  _TL_OW_LINE="pid=$p start=$s"
+}
+
+# tl_run_lock <repo-root> [owner] — take the single-run lock for <owner>
+# ("<pid> <start>", default tl_session_pid). rc 0 when taken or already held
+# by the same owner (re-entrant); rc 1 with a reason on stderr when refused;
+# rc 2 on a bad argument.
+tl_run_lock() {
+  local root="${1:-}" owner="${2:-}" logs lock line mine rc loops=0
   logs="$(_tl_run_logs "$root")" || return $?
+  if [ -z "$owner" ]; then
+    owner="$(tl_session_pid)" || { echo "run-record: cannot identify the session process; not locking" >&2; return 1; }
+  fi
+  _tl_lock_owner "$owner" || { echo "run-record: bad lock owner '$owner' (want '<pid> <start>')" >&2; return 2; }
+  mine="$_TL_OW_LINE"
   mkdir -p "$logs" || return 1
   lock="$logs/.run.lock"
-  if [ -f "$lock" ]; then
-    pid="$(tr -d ' \n' <"$lock")"
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-      echo "run-record: cannot reclaim; PID $pid is live" >&2
+  while :; do
+    loops=$((loops + 1))
+    [ "$loops" -le 20 ] || { echo "run-record: lock held by a concurrent run" >&2; return 1; }
+    if [ ! -e "$lock" ]; then
+      (set -C; printf '%s\n' "$mine" >"$lock") 2>/dev/null && return 0
+      echo "run-record: lock held by a concurrent run" >&2; return 1
+    fi
+    line="$(_tl_lock_read "$lock")"; rc=$?
+    [ "$rc" -eq 4 ] && continue
+    [ "$rc" -eq 0 ] || { echo "run-record: lock unreadable; held" >&2; return 1; }
+    [ "$line" = "$mine" ] && return 0
+    if _tl_lock_live "$line"; then
+      _tl_lock_parse "$line"
+      if [ -n "$_TL_LP_START" ]; then
+        echo "run-record: lock held by live PID $_TL_LP_PID (started $_TL_LP_START)" >&2
+      else
+        echo "run-record: lock held by live PID $_TL_LP_PID" >&2
+      fi
       return 1
     fi
+    # Dead or reused owner: reclaim under the guard, comparing first, so a
+    # slower reclaimer can never delete a fresh lock.
+    _tl_lock_guard "$lock" || { echo "run-record: lock reclaim in progress" >&2; return 1; }
+    if [ "$(_tl_lock_read "$lock" 2>/dev/null)" = "$line" ]; then
+      rm -f "$lock"
+      if (set -C; printf '%s\n' "$mine" >"$lock") 2>/dev/null; then rc=0
+      else echo "run-record: lock held by a concurrent run" >&2; rc=1; fi
+      rm -f "$lock.reclaim"
+      return "$rc"
+    fi
+    rm -f "$lock.reclaim"
+  done
+}
+
+# tl_run_lock_reclaim <repo-root> [owner] — thin alias of tl_run_lock.
+tl_run_lock_reclaim() { tl_run_lock "$@"; }
+
+# tl_run_unlock <repo-root> [owner] — remove the lock only when <owner>
+# (default tl_session_pid) owns it, or its owner is dead (legacy bare-PID
+# lines: only when dead). A dead owner's lock is removed under the reclaim
+# guard after a re-compare. No lock → rc 0. Otherwise rc 1,
+# `run-record: not the lock owner`.
+tl_run_unlock() {
+  local root="${1:-}" owner="${2:-}" logs lock line mine="" rc
+  logs="$(_tl_run_logs "$root")" || return $?
+  lock="$logs/.run.lock"
+  [ -n "$owner" ] || owner="$(tl_session_pid 2>/dev/null)" || owner=""
+  if [ -n "$owner" ] && _tl_lock_owner "$owner"; then mine="$_TL_OW_LINE"; fi
+  line="$(_tl_lock_read "$lock")"; rc=$?
+  [ "$rc" -eq 4 ] && return 0
+  [ "$rc" -eq 0 ] || { echo "run-record: not the lock owner (lock unreadable)" >&2; return 1; }
+  if [ -n "$mine" ] && [ "$line" = "$mine" ]; then rm -f "$lock"; return 0; fi
+  if ! _tl_lock_live "$line"; then
+    _tl_lock_guard "$lock" || { echo "run-record: lock reclaim in progress" >&2; return 1; }
+    if [ "$(_tl_lock_read "$lock" 2>/dev/null)" = "$line" ]; then rc=0; rm -f "$lock"; else rc=1; fi
+    rm -f "$lock.reclaim"
+    [ "$rc" -eq 0 ] && return 0
   fi
-  printf '%s\n' "$$" >"$lock"
+  echo "run-record: not the lock owner" >&2
+  return 1
 }
 
 tl_run_next_gate() {  # <repo-root> <run-id> <slug>
@@ -381,17 +530,26 @@ tl_run_failed_report() {
   return 1
 }
 
-# tl_run_retry_begin <repo-root> <run-id> <slug> — start a Retry: move every
-# verdict *.json in tl_verdict_dir into <that dir>/retry-<N>/ (N = 1 + the
-# highest existing retry-<n> dir), then tl_run_set_tdd … building, so
-# tl_run_next_gate is test-first and an interrupted Retry resumes from the
-# first gate. Prints the archive dir. rc 0; rc 1 on an io error (nothing
-# moved when the mkdir fails) or an uninitialized run; rc 2 on a bad argument.
+# tl_run_retry_begin <repo-root> <run-id> <slug> — start a Retry (TDD 0067,
+# 0069 (d)): resolve tl_run_failed_report (read before archiving) and copy it
+# to `${report%.txt}.prev.txt`, which step 7's empty `<slug>.build.txt` cannot
+# overwrite; then move every verdict *.json in tl_verdict_dir into <that
+# dir>/retry-<N>/ (N = 1 + the highest existing retry-<n> dir) and
+# tl_run_set_tdd … building, so tl_run_next_gate is test-first and an
+# interrupted Retry resumes from the first gate. Prints, in order,
+# `report=<path or empty>`, `implementer_report=<copy or empty>`,
+# `archive=<dir>`. rc 0; rc 1 (no output) on an io error (nothing moved when
+# the mkdir fails) or an uninitialized run; rc 2 on a bad argument.
 tl_run_retry_begin() {
-  local repo="${1:-}" run="${2:-}" slug="${3:-}" logs vdir d k n=0 arch f
+  local repo="${1:-}" run="${2:-}" slug="${3:-}" logs vdir d k n=0 arch f rep="" copy=""
   logs="$(_tl_run_logs "$repo")" || return $?
   vdir="$(tl_verdict_dir "$repo" "$run" "$slug")" || return $?
   [ -f "$logs/$run/run.json" ] || { echo "run-record: run $run not initialized" >&2; return 1; }
+  rep="$(tl_run_failed_report "$repo" "$run" "$slug" 2>/dev/null)" || rep=""
+  if [ -n "$rep" ]; then
+    copy="${rep%.txt}.prev.txt"
+    cp "$rep" "$copy" || { echo "run-record: cannot copy $rep to $copy" >&2; return 1; }
+  fi
   for d in "$vdir"/retry-*; do
     [ -d "$d" ] || continue
     k="${d##*/retry-}"
@@ -406,7 +564,7 @@ tl_run_retry_begin() {
     mv "$f" "$arch/" || { echo "run-record: cannot move $f into $arch" >&2; return 1; }
   done
   tl_run_set_tdd "$repo" "$run" "$slug" building || return 1
-  printf '%s\n' "$arch"
+  printf 'report=%s\nimplementer_report=%s\narchive=%s\n' "$rep" "$copy" "$arch"
 }
 
 # tl_run_set_halt_blob <repo-root> <run-id> <slug> <tdd-relpath> — record
@@ -490,17 +648,20 @@ tl_run_set_escalation() {
 # `fell-back no report`; for the implementer, when `git rev-list
 # <base-sha>..HEAD` in <worktree> is readable: empty → `fell-back no report,
 # no commits`, non-empty → `ok` (a real failure, classified by the normal
-# rules). A non-empty report → `ok`. rc 0; rc 2 on a bad <worker>.
+# rules). A non-empty report → `ok`. rc 0; rc 2 on a bad <worker>, or a
+# <base-sha> that is not ^[0-9a-f]{7,64}$ (`run-record: bad base sha`; TDD
+# 0069 (e)).
 tl_escalation_fellback_check() {
   local rep="${1:-}" wt="${2:-}" base="${3:-}" worker="${4:-}" commits
   case "$worker" in
     implementer|verify|review) ;;
     *) echo "run-record: bad worker '$worker' (want implementer|verify|review)" >&2; return 2 ;;
   esac
+  [[ "$base" =~ ^[0-9a-f]{7,64}$ ]] || { echo "run-record: bad base sha" >&2; return 2; }
   if [ -n "$rep" ] && [ -f "$rep" ] && grep -q '[^[:space:]]' "$rep" 2>/dev/null; then
     printf 'ok\n'; return 0
   fi
-  if [ "$worker" = implementer ] && [ -n "$wt" ] && [ -n "$base" ] \
+  if [ "$worker" = implementer ] && [ -n "$wt" ] \
      && commits="$(git -C "$wt" rev-list "$base..HEAD" 2>/dev/null)"; then
     if [ -n "$commits" ]; then printf 'ok\n'; else printf 'fell-back no report, no commits\n'; fi
     return 0

@@ -63,7 +63,32 @@ command -v "$CLAUDE_BIN" >/dev/null 2>&1 \
 command -v jq >/dev/null 2>&1 \
   || { echo "escalation-probe: jq is required to read the stream-json events" >&2; exit 1; }
 SCRATCH="$(mktemp -d)" || { echo "escalation-probe: mktemp -d failed" >&2; exit 1; }
-trap 'rm -rf "$SCRATCH"' EXIT
+SCRATCH_FROM_MKTEMP=1
+
+# cleanup — on EXIT, also remove the harness project folder its headless
+# children created for the scratch dir (TDD 0069 (c)):
+# ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/<enc>, <enc> = the physical
+# scratch path with every [^A-Za-z0-9] → `-` (the harness's encoding). Removed
+# only when $SCRATCH came from mktemp -d, <enc> starts with `-` and has ≥8
+# chars, the path has no `..`, and the target is a directory, not a symlink.
+# Nothing else under projects/ is touched.
+cleanup() {
+  local phys enc dir
+  if [ "${SCRATCH_FROM_MKTEMP:-0}" = 1 ] && [ -n "${SCRATCH:-}" ] \
+     && phys="$(cd -P "$SCRATCH" 2>/dev/null && pwd)"; then
+    enc="$(printf '%s' "$phys" | LC_ALL=C sed 's/[^A-Za-z0-9]/-/g')"
+    dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/$enc"
+    case "$enc" in
+      -???????*)
+        case "$dir" in
+          *..*) ;;
+          *) if [ -d "$dir" ] && [ ! -L "$dir" ]; then rm -rf -- "$dir"; fi ;;
+        esac ;;
+    esac
+  fi
+  rm -rf "$SCRATCH"
+}
+trap cleanup EXIT
 
 die()     { printf 'escalation-probe: %s\n' "$1" >&2; exit 1; }
 blocked() { printf 'PROBE_BLOCKED: %s\n' "$1"; exit 3; }
