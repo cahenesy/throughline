@@ -287,6 +287,49 @@ printf 'x=1\n' > "$C/m.py"; run "$C/m.py" "$C/min"
 check "jq and python3 hidden -> rc 2 + the need-jq-or-python3 message" \
   '[ "$RC" -eq 2 ] && grep -qF "need jq or python3" "$C/err"'
 
+# --- [S] security: debounce marker + JS tools outside git (review pass 1) ---
+echo "[S] security: hostile debounce markers, JS outside git, failing lint not masked"
+# markers <root> <key>: print every marker path the hook could use for <root>
+# (the per-user dir under TMPDIR, and the legacy flat path), one per line.
+markers() {
+  local h; h="$(printf '%s' "$1" | cksum | cut -d' ' -f1)"
+  printf '%s\n' "$C/throughline-lint-$(id -u)/${h}-$2.ts" "$C/throughline-lint-${h}-$2.ts"
+}
+newcase sa; mkcrate; printf 'fn a() {}\n' > "$C/r/src/lib.rs"; commit "$C/r"
+mkdir -p "$C/throughline-lint-$(id -u)"; chmod 700 "$C/throughline-lint-$(id -u)"
+# `now[...]` names a variable that IS set inside debounce(), so the subscript's
+# command substitution survives `set -u` (a bare `a[...]` aborts on unbound a).
+markers "$C/r" clippy | while IFS= read -r m; do printf 'now[$(touch %s/pwned)]\n' "$C" > "$m"; done
+run "$C/r/src/lib.rs"
+check "(a) marker holding now[\$(cmd)] does not execute cmd" 'readable "$C/calls" && [ ! -e "$C/pwned" ]'
+check "(a) a non-numeric marker is treated as stale: clippy still runs" 'has_call "cargo clippy --quiet @$C/r"'
+newcase sb; mkcrate; printf 'fn a() {}\n' > "$C/r/src/lib.rs"; commit "$C/r"
+mkdir -p "$C/throughline-lint-$(id -u)"; chmod 700 "$C/throughline-lint-$(id -u)"
+printf 'keep\n' > "$C/victim"; cp "$C/victim" "$C/victim.orig"
+markers "$C/r" clippy | while IFS= read -r m; do ln -s "$C/victim" "$m"; done
+run "$C/r/src/lib.rs"
+check "(b) a symlinked marker is not followed: its target is unmodified" \
+  'has_call "cargo clippy" && same "$C/victim.orig" "$C/victim"'
+newcase sc; mkdir -p "$C/nogit"; jsbins "$C/nogit"
+printf '{}\n' > "$C/nogit/.prettierrc"; printf 'export default [];\n' > "$C/nogit/eslint.config.js"
+printf 'BAD\n' > "$C/nogit/a.js"; cp "$C/nogit/a.js" "$C/a.orig"
+if git -C "$C/nogit" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  bad "(c) precondition: $C/nogit must be outside any git work tree"
+else
+  run "$C/nogit/a.js"
+  check "(c) JS file outside git: planted prettier/eslint never run, rc 0" \
+    '[ "$RC" -eq 0 ] && calls_empty && same "$C/a.orig" "$C/nogit/a.js"'
+fi
+newcase sd; mkcrate; printf 'fn a() {}\n' > "$C/r/src/lib.rs"; commit "$C/r"
+printf 'fn BAD() {}\n' > "$C/r/src/lib.rs"
+run "$C/r/src/lib.rs"; RC1=$RC; run "$C/r/src/lib.rs"
+check "(d) failing clippy is not debounced: 2nd immediate run calls clippy again, rc 2" \
+  '[ "$RC1" -eq 2 ] && [ "$RC" -eq 2 ] && [ "$(grep -c "^cargo clippy" "$C/calls")" -eq 2 ]'
+newcase se; mkcrate; printf 'fn a() {}\n' > "$C/r/src/lib.rs"; commit "$C/r"
+run "$C/r/src/lib.rs"; RC1=$RC; run "$C/r/src/lib.rs"
+check "passing clippy stays debounced: 2nd immediate run skips clippy, rc 0" \
+  '[ "$RC1" -eq 0 ] && [ "$RC" -eq 0 ] && [ "$(grep -c "^cargo clippy" "$C/calls")" -eq 1 ]'
+
 # --- [6] no --fix anywhere ---------------------------------------------------
 echo "[6] no tool was ever called with --fix"
 cat "$ROOT"/o*/calls > "$ROOT/all-calls" 2>/dev/null
