@@ -33,6 +33,8 @@
 #   tl_models_confirm <slug> [tdd] [parent] [esc] [outcome]  queue confirmation
 #   tl_escalation_outcome [parent] [tdd]  `<outcome> <model>[ <reason>]` (0067)
 #   tl_escalation_flags <args-text>       `requested=<0|1> auto=<0|1>` (0067)
+#   tl_worker_actual_model <agent-id>     models that actually answered (0067 rev 2)
+#   tl_escalation_verify <agent-id> <m>   `escalated` | `fell-back <reason>` (ADR 0016)
 #
 # Harness: GROK_PLUGIN_ROOT non-empty → grok; else claude. Sourced, never
 # executed: no shell options set; the only top-level effects are sourcing
@@ -504,4 +506,94 @@ tl_escalation_flags() {
   if [ "${THROUGHLINE_ESCALATE:-}" = 1 ]; then req=1; fi
   if [ "${THROUGHLINE_AUTO_ESCALATE:-}" = 0 ]; then aut=0; fi
   printf 'requested=%s auto=%s\n' "$req" "$aut"
+}
+
+# _tl_transcript_models <jsonl> — print every distinct assistant
+# `.message.model` that is neither empty nor `<synthetic>`, one per line, in
+# order of first appearance. Lines are PARSED as JSON (a truncated line is
+# skipped), never matched with a regex: tool_use inputs carry their own
+# "model" keys. jq → python3 cascade, as _tl_transcript_model; rc 3 = no parser.
+_tl_transcript_models() {
+  if command -v jq >/dev/null 2>&1; then
+    jq -nRr 'reduce (inputs | fromjson? | objects
+        | select(.type == "assistant") | .message | objects | .model | strings
+        | select(. != "" and . != "<synthetic>")) as $m
+      ([]; if any(.[]; . == $m) then . else . + [$m] end) | .[]' <"$1" 2>/dev/null
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -c '
+import json, sys
+seen = []
+for line in open(sys.argv[1], "rb"):
+    try:
+        d = json.loads(line)
+    except Exception:
+        continue
+    if not isinstance(d, dict) or d.get("type") != "assistant":
+        continue
+    m = d.get("message")
+    v = m.get("model") if isinstance(m, dict) else None
+    if isinstance(v, str) and v and v != "<synthetic>" and v not in seen:
+        seen.append(v)
+for v in seen:
+    print(v)
+' "$1" 2>/dev/null
+  else
+    return 3
+  fi
+  return 0
+}
+
+_tl_wam_fail() { printf 'tl_worker_actual_model: %s\n' "$1" >&2; return 1; }
+
+# tl_worker_actual_model <agent-id> — the models that actually answered for
+# one worker (ADR 0016): the distinct non-`<synthetic>` assistant
+# `message.model` values of its transcript, one per line, first appearance
+# first. Claude: the first match of
+#   ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/*/$CLAUDE_CODE_SESSION_ID/subagents/agent-<agent-id>.jsonl
+# (an observed, undocumented layout). rc 0 when at least one value is found;
+# otherwise rc 1, no stdout, one stderr line `tl_worker_actual_model: <why>`:
+# bad agent id | no session id | bad session id | transcript not found |
+# no json parser | no model in transcript | no worker artifact on this harness.
+tl_worker_actual_model() {
+  local aid="${1:-}" sid f="" cand out rc
+  case "$aid" in ''|*[!A-Za-z0-9]*) _tl_wam_fail "bad agent id"; return 1 ;; esac
+  [ "$(tl_model_harness)" = claude ] || { _tl_wam_fail "no worker artifact on this harness"; return 1; }
+  sid="${CLAUDE_CODE_SESSION_ID:-}"
+  [ -n "$sid" ] || { _tl_wam_fail "no session id"; return 1; }
+  case "$sid" in *[!A-Za-z0-9-]*) _tl_wam_fail "bad session id"; return 1 ;; esac
+  for cand in "${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}"/projects/*/"$sid"/subagents/agent-"$aid".jsonl; do
+    [ -f "$cand" ] && { f="$cand"; break; }
+  done
+  [ -n "$f" ] || { _tl_wam_fail "transcript not found"; return 1; }
+  out="$(_tl_transcript_models "$f")" && rc=0 || rc=$?
+  [ "$rc" -ne 3 ] || { _tl_wam_fail "no json parser"; return 1; }
+  [ -n "$out" ] || { _tl_wam_fail "no model in transcript"; return 1; }
+  printf '%s\n' "$out"
+}
+
+# tl_escalation_verify <agent-id> <escalation-model> — judge an escalated
+# worker by the model that actually ran (ADR 0016). Prints `escalated` iff
+# tl_worker_actual_model gives rc 0 and EVERY value is in <escalation-model>'s
+# family (tl_model_family: an alias matches its full ids); else
+# `fell-back harness ran <first non-matching id>`; when the actual model
+# cannot be read, `fell-back actual model unverified (<why>)`. rc 0.
+tl_escalation_verify() {
+  local aid="${1:-}" esc="${2:-}" out rc line why="" want m
+  out="$(tl_worker_actual_model "$aid" 2>&1)" && rc=0 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    while IFS= read -r line; do
+      case "$line" in 'tl_worker_actual_model: '*) why="${line#tl_worker_actual_model: }" ;; esac
+    done <<<"$out"
+    printf 'fell-back actual model unverified (%s)\n' "${why:-unknown}"
+    return 0
+  fi
+  want="$(tl_model_family "$esc")" || want=""
+  while IFS= read -r m; do
+    case "$m" in ''|'tl_worker_actual_model: '*) continue ;; esac
+    if [ -z "$want" ] || [ "$(tl_model_family "$m")" != "$want" ]; then
+      printf 'fell-back harness ran %s\n' "$m"
+      return 0
+    fi
+  done <<<"$out"
+  printf 'escalated\n'
 }

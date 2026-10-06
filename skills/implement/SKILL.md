@@ -328,31 +328,80 @@ empty), dispatch the worker with **no model parameter** so it inherits
 this session's model. Otherwise pass exactly that string. Never pass
 `inherit` as a model.
 
-**Escalation fall-back (FR-88)**, for each judgment worker (implementer,
-reviewer, nontrivial runtime-verify) of a TDD whose sidecar `escalation`
-is `escalated`. Read `base-sha` = `git -C "$WT" rev-parse HEAD` just
-before the implementer dispatch.
-1. Apply the transient rule first (FR-41): a rate/usage-limit pattern or
-   rc 143/130 is `paused`, not a fall-back. Exception: a refusal saying the
-   escalation model itself is unavailable to this account (`requires usage
-   credits`, `credits_required`) is not transient, even when it carries
-   `rate_limit` / HTTP 429. It is a fall-back (step 2); pausing would
-   re-dispatch the same refused model on every resume.
-2. Otherwise, if the dispatch tool returned an error, the worker's
-   completion notification reports it failed (an async worker's API error
-   arrives there, not from the dispatch call), or
-   `tl_escalation_fellback_check <report> "$WT" <base-sha> <implementer|verify|review>`
-   prints `fell-back <reason>`:
-   - run `tl_run_set_escalation "$REPO" "$run" "$slug" fell-back <model> "<reason>"`
-     with the reason `dispatch error: <first line of the error>` or the
-     check's reason; show the line it prints;
+**Escalation check (FR-88, ADR 0016)**, after each judgment worker
+(implementer, reviewer, nontrivial runtime-verify) of a TDD whose sidecar
+`escalation` is `escalated`. The outcome is judged by the model that
+actually ran, not the one requested. Read `base-sha` =
+`git -C "$WT" rev-parse HEAD` just before the implementer dispatch. Take
+the first rule that matches:
+1. **Transient error** (FR-41): a rate- or usage-limit pattern, or rc
+   143/130 → `paused`, as for any worker. Exception: a refusal saying the
+   escalation model itself is unavailable to this account
+   (`credits_required`, `requires usage credits`) is not transient, even
+   when it carries `rate_limit` / HTTP 429. It is a dispatch error (rule
+   2); pausing would re-dispatch the same refused model on every resume.
+2. **Dispatch error.** The dispatch tool returned an error, or the
+   worker's completion notification reports it failed (an async worker's
+   API error arrives there, not from the dispatch call):
+   - run `tl_run_set_escalation "$REPO" "$run" "$slug" fell-back <model> "dispatch error: <first line of the error>"`
+     and show the line it prints;
    - re-run the `tl:models-record` block (it now passes no escalation);
    - re-dispatch the same worker with **no model parameter**, on a fresh
      empty report.
+3. **Otherwise**, run `tl_escalation_verify` through the block below
+   (inputs `TL_REPO`, `TL_RUN`, `TL_SLUG`, `TL_AGENT_ID` = the worker's
+   agent id from the dispatch tool result, `TL_REPORT` = its report path,
+   `TL_WT`, `TL_BASE_SHA`, `TL_WORKER` = `implementer` | `verify` |
+   `review`). It first runs `tl_escalation_fellback_check`; a
+   `fell-back` there is the dispatch-error arm of rule 2. Its last line
+   is the action:
+   - `action=redispatch`: no report and no work. The fall-back is
+     recorded; re-run the `tl:models-record` block and re-dispatch the
+     worker with **no model parameter**, on a fresh empty report.
+   - `action=keep`: another family answered (`harness ran <id>`) or the
+     actual model could not be read (`actual model unverified (<why>)`).
+     The fall-back is recorded and the worker's output is kept: the work
+     is valid, only the record changes. Re-run the `tl:models-record`
+     block so the TDD's later workers inherit.
+   - `action=none`: the escalation held; the record is unchanged.
+   - no output: the TDD is no longer `escalated`, so nothing is checked.
 
-A fall-back is never detected by an inactivity timeout. A check that
-prints `ok` with an empty report is a real worker failure: apply the
-normal rules below.
+The outcome recorded last is final. Once the TDD has fallen back, its
+inherited workers are never verified (the block prints nothing), so they
+cannot overwrite that record. A fall-back is never detected by an
+inactivity timeout. A check that passes with an empty report is a real
+worker failure: apply the normal rules below. Non-zero exit → show its
+stderr, unlock, **stop**.
+
+<!-- tl:escalation-verify -->
+```bash
+_tl_src="${CLAUDE_PLUGIN_ROOT:-${GROK_PLUGIN_ROOT:-}}"
+. "${_tl_src}/scripts/lib/plugin-root.sh" || { echo "throughline: cannot source plugin-root.sh" >&2; exit 1; }
+. "$(tl_plugin_root)/scripts/lib/models.sh" || { echo "throughline: cannot source models.sh" >&2; exit 1; }
+. "$(tl_plugin_root)/scripts/lib/run-record.sh" || { echo "throughline: cannot source run-record.sh" >&2; exit 1; }
+: "${TL_REPO:?TL_REPO required}" "${TL_RUN:?TL_RUN required}" "${TL_SLUG:?TL_SLUG required}"
+: "${TL_AGENT_ID:?TL_AGENT_ID required}" "${TL_REPORT:?TL_REPORT required}" "${TL_WT:?TL_WT required}"
+: "${TL_BASE_SHA:?TL_BASE_SHA required}" "${TL_WORKER:?TL_WORKER required}"
+_tl_get() { tl_run_get_model_field "$TL_REPO" "$TL_RUN" "$TL_SLUG" "$1"; }
+[ "$(_tl_get escalation 2>/dev/null)" = escalated ] || exit 0
+tl_m="$(_tl_get escalation_model)" && [ -n "$tl_m" ] || { echo "throughline: no escalation_model for $TL_SLUG" >&2; exit 1; }
+tl_chk="$(tl_escalation_fellback_check "$TL_REPORT" "$TL_WT" "$TL_BASE_SHA" "$TL_WORKER")" || exit 1
+case "$tl_chk" in
+  'fell-back '*)
+    tl_run_set_escalation "$TL_REPO" "$TL_RUN" "$TL_SLUG" fell-back "$tl_m" "${tl_chk#fell-back }" || exit 1
+    echo 'action=redispatch'; exit 0 ;;
+  ok) ;;
+  *) echo "throughline: unexpected fall-back check '$tl_chk'" >&2; exit 1 ;;
+esac
+tl_v="$(tl_escalation_verify "$TL_AGENT_ID" "$tl_m")" || exit 1
+case "$tl_v" in
+  escalated) echo 'action=none' ;;
+  'fell-back '*)
+    tl_run_set_escalation "$TL_REPO" "$TL_RUN" "$TL_SLUG" fell-back "$tl_m" "${tl_v#fell-back }" || exit 1
+    echo 'action=keep' ;;
+  *) echo "throughline: unexpected escalation verdict '$tl_v'" >&2; exit 1 ;;
+esac
+```
 
 Dispatch **one** implementer worker. It **must not spawn children**.
 
@@ -407,7 +456,9 @@ Parent creates the empty report `<run-dir>/<slug>.verify.txt` and
 passes its path. Worker drives the TDD verification plan and writes a last line
 `^VERIFY_RESULT: (PASS|FAIL|BLOCKED|SKIP)$`. `SKIP` requires a following
 `EVIDENCE: <non-empty>` line. Missing token → FAIL. Transient stderr/rc
-→ `paused` (FR-41), do not write FAIL.
+→ `paused` (FR-41), do not write FAIL. For a nontrivial verify of an
+`escalated` TDD, apply the step 7 escalation check first
+(`TL_WORKER=verify`).
 
 Parent then `tl_verdict_write "$REPO" "$run" "$slug" runtime-verify`.
 FAIL or BLOCKED → halt (`failed`/`blocked`), unlock, **stop**. PASS or
@@ -428,6 +479,8 @@ optional `agents/security-reviewer.md` if that file exists.
 Parent creates the empty report `<run-dir>/<slug>.review.txt` and
 passes its path. Accept the token only as a whole line `^REVIEW_RESULT: (PASS|FAIL)$` (last matching
 line wins — not a mid-prose scrape). No such line → FAIL.
+For an `escalated` TDD, apply the step 7 escalation check first
+(`TL_WORKER=review`).
 
 Parent writes `review.json` via `tl_verdict_write`. FAIL → halt, unlock,
 **stop**. PASS → continue.
@@ -488,6 +541,9 @@ escalation is then unavailable for that TDD (`--escalate` still works).
   `FAIL` verdict with the TDD unchanged on the integration branch
   (declined by `--no-auto-escalate` / `THROUGHLINE_AUTO_ESCALATE=0`).
   Outcomes `escalated` / `already-top` / `fell-back`, one line each,
-  recorded in the sidecar. Effort is unchanged by escalation.
+  recorded in the sidecar. Effort is unchanged by escalation. ADR 0016:
+  the outcome is judged by the model that actually ran (the worker's
+  transcript, `tl_escalation_verify`); an unreadable actual model counts
+  as `fell-back`.
 - Sequential stacked PRs: merge bottom-up; enable auto-delete of head
   branches so GitHub retargets. Or use `--combined`.
