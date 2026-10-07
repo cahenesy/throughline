@@ -135,9 +135,18 @@ input contains `[UI]`, it prints `ux: python3 required` and returns rc 3.
   against schema v1 and the PRD at `<repo-root>/docs/PRD.md`, then checks
   the files on disk:
   - every `states[].file` exists;
-  - each mock HTML file references no `http:`, `https:` or
-    protocol-relative `//` URL in `src=`, `href=`, `@import` or `url(`
-    (checked by regex over the raw text, case-insensitive);
+  - each mock's reference values pass the scan. The values scanned are
+    `src`, `href`, every `srcset` candidate, `action`, `poster`, `data`,
+    `xlink:href`, `background`, meta-refresh targets, and CSS `url()`,
+    `@import` and `image-set()`. Entity-, CSS- and percent-encoded forms
+    are decoded first. Any of these is rejected:
+    - an `http(s)` / `ws(s)` / `ftp` / `file` scheme, a
+      protocol-relative `//`, or a `data:text/html`;
+    - an absolute path;
+    - a path climbing out of `docs/ux/`.
+
+    `xmlns` attributes and plain text are not scanned. The scan is
+    defence in depth: rev 2's render isolation is the boundary;
   - when `tokens.css` exists, each mock links it through a relative
     `<link rel="stylesheet" href="…tokens.css">`;
   - every image (`*.png` / `*.jpg` / `*.jpeg` / `*.webp`) under
@@ -180,12 +189,45 @@ input contains `[UI]`, it prints `ux: python3 required` and returns rc 3.
   keep their PNG bytes in every outcome.
   - **Browser choice.** It uses the first executable found among
     `$THROUGHLINE_UX_BROWSER`, `chromium`, `chromium-browser`,
-    `google-chrome`, `chrome`. It never passes `--no-sandbox`. Each shot
-    runs as:
-    `<browser> --headless=new --disable-gpu --hide-scrollbars --host-resolver-rules="MAP * ~NOTFOUND" --window-size=<w>,<h> --screenshot=<abs png> file://<abs html>`,
-    under `timeout 60` when `timeout` exists. The resolver rule blocks
-    network access at render time, so an un-self-contained mock renders
-    broken.
+    `google-chrome`, `chrome`. It never passes `--no-sandbox`.
+  - **Render isolation (rev 2).** The browser never opens a repo file,
+    and never uses `file://`:
+    1. Check the **whole** `docs/ux/` tree for symlinks
+       (`symlink_problems`), and check the named screens' mocks with the
+       scan. Then copy `docs/ux/` with `copytree(symlinks=True)` into a
+       private dir from `tempfile.mkdtemp()`, **outside the repo**. Only
+       the python server reads it, never the browser, so snap confinement
+       does not matter. Re-check the copy for symlinks, which closes the
+       check-to-copy TOCTOU, and remove the copy in a `finally`.
+    2. Rewrite each `.html`/`.htm`/`.xhtml` file in the copy as
+       `<!DOCTYPE html>` + `CSP_META` + its original bytes, with one
+       leading UTF-8 BOM stripped. There is no HTML parsing, so no
+       prefix can precede the policy.
+    3. Serve the copy from a loopback-only HTTP server: a stdlib
+       `ThreadingHTTPServer` with daemon threads, bound to `127.0.0.1:0`,
+       GET only, rooted at the copy, with request logging silenced so
+       nothing reaches the `ux:` stderr channel. **Every** response,
+       including SVG, XML and errors, carries the same policy as a
+       `Content-Security-Policy` HTTP header. The meta is a second
+       layer. HTML is served as `text/html; charset=utf-8`.
+    4. Shoot each page as
+       `<browser> --headless=new --disable-gpu --hide-scrollbars --host-resolver-rules="MAP * ~NOTFOUND" --proxy-server=http://127.0.0.1:9 --proxy-bypass-list="<-loopback>;127.0.0.1:<port>" --window-size=<w>,<h> --screenshot=<abs png> http://127.0.0.1:<port>/screens/<sid>/<state>.html`,
+       under `timeout 60` when `timeout` exists.
+
+    The policy (header and `CSP_META`) is
+    `default-src 'self' data:; script-src 'none'; object-src 'none'; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'; style-src 'self' 'unsafe-inline' data:`.
+
+    The **browser** therefore enforces the boundary, and the regex scan
+    in `validate` is defence in depth:
+    - no script runs;
+    - an `http://` page cannot load `file:` URLs;
+    - an absolute or `../` path resolves on the server, which serves
+      only the copy, and returns 404;
+    - every other host, IP literal or loopback port goes to a dead
+      proxy, and CSP blocks it as well.
+
+    A symlink anywhere in `docs/ux/`, or a named-screen mock that fails
+    the scan, makes render refuse before clearing (rc 2).
   - **On success:** one `rendered <path>` line per PNG, then the status
     line, then rc 0.
   - **No browser:** status line
@@ -203,8 +245,10 @@ input contains `[UI]`, it prints `ux: python3 required` and returns rc 3.
   creates when it is absent.
   - It refuses (rc 2) when `<outdir>` resolves inside a git work tree,
     or when `<url>` is not `http://` or `https://`.
-  - It runs the same browser command as `render`, without
-    `--host-resolver-rules`, to `<outdir>/capture-<w>x<h>.png`, and
+  - It runs the same browser binary as `render`, without
+    `--host-resolver-rules` **and without either proxy flag** (a capture
+    must reach the user's live app), to
+    `<outdir>/capture-<w>x<h>.png`, and
     prints the path. A capture is reference only, and this function
     writes no index.
   - rc 0 means captured. rc 4 means no browser was found or the capture
@@ -280,8 +324,9 @@ written by the skill (TDD 0071).
 2. Add `validate` (schema, file checks, offline-URL scan, tokens link,
    unreferenced images) and `coverage-check`, plus the `tl_ux_validate` /
    `tl_ux_coverage` wrappers (integration-ref resolution, `git show`).
-3. Write `ux_render.py` with `render` (browser discovery, per-shot
-   command, scoped cleanup, whole-set status line) and
+3. Write `ux_render.py` with `render` (browser discovery, rev-2
+   isolation: private copy, byte-0 CSP, loopback server; scoped
+   cleanup; whole-set status line) and
    `index-html`, plus their wrappers.
 
 ## Failure modes & edge cases
@@ -291,8 +336,10 @@ written by the skill (TDD 0071).
   never silently lost.
 - *Other id schemes.* Any `PREFIX-N` id works (`FR-12`, `R-3`, `UX-4`).
   An id of another shape that carries `[UI]` fails loudly.
-- *CDN links from a delegate.* `validate` names the file and the URL,
-  and the render-time resolver rule shows the broken result.
+- *CDN links or local-file references from a delegate.* `validate`
+  names them. At render time the browser cannot load them anyway (rev 2
+  isolation), so even a scanner miss cannot bake a local file or a
+  network fetch into a PNG.
 - *A browser hangs.* `timeout 60` turns it into a failed shot, which
   gives the scoped cleanup and rc 4.
 - *No integration ref* (fresh clone): coverage gives rc 2. It never
@@ -360,8 +407,13 @@ written by the skill (TDD 0071).
        PNGs.
      - The last line is `screenshots: complete`, the index bytes are
        unchanged, and `validate` reports `screenshots 4/4`.
-     - The stub's logged argv contains `--host-resolver-rules` and no
-       `--no-sandbox`.
+     - The stub's logged argv contains `--host-resolver-rules`, the proxy
+       flags and an `http://127.0.0.1:<port>/screens/…` URL. It has no
+       `--no-sandbox` and no `file://`. The stub fetches its URL argument
+       while the server is live, and logs the body and the headers: the
+       body starts with `<!DOCTYPE html><meta http-equiv="Content-Security-Policy"`,
+       and the response has a `Content-Security-Policy` header. After
+       the call, no render copy remains.
   8. **Render scoping (FR-99).** After rendering both screens, re-render
      only `a` with a changed mock → `a`'s PNGs are rewritten, and `b`'s
      PNG bytes and mtimes are unchanged. Delete `a`'s `error.html` from
@@ -395,9 +447,30 @@ written by the skill (TDD 0071).
         exists in the out dir.
       - The same call with `<outdir>` inside the temp repo → rc 2.
       - A `file://` URL → rc 2.
-      - The stub's argv has no `--host-resolver-rules`.
+      - The stub's argv has no `--host-resolver-rules` and no
+        `--proxy-server`.
   10. **Real render** (when Chrome is present): one mock at 390×844 → a
-      PNG whose IHDR width/height read 390×844.
+      PNG whose IHDR width/height read 390×844. A styled mock linking
+      `tokens.css` and an inline-SVG mock render non-blank.
+  10b. **Isolation probe matrix** (real Chrome; rev 2). A brightly
+      coloured canary sits outside the repo.
+      - **Browser-enforced cases.** The CSS-file vectors (`tokens.css` /
+        `shared.css` with `url(/abs/canary.png)`) and the base64
+        `data:text/css` vector must **pass validate (rc 0), render rc 0,
+        and show 0 canary pixels**. This proves the browser, not the
+        scanner, holds the boundary.
+      - **Other cases.** Each renders with 0 canary pixels, or render
+        refuses it (rc 2), or Chrome hangs (rc 4, no PNG):
+      - `<script>location=…</script>` behind `<!-->` / `<!--->`;
+      - `<img src=…>` with an unquoted `=`, a backtick, or NBSP;
+      - `data:text/css;base64` `url()`;
+      - `tokens.css` and another CSS file with `url(/abs/canary.png)`;
+      - meta refresh;
+      - `<base href=file:///>`;
+      - an `<img>` on another loopback port, and a `%2e%2e` path.
+
+      A positive control (a direct, unisolated `file://` render of one
+      vector) shows the canary, which proves the probe can see a leak.
   11. **index.html.**
       - Deterministic: two runs give identical bytes.
       - A screen titled `<img src=x onerror=alert(1)>` appears escaped.
@@ -435,6 +508,7 @@ written by the skill (TDD 0071).
 | FR-94 captures never committed | `validate`'s `unreferenced image` rule; `tl_ux_capture` refuses an in-repo out dir; `baseline` enum; obs 6, 9b |
 | FR-99 point-in-time, superseded | `tl_ux_render` scoped deletion and re-render; untouched screens byte-identical; obs 8 |
 | FR-101 merged-mock check (query side) | `tl_ux_merged_index` + `tl_ux_coverage` read the integration-branch blob; `stale`/`uncovered`; obs 12 |
+| FR-91 "networking disabled" (rev 2; ADR 0017 §1) | render isolation via private copy + byte-0 CSP + loopback HTTP; obs 7, 10b |
 | NFR-4 verdict honesty | rc 4 degrade distinct from rc 1/2 failures; internal errors exit 2; obs 9, 13 |
 
 Skill-side FR-90/91/94/99 is TDD 0071; the FR-101 refusal is TDD 0072.
@@ -461,6 +535,16 @@ Skill-side FR-90/91/94/99 is TDD 0071; the FR-101 refusal is TDD 0072.
   directly, with no build step. *Rejected: `tokens.json` (W3C / Style
   Dictionary).* Every mock would need a CSS generation step. It is more
   portable to design tools, but that is not needed for an HTML record.
+- **Loopback HTTP + CSP render isolation (chosen, rev 2):** stdlib
+  `http.server` on `127.0.0.1:0`, rooted at a private copy, so the
+  browser enforces the boundary.
+  - *Rejected: `file://` + regex scan.* A browser can read any local
+    file, and three build gates found scanner bypasses.
+  - *Rejected: bwrap/container sandboxing.* Linux-only, and a new system
+    dependency.
+  - *Rejected: `--blink-settings=scriptEnabled=false`.* Headless
+    `--screenshot` writes no PNG with it, and it does not stop static
+    loads.
 - **Text-hash change detection (chosen).** *Rejected: git-diffing the
   PRD at the recorded rev.* It breaks on rewritten or squashed history,
   and mapping hunks to blocks needs a second parser.
@@ -477,29 +561,59 @@ Skill-side FR-90/91/94/99 is TDD 0071; the FR-101 refusal is TDD 0072.
   authoritative list is `tl_ux_ui_reqs`, which skips inline code and
   fences.
 - FR-91's acceptance says "networking disabled". The PRD leaves how to
-  enforce that open. This design checks it twice: statically in
-  `validate`, and dynamically through the resolver rule at render time.
+  enforce that open. This design checks it statically in `validate`, and
+  the browser enforces it at render time through rev 2's loopback-HTTP +
+  CSP isolation.
+
 - The PRD's cascade note (#191) expected supersession of the
   `/prd-author` and `/tdd-author` TDDs. FR-89–FR-101 are new
   requirements, and the existing FRs those TDDs cover are unchanged, so
   this pass adds new TDDs and supersedes none.
 
+**Revision 2 (build halts, run 20261006-220142).** The original render
+opened repo mocks over `file://`, and relied on a resolver rule plus a
+regex scan. Gates showed three times that a scanner cannot bound what a
+browser loads:
+- script navigation;
+- `<!-->` before the doctype;
+- unquoted, backtick and NBSP attribute values;
+- base64 CSS;
+- `url()` in CSS files.
+
+Each baked an out-of-repo file into a committed PNG. Rev 2 makes the
+browser the boundary (a private copy, a byte-0 CSP, loopback HTTP), keeps
+the scan as a second layer, and records the private-copy and byte-0 CSP
+changes the build already made.
+
 ## Decisions to promote (ADR candidates)
 - Promoted: ADR 0017 (UX record: in-repo, self-contained HTML, delegated by
   role, design input not a build gate), added in this design PR.
+
+## Scope override
+The body runs past the 500-line bound (612, per the pre-pass) because of revision 2, which
+is gate-driven security hardening of a unit that is already built: the
+render-isolation contract, its real-browser probe-matrix observation, and
+the revision record that explains why the original `file://` render was
+replaced. None of it is new scope. Every added line constrains how
+`render` stops out-of-repo files reaching committed PNGs. Splitting
+render/capture/index-html into another TDD now would orphan the retained
+build branch, which already implements them, and force a re-scope with
+no reviewer gain.
 
 ## Touched files
 - `scripts/lib/ux.sh` — `tl_ux_*` wrappers, `[UI]` short-circuit, python3 check, integration ref + `git show`
 - `scripts/lib/ux_record.py` — `ui-reqs`, `delta`, `validate`, `coverage-check`
 - `scripts/lib/ux_render.py` — `render`, `capture`, `index-html`
 - `tests/ux-record.test.sh` — obs 1–6, 12, 13
-- `tests/ux-render.test.sh` — obs 7–11, 9b
+- `tests/ux-render.test.sh` — obs 7–11, 9b, 10b
+- `tests/implement-gate.test.sh` — registers the two new evals (ci-checks runs only this aggregator)
 
 ## Expected diff size
-- `scripts/lib/ux.sh` — 140 lines
-- `scripts/lib/ux_record.py` — 290 lines
-- `scripts/lib/ux_render.py` — 250 lines
-- `tests/ux-record.test.sh` — 290 lines
-- `tests/ux-render.test.sh` — 290 lines
+- `scripts/lib/ux.sh` — 130 lines
+- `scripts/lib/ux_record.py` — 660 lines (exception: one cohesive module; the field-by-field schema validator, the PRD parser, and the reference scanner are each a single concern, and splitting them adds import plumbing for no reviewer gain)
+- `scripts/lib/ux_render.py` — 420 lines (exception: render isolation — private copy, byte-0 CSP, loopback server, browser lifecycle — must stay in one place to be auditable)
+- `tests/ux-record.test.sh` — 330 lines (exception: fixture-heavy eval; one mutation per validate rule)
+- `tests/ux-render.test.sh` — 600 lines (exception: real-browser probe matrix plus stub scoping cases)
+- `tests/implement-gate.test.sh` — 6 lines
 
-Total expected diff: 1260 lines across 5 files.
+Total expected diff: 2146 lines across 6 files.
