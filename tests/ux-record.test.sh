@@ -198,6 +198,25 @@ mut "PNG of an undeclared viewport" 'default@phone\.png: unreferenced image' \
 mut "leftover n/a mock" 'screens/a/error\.html: unlisted mock \(superseded\)' "printf x > docs/ux/screens/a/error.html"
 mut "stray capture" 'docs/ux/capture\.png: unreferenced image' "printf x > docs/ux/capture.png"
 mut "'..' path" '\.\.' "jmut $J 'd[\"screens\"][0][\"states\"][0][\"file\"]=\"screens/a/../a/default.html\"'"
+# [S] security: local-file disclosure, network bypass, symlinks (0070 build review)
+mut "file:// iframe" 'default\.html: .*file://' \
+  "sed -i 's#<head>#<head><iframe src=\"file:///etc/hostname\"></iframe>#' docs/ux/screens/a/default.html"
+mut "absolute local path" 'default\.html: .*/etc/passwd.*outside docs/ux' \
+  "sed -i 's#<head>#<head><img src=\"/etc/passwd\">#' docs/ux/screens/a/default.html"
+mut "relative path escaping docs/ux" 'default\.html: .*outside docs/ux' \
+  "sed -i 's#<head>#<head><img src=\"../../../../../etc/passwd\">#' docs/ux/screens/a/default.html"
+mut "IP literal in script" 'default\.html: .*10\.0\.0\.1' \
+  "sed -i 's#<head>#<head><script>fetch(\"http://10.0.0.1/x\")</script>#' docs/ux/screens/a/default.html"
+mut "websocket URL" 'default\.html: .*wss?://' \
+  "sed -i 's#<head>#<head><script>new WebSocket(\"ws://h:1\")</script>#' docs/ux/screens/a/default.html"
+mut "symlinked mock" 'default\.html: symlink' \
+  "printf '<html><head></head></html>' > \"$ROOT/outside.html\"; rm docs/ux/screens/a/default.html; ln -s \"$ROOT/outside.html\" docs/ux/screens/a/default.html"
+mut "symlinked screen dir" 'screens/a: symlink' \
+  "mv docs/ux/screens/a \"$ROOT/adir$RANDOM\" && ln -s \"\$(ls -d $ROOT/adir* | tail -n1)\" docs/ux/screens/a"
+MD="$ROOT/m6data"; cp -a "$R6" "$MD"
+sed -i 's#<head>#<head><img src="data:image/png;base64,AAAA" alt=""><a href="#top">t</a>#' "$MD/docs/ux/screens/a/default.html"
+ux "tl_ux_validate $(q "$MD")"
+[ "$RC" -eq 0 ] && ok "[S] data: URI and #fragment stay valid" || bad "[S] data/fragment: rc=$RC out='$OUT' err='$ERR'"
 M6="$ROOT/m6tok"; cp -a "$R6" "$M6"; printf ':root{--x:1px}\n' >"$M6/docs/ux/tokens.css"
 sed -i 's#<head>#<head><link rel="stylesheet" href="../../tokens.css">#' "$M6/docs/ux/screens/a/default.html"
 ux "tl_ux_validate $(q "$M6")"

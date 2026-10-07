@@ -249,6 +249,30 @@ else
   echo "  skip — [10] no headless Chrome/Chromium on PATH; real render not observed"
 fi
 
+echo "[S] render security: network fully blocked, unsafe mocks and symlinks refused"
+RS="$ROOT/rs"; mk "$RS"; reset_stub
+ux "tl_ux_render $(q "$RS") a" "$SOK"
+if rdable "$ROOT/stub.log" && [ -s "$ROOT/stub.log" ]; then
+  grep -qx -- '--proxy-server=http://127.0.0.1:9' "$ROOT/stub.log" && grep -qx -- '--proxy-bypass-list=<-loopback>' "$ROOT/stub.log" \
+    && ok "[S] render argv routes all traffic (incl. IP literals, loopback) to a dead proxy" || bad "[S] proxy argv: $(cat "$ROOT/stub.log")"
+else bad "[S] stub log empty"; fi
+RS2="$ROOT/rs2"; mk "$RS2"; reset_stub
+sed -i 's#<head>#<head><iframe src="file:///etc/hostname"></iframe>#' "$RS2/docs/ux/screens/a/default.html"
+ux "tl_ux_render $(q "$RS2") a" "$SOK"
+[ "$RC" -eq 2 ] && printf '%s' "$ERR" | grep -q 'render refused' && [ ! -s "$ROOT/stub.log" ] \
+  && ok "[S] a mock referencing file:// is refused before the browser runs (rc 2)" || bad "[S] unsafe mock rc=$RC err='$ERR'"
+RS3="$ROOT/rs3"; mk "$RS3"; reset_stub
+mkdir -p "$ROOT/victim"; printf 'keep' >"$ROOT/victim/precious.png"
+mv "$RS3/docs/ux/screens/a/default.html" "$ROOT/victim/default.html"; rmdir "$RS3/docs/ux/screens/a"
+ln -s "$ROOT/victim" "$RS3/docs/ux/screens/a"
+ux "tl_ux_render $(q "$RS3") a" "$SOK"
+[ "$RC" -eq 2 ] && printf '%s' "$ERR" | grep -q 'symlink' && [ -f "$ROOT/victim/precious.png" ] && [ ! -s "$ROOT/stub.log" ] \
+  && ok "[S] symlinked screen dir → rc 2, nothing outside the repo deleted or written" || bad "[S] symlink dir rc=$RC err='$ERR'"
+RS4="$ROOT/rs4"; mk "$RS4"; mv "$RS4/docs/ux" "$ROOT/uxreal"; ln -s "$ROOT/uxreal" "$RS4/docs/ux"
+ux "tl_ux_index_html $(q "$RS4")"
+[ "$RC" -eq 2 ] && [ ! -e "$ROOT/uxreal/index.html" ] && ok "[S] symlinked docs/ux → index-html rc 2, writes nothing" \
+  || bad "[S] symlinked docs/ux rc=$RC err='$ERR'"
+
 echo "[11] index.html: deterministic, escaped, flow-ordered, provenance"
 R11="$ROOT/r11"
 mk "$R11" "{\"screens\":{\"a\":[\"default\",\"error\"],\"b\":[\"default\"]},\"flow\":[\"b\",\"a\"],\"titles\":{\"a\":\"<img src=x onerror=alert(1)>\"},\"delegates\":[\"frontend-design\"],\"fidelity\":\"high\",$VP2}"
