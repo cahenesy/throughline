@@ -47,7 +47,8 @@ mkstub() {
 #!$BASH_BIN
 for a in "\$@"; do printf '%s\n' "\$a"; done >>"$ROOT/stub.log"; echo --- >>"$ROOT/stub.log"
 n=\$(( \$(cat "$ROOT/stub.n" 2>/dev/null || echo 0) + 1 )); echo \$n >"$ROOT/stub.n"
-out=""; for a in "\$@"; do case "\$a" in --screenshot=*) out="\${a#--screenshot=}" ;; file://*) f="\${a#file://}"; f="\$(printf '%b' "\${f//%/\\\\x}")"; cat "\$f" >>"$ROOT/stub.html" 2>/dev/null ;; esac; done
+out=""; for a in "\$@"; do case "\$a" in --screenshot=*) out="\${a#--screenshot=}" ;; file://*) f="\${a#file://}"; f="\$(printf '%b' "\${f//%/\\\\x}")"; cat "\$f" >>"$ROOT/stub.html" 2>/dev/null
+  find "\${f%%/screens/*}" -type f \( -name '*.html' -o -name '*.htm' -o -name '*.xhtml' \) -exec head -c 57 {} \; -exec echo \; >>"$ROOT/stub.heads" 2>/dev/null ;; esac; done
 mode=$1
 [ "\$mode" = failall ] && exit 1
 printf '%s' '$PNG_B64' | base64 -d >"\$out"
@@ -57,7 +58,7 @@ EOF
   chmod +x "$ROOT/stub-$1"
 }
 for m in ok fail2 failall; do mkstub "$m"; done
-reset_stub() { rm -f "$ROOT/stub.log" "$ROOT/stub.n" "$ROOT/stub.html"; }
+reset_stub() { rm -f "$ROOT/stub.log" "$ROOT/stub.n" "$ROOT/stub.html" "$ROOT/stub.heads"; }
 SOK="THROUGHLINE_UX_BROWSER=$ROOT/stub-ok"
 
 # PATH dir with python3 and tools but no browser.
@@ -354,6 +355,56 @@ if [ -n "$REAL" ]; then
     || bad "[S] canary leak: rc=$RC red='$got' out='$OUT' err='$(printf '%s' "$ERR" | tail -n 3)'"
 else
   echo "  skip — [S] no headless Chrome/Chromium on PATH; real-browser canary check not observed"
+fi
+
+echo "[S] CSP prefix: every rendered copy starts with our doctype + CSP, whatever precedes the mock's doctype"
+# pfx.py <ux-dir> <canary-url>: one screen per prefix case; each mock tries to
+# navigate to the canary before (or instead of) its own doctype.
+cat >"$ROOT/pfx.py" <<'PY'
+import os, sys
+ud, can = sys.argv[1], sys.argv[2]
+js = b"<script>location='file://'+'" + can.encode() + b"'</script>"
+body = b"<html><head><title>m</title></head><body><h1>mock</h1></body></html>\n"
+cases = {
+    "p1": b"<!-->" + js + b"<!-- --><!doctype html>" + body,                     # abruptly-closed comment
+    "p2": b"<!--->" + js + b"<!-- --><!doctype html>" + body,                    # abruptly-closed comment
+    "p3": b"<!-- c -->\n<!doctype html><html><head>" + js + b"</head><body><h1>mock</h1></body></html>\n",
+    "p4": b"<html><head>" + js + b"</head><body><h1>mock</h1></body></html>\n",   # no doctype
+    "p5": b"\xef\xbb\xbf" + js + b"<!doctype html>" + body,                      # BOM then script
+    "p6": b"<!-- c -->\r\n<!doctype html>\r\n<html>\r\n<head>" + js + b"</head>\r\n<body><h1>mock</h1></body>\r\n</html>\r\n",
+}
+for sid, b in cases.items():
+    open(os.path.join(ud, "screens", sid, "default.html"), "wb").write(b)
+PY
+PIDS='"p1":["default"],"p2":["default"],"p3":["default"],"p4":["default"],"p5":["default"],"p6":["default"]'
+PFX='<!DOCTYPE html><meta http-equiv="Content-Security-Policy"'
+RP="$ROOT/rp"; mk "$RP" "{\"screens\":{$PIDS},\"viewports\":[[\"phone\",390,844]]}"
+python3 -I "$ROOT/pfx.py" "$RP/docs/ux" "$ROOT/outside-canary/canary.html"
+reset_stub
+ux "tl_ux_render $(q "$RP") p1 p2 p3 p4 p5 p6" "$SOK"
+if [ "$RC" -eq 0 ] && rdable "$ROOT/stub.heads" && [ -s "$ROOT/stub.heads" ]; then
+  nh="$(grep -c . "$ROOT/stub.heads")"; nbad="$(grep -cvxF -- "$PFX" "$ROOT/stub.heads")"
+  [ "$nh" -ge 36 ] && [ "$nbad" -eq 0 ] \
+    && ok "[S] stub: all $nh rendered-copy heads are exactly our doctype + CSP meta" \
+    || bad "[S] stub: $nbad/$nh heads differ: $(grep -vxF -- "$PFX" "$ROOT/stub.heads" | sort -u | head -n 3)"
+else bad "[S] stub prefix render rc=$RC err='$ERR'"; fi
+if [ -n "$REAL" ]; then
+  mkdir -p "$ROOT/outside-canary"
+  printf '<html><body style="margin:0;background:#ff0000"><h1>SECRET-CANARY-1234</h1></body></html>\n' >"$ROOT/outside-canary/canary.html"
+  CP="$ROOT/ctlp.png"; cp "$RP/docs/ux/screens/p1/default.html" "$ROOT/ctlp.html"
+  timeout 60 "$REAL" --headless=new --disable-gpu --hide-scrollbars --window-size=390,844 --screenshot="$CP" "file://$ROOT/ctlp.html" >/dev/null 2>&1
+  ctl="$(redpx "$CP")"
+  [ "$ctl" != err ] && [ "$ctl" -gt 0 ] && ok "[S] control: the <!--> mock rendered without protection shows the canary ($ctl red px)" \
+    || echo "  note — [S] <!--> control render did not navigate (red=$ctl); canary checks below prove less"
+  ux "tl_ux_render $(q "$RP") p1 p2 p3 p4 p5 p6" XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-}"
+  [ "$RC" -eq 0 ] || bad "[S] real prefix render rc=$RC err='$(printf '%s' "$ERR" | tail -n 3)'"
+  for c in "p1 <!-->" "p2 <!--->" "p3 comment-then-doctype" "p4 no-doctype" "p5 BOM-then-script" "p6 CRLF"; do
+    id="${c%% *}"; got="$(redpx "$RP/docs/ux/screens/$id/default@phone.png")"
+    [ "$got" != err ] && [ "$got" -eq 0 ] && ok "[S] real $REAL: ${c#* } mock → PNG has no canary pixels" \
+      || bad "[S] canary leak via ${c#* } prefix: red='$got'"
+  done
+else
+  echo "  skip — [S] no headless Chrome/Chromium on PATH; real-browser prefix canary checks not observed"
 fi
 
 echo "[11] index.html: deterministic, escaped, flow-ordered, provenance"
