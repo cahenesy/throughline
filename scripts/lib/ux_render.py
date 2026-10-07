@@ -74,18 +74,21 @@ def _good_png(p):
 CSP = ("script-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; "
        "worker-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'")
 CSP_META = ('<meta http-equiv="Content-Security-Policy" content="%s">' % CSP).encode("ascii")
-_DOCTYPE_RE = re.compile(rb"(?:\xef\xbb\xbf)?\s*(?:<!--.*?-->\s*)*<!doctype[^>]*>", re.I | re.S)
+_PREFIX = b"<!DOCTYPE html>" + CSP_META
 
 
 def _inject_csp(path):
-    """Put CSP_META first in the document: after a leading doctype (so the page
-    keeps its rendering mode) or BOM, before any element that could run."""
+    """Write _PREFIX at byte 0, before the mock's own bytes (one leading UTF-8
+    BOM dropped). No HTML is parsed: whatever the mock starts with (comments,
+    abruptly-closed <!--> comments, script, no doctype) comes after the CSP.
+    Our doctype comes first, so the page renders in standards mode and the
+    mock's own later doctype is ignored."""
     with open(path, "rb") as fh:
         b = fh.read()
-    m = _DOCTYPE_RE.match(b)
-    i = m.end() if m else (3 if b.startswith(b"\xef\xbb\xbf") else 0)
+    if b.startswith(b"\xef\xbb\xbf"):
+        b = b[3:]
     with open(path, "wb") as fh:
-        fh.write(b[:i] + CSP_META + b[i:])
+        fh.write(_PREFIX + b)
 
 
 def _private_copy(root, ud):
