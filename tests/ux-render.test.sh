@@ -3,10 +3,12 @@
 # rendering (scoped clear, whole-set status, rc-4 degrade), captures that are
 # never in-repo, and the generated index.html flow page.
 #
-# Observation points 7–11 and 9b of the TDD's Verification plan. A stub browser
-# (THROUGHLINE_UX_BROWSER) writes a 1×1 PNG and logs its argv; when a real
-# Chrome/Chromium is on PATH, obs 10 also runs one real render (skipped with a
-# printed note when none exists; --no-sandbox is never passed). Every negated
+# Observation points 7–11, 9b and 10b of the TDD's Verification plan. A stub
+# browser (THROUGHLINE_UX_BROWSER) writes a 1×1 PNG, logs its argv, and fetches
+# its http://127.0.0.1 URL while render's loopback server is live (body, headers);
+# when a real Chrome/Chromium is on PATH, obs 10 and the 10b isolation probe
+# matrix run against it (skipped with a printed note when none exists;
+# --no-sandbox is never passed). Every negated
 # assertion first asserts its file is readable (L-001/L-011); every temp dir
 # and the local http server are trap-cleaned (L-004).
 #
@@ -39,16 +41,36 @@ ux() {
 }
 
 # Stub browsers. Each logs argv (one per line, then ---) to $ROOT/stub.log and
-# counts calls in $ROOT/stub.n. ok: always writes a 1×1 PNG. fail2: writes the
+# counts calls in $ROOT/stub.n. A render URL is fetched by fetch.py (body →
+# stub.html, first 57 bytes → stub.heads, headers → stub.hdrs), and $TMPDIR's
+# listing goes to stub.tmpls. ok: always writes a 1×1 PNG. fail2: writes the
 # PNG then exits 1 on its 2nd call. failall: exits 1 without writing.
+cat >"$ROOT/fetch.py" <<'PY'
+import sys, urllib.error, urllib.request
+url, root = sys.argv[1], sys.argv[2]
+op = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+r = op.open(url, timeout=10); body = r.read()
+open(root + "/stub.html", "ab").write(body + b"\n")
+open(root + "/stub.heads", "ab").write(body[:57] + b"\n")
+with open(root + "/stub.hdrs", "a") as f:
+    f.write("URL %s\n" % url)
+    for k, v in r.headers.items():
+        f.write("%s: %s\n" % (k, v))
+    base = url.split("/screens/")[0]
+    for bad in ("/screens/nope.html", "/%2e%2e/%2e%2e/%2e%2e/etc/hostname"):
+        try:
+            op.open(base + bad, timeout=10); f.write("ERR 200 %s\n" % bad)
+        except urllib.error.HTTPError as e:
+            f.write("ERR %d CSP: %s\n" % (e.code, e.headers.get("Content-Security-Policy")))
+PY
 PNG_B64='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
 mkstub() {
   cat >"$ROOT/stub-$1" <<EOF
 #!$BASH_BIN
 for a in "\$@"; do printf '%s\n' "\$a"; done >>"$ROOT/stub.log"; echo --- >>"$ROOT/stub.log"
 n=\$(( \$(cat "$ROOT/stub.n" 2>/dev/null || echo 0) + 1 )); echo \$n >"$ROOT/stub.n"
-out=""; for a in "\$@"; do case "\$a" in --screenshot=*) out="\${a#--screenshot=}" ;; file://*) f="\${a#file://}"; f="\$(printf '%b' "\${f//%/\\\\x}")"; cat "\$f" >>"$ROOT/stub.html" 2>/dev/null
-  find "\${f%%/screens/*}" -type f \( -name '*.html' -o -name '*.htm' -o -name '*.xhtml' \) -exec head -c 57 {} \; -exec echo \; >>"$ROOT/stub.heads" 2>/dev/null ;; esac; done
+out=""; for a in "\$@"; do case "\$a" in --screenshot=*) out="\${a#--screenshot=}" ;; http://127.0.0.1:*/screens/*) python3 -I "$ROOT/fetch.py" "\$a" "$ROOT" 2>>"$ROOT/stub.ferr" ;; esac; done
+[ -n "\${TMPDIR:-}" ] && ls -A "\$TMPDIR" >>"$ROOT/stub.tmpls"
 mode=$1
 [ "\$mode" = failall ] && exit 1
 printf '%s' '$PNG_B64' | base64 -d >"\$out"
@@ -58,7 +80,8 @@ EOF
   chmod +x "$ROOT/stub-$1"
 }
 for m in ok fail2 failall; do mkstub "$m"; done
-reset_stub() { rm -f "$ROOT/stub.log" "$ROOT/stub.n" "$ROOT/stub.html" "$ROOT/stub.heads"; }
+reset_stub() { rm -f "$ROOT/stub.log" "$ROOT/stub.n" "$ROOT/stub.html" "$ROOT/stub.heads" "$ROOT/stub.hdrs" "$ROOT/stub.tmpls"; }
+POLICY="default-src 'self' data:; script-src 'none'; object-src 'none'; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'; style-src 'self' 'unsafe-inline' data:"
 SOK="THROUGHLINE_UX_BROWSER=$ROOT/stub-ok"
 
 # PATH dir with python3 and tools but no browser.
@@ -105,14 +128,43 @@ jmut() {
 }
 VP2='"viewports":[["desktop",1280,800],["phone",390,844]]'
 pngs() { find "$1/docs/ux" -name '*.png' 2>/dev/null | sort; }
+# px <png> <rrggbb>: pixels within ±40 per channel of the colour ('err' if unreadable).
+cat >"$ROOT/px.py" <<'PY'
+import struct, sys, zlib
+b = open(sys.argv[1], "rb").read(); tgt = bytes.fromhex(sys.argv[2])
+assert b[:8] == b"\x89PNG\r\n\x1a\n"
+i, idat, ihdr = 8, b"", None
+while i < len(b):
+    n, t = struct.unpack(">I4s", b[i:i+8]); c = b[i+8:i+8+n]; i += 12 + n
+    if t == b"IHDR": ihdr = struct.unpack(">IIBBBBB", c)
+    elif t == b"IDAT": idat += c
+w, h, depth, ct = ihdr[:4]
+assert depth == 8 and ct in (2, 6)
+bpp = 3 if ct == 2 else 4; st = w * bpp; raw = zlib.decompress(idat); prev = bytearray(st); hit = 0
+for y in range(h):
+    f = raw[y*(st+1)]; cur = bytearray(raw[y*(st+1)+1:(y+1)*(st+1)])
+    for x in range(st):
+        a = cur[x-bpp] if x >= bpp else 0; up = prev[x]; ul = prev[x-bpp] if x >= bpp else 0
+        if f == 1: cur[x] = (cur[x] + a) & 255
+        elif f == 2: cur[x] = (cur[x] + up) & 255
+        elif f == 3: cur[x] = (cur[x] + (a + up) // 2) & 255
+        elif f == 4:
+            p = a + up - ul; pa, pb, pc = abs(p-a), abs(p-up), abs(p-ul)
+            cur[x] = (cur[x] + (a if pa <= pb and pa <= pc else up if pb <= pc else ul)) & 255
+    for x in range(0, st, bpp):
+        if all(abs(cur[x+k] - tgt[k]) <= 40 for k in range(3)): hit += 1
+    prev = cur
+print(hit)
+PY
+px() { python3 -I "$ROOT/px.py" "$1" "$2" 2>/dev/null || echo err; }
 npng() { pngs "$1" | grep -c . ; }
 fp() { sha256sum "$1" | cut -d' ' -f1; stat -c %y "$1"; }   # bytes + mtime fingerprint
 rdable() { [ -r "$1" ] || { bad "infra: $1 unreadable before a negated check"; return 1; }; }
 
 echo "[7] render (stub): two viewports × two state files"
 R7="$ROOT/r7"; mk "$R7" "{\"screens\":{\"a\":[\"default\",\"error\"]},$VP2}"
-before="$(sha256sum "$R7/docs/ux/index.json")"; reset_stub
-ux "tl_ux_render $(q "$R7") a" "$SOK"
+before="$(sha256sum "$R7/docs/ux/index.json")"; reset_stub; T7="$ROOT/tmp7"; mkdir -p "$T7"
+ux "tl_ux_render $(q "$R7") a" "$SOK" TMPDIR="$T7"
 [ "$RC" -eq 0 ] && [ "$(printf '%s\n' "$OUT" | grep -c '^rendered docs/ux/screens/a/.*\.png$')" -eq 4 ] \
   && [ "$(npng "$R7")" -eq 4 ] && ok "[7] four rendered lines, four PNGs" || bad "[7] rc=$RC out='$OUT' err='$ERR'"
 for f in default@desktop default@phone error@desktop error@phone; do
@@ -124,18 +176,28 @@ ux "tl_ux_validate $(q "$R7")"
 [ "$RC" -eq 0 ] && [ "$OUT" = "ok 1 screens, 1 requirements, screenshots 4/4" ] \
   && ok "[7] validate reports screenshots 4/4" || bad "[7] validate rc=$RC out='$OUT' err='$ERR'"
 if rdable "$ROOT/stub.log" && [ -s "$ROOT/stub.log" ]; then
+  url7="$(grep -E '^http://127\.0\.0\.1:[0-9]+/screens/a/error\.html$' "$ROOT/stub.log" | head -n1)"; p7="${url7#http://127.0.0.1:}"; p7="${p7%%/*}"
   grep -qx -- '--host-resolver-rules=MAP \* ~NOTFOUND' "$ROOT/stub.log" && grep -qx -- '--headless=new' "$ROOT/stub.log" \
-    && grep -qx -- '--window-size=390,844' "$ROOT/stub.log" \
-    && grep -qE -- '^file:///.+/ux/screens/a/error\.html$' "$ROOT/stub.log" \
-    && ok "[7] stub argv: --headless=new, resolver rule, window size, file:// URL" || bad "[7] argv: $(cat "$ROOT/stub.log")"
-  ! grep -qF -- "file://$R7/docs/ux/" "$ROOT/stub.log" \
-    && ok "[7] the browser renders a private copy, never the repo's mock in place" || bad "[7] in-place URL: $(cat "$ROOT/stub.log")"
-  if rdable "$ROOT/stub.html"; then
-    [ "$(grep -c "Content-Security-Policy\" content=\"script-src 'none'" "$ROOT/stub.html")" -eq 4 ] \
-      && ok "[7] every rendered page carries a script-src 'none' CSP (scripts off)" || bad "[7] CSP: $(head -c 600 "$ROOT/stub.html")"
-  fi
-  [ -z "$(find "$R7/docs" -maxdepth 1 -name '.ux-render.*' 2>/dev/null)" ] && ok "[7] the private copy is removed" \
-    || bad "[7] leftover copy: $(ls -a "$R7/docs")"
+    && grep -qx -- '--window-size=390,844' "$ROOT/stub.log" && [ -n "$url7" ] \
+    && grep -qx -- '--proxy-server=http://127.0.0.1:9' "$ROOT/stub.log" \
+    && grep -qxF -- "--proxy-bypass-list=<-loopback>;127.0.0.1:$p7" "$ROOT/stub.log" \
+    && ok "[7] stub argv: --headless=new, resolver rule, dead proxy, bypass only the server port, http://127.0.0.1 URL" \
+    || bad "[7] argv: $(cat "$ROOT/stub.log")"
+  ! grep -q 'file://' "$ROOT/stub.log" && ok "[7] no file:// URL reaches the browser" || bad "[7] file:// in argv: $(cat "$ROOT/stub.log")"
+  if rdable "$ROOT/stub.heads" && rdable "$ROOT/stub.hdrs"; then
+    [ "$(grep -c . "$ROOT/stub.heads")" -eq 4 ] && ! grep -qvxF '<!DOCTYPE html><meta http-equiv="Content-Security-Policy"' "$ROOT/stub.heads" \
+      && [ "$(grep -cF "content=\"$POLICY\"" "$ROOT/stub.html")" -eq 4 ] \
+      && ok "[7] each served page starts with our doctype + the exact CSP meta" || bad "[7] bodies: $(head -c 600 "$ROOT/stub.html")"
+    [ "$(grep -cxF "Content-Security-Policy: $POLICY" "$ROOT/stub.hdrs")" -eq 4 ] \
+      && [ "$(grep -cxF 'Content-Type: text/html; charset=utf-8' "$ROOT/stub.hdrs")" -eq 4 ] \
+      && ok "[7] each page response has the CSP header and text/html; charset=utf-8" || bad "[7] headers: $(cat "$ROOT/stub.hdrs")"
+    [ "$(grep -cxF "ERR 404 CSP: $POLICY" "$ROOT/stub.hdrs")" -eq 8 ] \
+      && ok "[7] 404s (missing file, %2e%2e climb) also carry the CSP header" || bad "[7] error responses: $(grep ^ERR "$ROOT/stub.hdrs")"
+  else bad "[7] the stub fetched nothing: $(cat "$ROOT/stub.ferr" 2>/dev/null)"; fi
+  rdable "$ROOT/stub.tmpls" && [ -s "$ROOT/stub.tmpls" ] && rdable "$T7" && [ -z "$(ls -A "$T7")" ] \
+    && [ -z "$(find "$R7/docs" -maxdepth 1 -name '.ux-render.*')" ] \
+    && ok "[7] the render copy lived in \$TMPDIR (outside the repo) during the call and is gone after" \
+    || bad "[7] copy: during='$(cat "$ROOT/stub.tmpls" 2>/dev/null)' after='$(ls -A "$T7")' docs='$(ls -a "$R7/docs")'"
   ! grep -q -- '--no-sandbox' "$ROOT/stub.log" && ok "[7] stub argv has no --no-sandbox" || bad "[7] --no-sandbox passed"
 else bad "[7] stub log empty"; fi
 
@@ -232,8 +294,9 @@ ux "tl_ux_capture http://127.0.0.1:$PORT/ $(q "$CAP") 390x844" "$SOK"
   && ok "[9b] capture outside the repo → rc 0, PNG written, path printed" || bad "[9b] rc=$RC out='$OUT' err='$ERR'"
 if rdable "$ROOT/stub.log" && [ -s "$ROOT/stub.log" ]; then
   ! grep -q -- '--host-resolver-rules' "$ROOT/stub.log" && ! grep -q -- '--no-sandbox' "$ROOT/stub.log" \
+    && ! grep -q -- '--proxy-server' "$ROOT/stub.log" && ! grep -q -- '--proxy-bypass-list' "$ROOT/stub.log" \
     && grep -qx -- "http://127.0.0.1:$PORT/" "$ROOT/stub.log" \
-    && ok "[9b] capture argv: the URL, no resolver rule, no --no-sandbox" || bad "[9b] argv: $(cat "$ROOT/stub.log")"
+    && ok "[9b] capture argv: the URL, no resolver rule, no proxy flags, no --no-sandbox" || bad "[9b] argv: $(cat "$ROOT/stub.log")"
 else bad "[9b] stub log empty"; fi
 git -C "$T" init -q
 ux "tl_ux_capture http://127.0.0.1:$PORT/ $(q "$T/caps/a") 390x844" "$SOK"
@@ -260,11 +323,91 @@ else
   echo "  skip — [10] no headless Chrome/Chromium on PATH; real render not observed"
 fi
 
+echo "[10b] isolation probe matrix (real Chrome): the browser holds the boundary"
+# vec.py <repo> <vector> <canary-dir> <port>: rewrite screen a's mock (and CSS)
+# as one probe vector. Every mock links tokens.css; the canary is magenta.
+cat >"$ROOT/vec.py" <<'PY'
+import base64, os, sys
+root, v, can, port = sys.argv[1:5]
+ud = os.path.join(root, "docs/ux"); png = can + "/canary.png"; climb = "/.." * 30
+full = 'width=390 height=844 style="position:fixed;top:0;left:0"'
+evil = lambda u: "body{background:url(" + u + ") !important}\n"
+js = "<script>location='file://'+'" + can + "/canary.html'</script>"
+tok, pre, head, body = ":root{--c:#123456}\n", "", "", "<h1>mock</h1>"
+if v == "tokens-css": tok = evil(png)
+elif v == "shared-css":
+    open(os.path.join(ud, "shared.css"), "w").write(evil(png)); head = '<link rel="stylesheet" href="../../shared.css">'
+elif v == "data-css-b64":
+    head = '<link rel="stylesheet" href="data:text/css;base64,%s">' % base64.b64encode(evil("file://" + png).encode()).decode()
+elif v == "css-loopback-port": tok = evil("http://127.0.0.1:" + port + "/canary.png")
+elif v == "css-pct-climb": tok = evil("/%2e%2e" * 30 + png)
+elif v == "bang-comment": pre = "<!-->" + js + "<!-- -->"
+elif v == "bang-dash-comment": pre = "<!--->" + js + "<!-- -->"
+elif v == "img-unquoted-eq": body = "<img src=x=" + climb + png + " " + full + ">"
+elif v == "img-backtick": body = "<img src=`" + climb + png + " " + full + ">"
+elif v == "img-nbsp": body = "<img src=x " + climb + png + " " + full + ">"
+elif v == "meta-refresh": head = "<meta http-equiv=refresh content=0;url=file://" + can + "/canary.html>"
+elif v == "base-file": head, body = '<base href="file:///">', '<img src="' + png[1:] + '" ' + full + ">"
+elif v == "img-loopback-port": body = '<img src="http://127.0.0.1:' + port + '/canary.png" ' + full + ">"
+elif v == "img-pct-climb": body = '<img src="' + "%2e%2e/" * 30 + png[1:] + '" ' + full + ">"
+elif v == "legit-styled": tok = ":root{--brand:#0a7d32}\nbody{background:var(--brand);margin:0}\n"
+elif v == "legit-svg":
+    body = '<svg width="390" height="844"><rect width="390" height="844" fill="#1e40af"/></svg><p>See https://example.com</p>'
+open(os.path.join(ud, "tokens.css"), "w").write(tok)
+with open(os.path.join(ud, "screens/a/default.html"), "w", encoding="utf-8") as f:
+    f.write(pre + '<!doctype html><html><head><title>m</title><link rel="stylesheet" href="../../tokens.css">'
+            + head + "</head><body>" + body + "</body></html>\n")
+PY
+# probe <vector> <must|any|legit:rrggbb>: validate rc / render rc / canary px.
+probe() {
+  local v="$1" P="$ROOT/v-$1" vr rr got f
+  mk "$P" '{"viewports":[["phone",390,844]]}'; python3 -I "$ROOT/vec.py" "$P" "$v" "$CAN" "$PORT"
+  ux "tl_ux_validate $(q "$P")"; vr=$RC
+  ux "tl_ux_render $(q "$P") a" XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-}"; rr=$RC
+  f="$P/docs/ux/screens/a/default@phone.png"; got=nopng; [ -e "$f" ] && got="$(px "$f" ff00ff)"
+  printf '  probe %-18s validate %s / render %s / canary px %s\n' "$v" "$vr" "$rr" "$got"
+  case "$2" in
+    must) [ "$vr" -eq 0 ] && [ "$rr" -eq 0 ] && [ "$got" = 0 ] \
+            && ok "[10b] $v: passes validate, renders, 0 canary px (browser-enforced)" \
+            || bad "[10b] $v: validate $vr render $rr canary '$got' out='$OUT' err='$(printf '%s' "$ERR" | tail -n 3)'" ;;
+    any) if { [ "$rr" -eq 0 ] && [ "$got" = 0 ]; } || { [ "$rr" -eq 2 ] && [ "$got" = nopng ]; } \
+            || { [ "$rr" -eq 4 ] && [ "$got" = nopng ]; }; then ok "[10b] $v: no leak (render rc $rr, canary $got)"
+         else bad "[10b] $v: LEAK validate $vr render $rr canary '$got'"; fi ;;
+    legit:*) local n; n="$([ -e "$f" ] && px "$f" "${2#legit:}" || echo nopng)"
+         [ "$vr" -eq 0 ] && [ "$rr" -eq 0 ] && [ "$n" != err ] && [ "$n" != nopng ] && [ "$n" -gt 10000 ] \
+            && ok "[10] $v renders non-blank under isolation ($n px of #${2#legit:})" \
+            || bad "[10] $v: validate $vr render $rr px '$n' err='$(printf '%s' "$ERR" | tail -n 3)'" ;;
+  esac
+}
+if [ -n "$REAL" ]; then
+  CAN="$ROOT/outside-canary"; mkdir -p "$CAN"
+  printf '<html><body style="margin:0;background:#ff00ff"><h1>SECRET-CANARY</h1></body></html>\n' >"$CAN/canary.html"
+  python3 -I -c '
+import struct, sys, zlib
+def ch(t, d): return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d))
+raw = b"".join(b"\0" + b"\xff\x00\xff" * 8 for _ in range(8))
+open(sys.argv[1], "wb").write(b"\x89PNG\r\n\x1a\n" + ch(b"IHDR", struct.pack(">IIBBBBB", 8, 8, 8, 2, 0, 0, 0))
+                              + ch(b"IDAT", zlib.compress(raw)) + ch(b"IEND", b""))' "$CAN/canary.png"
+  cp "$CAN/canary.png" "$ROOT/www/canary.png"   # the 9b server: "another loopback port"
+  probe legit-styled legit:0a7d32; probe legit-svg legit:1e40af
+  for v in tokens-css shared-css data-css-b64 css-loopback-port css-pct-climb; do probe "$v" must; done
+  for v in bang-comment bang-dash-comment img-unquoted-eq img-backtick img-nbsp meta-refresh base-file \
+           img-loopback-port img-pct-climb; do probe "$v" any; done
+  C10="$ROOT/ctl10b.png"
+  timeout 60 "$REAL" --headless=new --disable-gpu --hide-scrollbars --window-size=390,844 --screenshot="$C10" \
+    "file://$ROOT/v-tokens-css/docs/ux/screens/a/default.html" >/dev/null 2>&1
+  c="$(px "$C10" ff00ff)"
+  [ "$c" != err ] && [ "$c" -gt 0 ] && ok "[10b] control: the tokens-css mock over unisolated file:// shows the canary ($c px)" \
+    || bad "[10b] control did not show the canary (px '$c'); the probe cannot see a leak"
+else
+  echo "  skip — [10b] no headless Chrome/Chromium on PATH; isolation probe matrix not observed"
+fi
+
 echo "[S] render security: network fully blocked, unsafe mocks and symlinks refused"
 RS="$ROOT/rs"; mk "$RS"; reset_stub
 ux "tl_ux_render $(q "$RS") a" "$SOK"
 if rdable "$ROOT/stub.log" && [ -s "$ROOT/stub.log" ]; then
-  grep -qx -- '--proxy-server=http://127.0.0.1:9' "$ROOT/stub.log" && grep -qx -- '--proxy-bypass-list=<-loopback>' "$ROOT/stub.log" \
+  grep -qx -- '--proxy-server=http://127.0.0.1:9' "$ROOT/stub.log" && grep -qxE -- '--proxy-bypass-list=<-loopback>;127\.0\.0\.1:[0-9]+' "$ROOT/stub.log" \
     && ok "[S] render argv routes all traffic (incl. IP literals, loopback) to a dead proxy" || bad "[S] proxy argv: $(cat "$ROOT/stub.log")"
 else bad "[S] stub log empty"; fi
 RS2="$ROOT/rs2"; mk "$RS2"; reset_stub
@@ -295,9 +438,9 @@ ux "tl_ux_render $(q "$RS5") a b" "$SOK"
 RS6="$ROOT/rs 6#x%y"; mk "$RS6"; reset_stub
 ux "tl_ux_render $(q "$RS6") a" "$SOK"
 if rdable "$ROOT/stub.log" && [ "$RC" -eq 0 ]; then
-  u="$(grep '^file://' "$ROOT/stub.log")"
-  printf '%s' "$u" | grep -qE '^file:///[^ #?]+/ux/screens/a/default\.html$' && [ -s "$ROOT/stub.html" ] \
-    && ok "[S] render URL is a proper file URI (pathlib as_uri)" || bad "[S] URL '$u'"
+  u="$(grep '^http://' "$ROOT/stub.log")"
+  printf '%s' "$u" | grep -qE '^http://127\.0\.0\.1:[0-9]+/screens/a/default\.html$' && grep -qF '<h1>default</h1>' "$ROOT/stub.html" \
+    && ok "[S] a repo path with ' ', '#', '%' still serves the mock (URL is server-relative)" || bad "[S] URL '$u'"
 else bad "[S] special-char repo render rc=$RC err='$ERR'"; fi
 PLUG="$ROOT/plug"; mkdir -p "$PLUG/scripts/lib"; cp "$REPO/scripts/lib/"ux_*.py "$PLUG/scripts/lib/"
 RS7="$ROOT/rs7"; mk "$RS7"
@@ -305,34 +448,7 @@ ux "tl_ux_validate $(q "$RS7"); tl_ux_render $(q "$RS7") a; tl_ux_index_html $(q
 rdable "$PLUG/scripts/lib" && [ "$RC" -eq 0 ] && [ -z "$(find "$PLUG" -name '__pycache__' -o -name '*.pyc')" ] \
   && ok "[S] no __pycache__/.pyc written into the plugin tree" || bad "[S] bytecode: rc=$RC $(find "$PLUG")"
 echo "[S] real browser: a JS-navigating mock cannot pull a local file into the PNG"
-redpx() {  # count pure-red pixels in an 8-bit RGB(A) PNG; 'err' if unreadable
-  python3 -I -c '
-import struct, sys, zlib
-b = open(sys.argv[1], "rb").read()
-assert b[:8] == b"\x89PNG\r\n\x1a\n"
-i, idat, ihdr = 8, b"", None
-while i < len(b):
-    n, t = struct.unpack(">I4s", b[i:i+8]); c = b[i+8:i+8+n]; i += 12 + n
-    if t == b"IHDR": ihdr = struct.unpack(">IIBBBBB", c)
-    elif t == b"IDAT": idat += c
-w, h, depth, ct = ihdr[:4]
-assert depth == 8 and ct in (2, 6)
-bpp = 3 if ct == 2 else 4; st = w * bpp; raw = zlib.decompress(idat); prev = bytearray(st); red = 0
-for y in range(h):
-    f = raw[y*(st+1)]; cur = bytearray(raw[y*(st+1)+1:(y+1)*(st+1)])
-    for x in range(st):
-        a = cur[x-bpp] if x >= bpp else 0; up = prev[x]; ul = prev[x-bpp] if x >= bpp else 0
-        if f == 1: cur[x] = (cur[x] + a) & 255
-        elif f == 2: cur[x] = (cur[x] + up) & 255
-        elif f == 3: cur[x] = (cur[x] + (a + up) // 2) & 255
-        elif f == 4:
-            p = a + up - ul; pa, pb, pc = abs(p-a), abs(p-up), abs(p-ul)
-            cur[x] = (cur[x] + (a if pa <= pb and pa <= pc else up if pb <= pc else ul)) & 255
-    for x in range(0, st, bpp):
-        if cur[x] > 200 and cur[x+1] < 60 and cur[x+2] < 60: red += 1
-    prev = cur
-print(red)' "$1" 2>/dev/null || echo err
-}
+redpx() { px "$1" ff0000; }
 if [ -n "$REAL" ]; then
   CAN="$ROOT/outside-canary"; mkdir -p "$CAN"
   printf '<html><body style="margin:0;background:#ff0000"><h1>SECRET-CANARY-1234</h1></body></html>\n' >"$CAN/canary.html"
@@ -384,8 +500,8 @@ reset_stub
 ux "tl_ux_render $(q "$RP") p1 p2 p3 p4 p5 p6" "$SOK"
 if [ "$RC" -eq 0 ] && rdable "$ROOT/stub.heads" && [ -s "$ROOT/stub.heads" ]; then
   nh="$(grep -c . "$ROOT/stub.heads")"; nbad="$(grep -cvxF -- "$PFX" "$ROOT/stub.heads")"
-  [ "$nh" -ge 36 ] && [ "$nbad" -eq 0 ] \
-    && ok "[S] stub: all $nh rendered-copy heads are exactly our doctype + CSP meta" \
+  [ "$nh" -eq 6 ] && [ "$nbad" -eq 0 ] \
+    && ok "[S] stub: all $nh served pages start exactly with our doctype + CSP meta" \
     || bad "[S] stub: $nbad/$nh heads differ: $(grep -vxF -- "$PFX" "$ROOT/stub.heads" | sort -u | head -n 3)"
 else bad "[S] stub prefix render rc=$RC err='$ERR'"; fi
 if [ -n "$REAL" ]; then
