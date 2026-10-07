@@ -112,6 +112,14 @@ P2x="$ROOT/p2x.md"; printf '%s\n' '- **fr-1 [UI] Lower.** x' >"$P2x"
 ux "tl_ux_ui_reqs $(q "$P2x")"
 [ "$RC" -eq 2 ] && printf '%s' "$ERR" | grep -qF 'malformed [UI] marker' \
   && ok "[2] another id shape with [UI] fails loudly" || bad "[2] id shape: rc=$RC err='$ERR'"
+P2h="$ROOT/p2h.md"; printf '%s\n' '# T' '## FR-1 [UI] Login' 'body' '### [UI] stuff' >"$P2h"
+ux "tl_ux_ui_reqs $(q "$P2h")"
+[ "$RC" -eq 2 ] && printf '%s' "$ERR" | grep -qF "ux: malformed [UI] marker at $P2h:2" && [ -z "$OUT" ] \
+  && ok "[2] [UI] on a markdown heading → rc 2 naming <path>:<line>" || bad "[2] heading [UI]: rc=$RC out='$OUT' err='$ERR'"
+P2c="$ROOT/p2c.md"; printf '%s\n' '# The `[UI]` marker' '- **FR-1 [UI] Login.** x' >"$P2c"
+ux "tl_ux_ui_reqs $(q "$P2c")"
+[ "$RC" -eq 0 ] && [ "$(printf '%s\n' "$OUT" | cut -f1)" = "FR-1" ] \
+  && ok "[2] inline-code [UI] in a heading is still skipped" || bad "[2] heading code: rc=$RC out='$OUT' err='$ERR'"
 ux "tl_ux_ui_reqs $(q "$ROOT/nope.md")"
 [ "$RC" -eq 1 ] && printf '%s' "$ERR" | grep -qF "ux: cannot read $ROOT/nope.md" \
   && ok "[2] unreadable PRD → rc 1" || bad "[2] unreadable: rc=$RC err='$ERR'"
@@ -205,10 +213,30 @@ mut "absolute local path" 'default\.html: .*/etc/passwd.*outside docs/ux' \
   "sed -i 's#<head>#<head><img src=\"/etc/passwd\">#' docs/ux/screens/a/default.html"
 mut "relative path escaping docs/ux" 'default\.html: .*outside docs/ux' \
   "sed -i 's#<head>#<head><img src=\"../../../../../etc/passwd\">#' docs/ux/screens/a/default.html"
-mut "IP literal in script" 'default\.html: .*10\.0\.0\.1' \
-  "sed -i 's#<head>#<head><script>fetch(\"http://10.0.0.1/x\")</script>#' docs/ux/screens/a/default.html"
-mut "websocket URL" 'default\.html: .*wss?://' \
-  "sed -i 's#<head>#<head><script>new WebSocket(\"ws://h:1\")</script>#' docs/ux/screens/a/default.html"
+mut "IP literal in an img src" 'default\.html: .*10\.0\.0\.1' \
+  "sed -i 's#<head>#<head><img src=\"http://10.0.0.1/x\">#' docs/ux/screens/a/default.html"
+mut "websocket URL in a link href" 'default\.html: .*wss?://' \
+  "sed -i 's#<head>#<head><link rel=\"preconnect\" href=\"ws://h:1\">#' docs/ux/screens/a/default.html"
+mut "meta refresh to a local file" 'default\.html: .*/etc/passwd.*outside docs/ux' \
+  "sed -i 's#<head>#<head><meta http-equiv=\"refresh\" content=\"0;url=/etc/passwd\">#' docs/ux/screens/a/default.html"
+mut "meta refresh without url=" 'default\.html: .*/etc/passwd.*outside docs/ux' \
+  "sed -i \"s#<head>#<head><META HTTP-EQUIV=Refresh CONTENT='1; /etc/passwd'>#\" docs/ux/screens/a/default.html"
+mut "meta refresh to file://" 'default\.html: .*file://' \
+  "sed -i 's#<head>#<head><meta content=\"0; URL=file:///etc/hostname\" http-equiv=\"refresh\">#' docs/ux/screens/a/default.html"
+mut "2nd srcset candidate absolute" 'default\.html: .*/home/u/x\.png.*outside docs/ux' \
+  "sed -i 's#<head>#<head><img srcset=\"a.png 1x, /home/u/x.png 2x\">#' docs/ux/screens/a/default.html"
+mut "3rd srcset candidate escaping" 'default\.html: .*\.\./\.\./\.\./\.\./x\.png.*outside docs/ux' \
+  "sed -i 's#<head>#<head><picture><source srcset=\"a.png 1x,b.png 2x,../../../../x.png 3x\"></picture>#' docs/ux/screens/a/default.html"
+mut "image-set() quoted path" 'default\.html: .*/etc/x\.png.*outside docs/ux' \
+  "sed -i \"s#<head>#<head><style>body{background-image:image-set('/etc/x.png' 1x)}</style>#\" docs/ux/screens/a/default.html"
+mut "-webkit-image-set() 2nd string" 'default\.html: .*/etc/y\.png.*outside docs/ux' \
+  "sed -i 's#<head>#<head><style>div{background:-webkit-image-set(\"a.png\" 1x, \"/etc/y.png\" 2x)}</style>#' docs/ux/screens/a/default.html"
+mut "entity-encoded absolute path" 'default\.html: .*/etc/passwd.*outside docs/ux' \
+  "sed -i 's#<head>#<head><img src=\"\&\#47;etc\&\#47;passwd\">#' docs/ux/screens/a/default.html"
+mut "legacy background attribute" 'default\.html: .*/etc/bg\.png.*outside docs/ux' \
+  "sed -i 's#<body>#<body background=\"/etc/bg.png\">#' docs/ux/screens/a/default.html"
+mut "data:text/html frame" 'default\.html: .*data:text/html' \
+  "sed -i 's#<head>#<head><iframe src=\"data:text/html,hi\"></iframe>#' docs/ux/screens/a/default.html"
 mut "symlinked mock" 'default\.html: symlink' \
   "printf '<html><head></head></html>' > \"$ROOT/outside.html\"; rm docs/ux/screens/a/default.html; ln -s \"$ROOT/outside.html\" docs/ux/screens/a/default.html"
 mut "symlinked screen dir" 'screens/a: symlink' \
@@ -217,6 +245,12 @@ MD="$ROOT/m6data"; cp -a "$R6" "$MD"
 sed -i 's#<head>#<head><img src="data:image/png;base64,AAAA" alt=""><a href="#top">t</a>#' "$MD/docs/ux/screens/a/default.html"
 ux "tl_ux_validate $(q "$MD")"
 [ "$RC" -eq 0 ] && ok "[S] data: URI and #fragment stay valid" || bad "[S] data/fragment: rc=$RC out='$OUT' err='$ERR'"
+MN="$ROOT/m6n1"; cp -a "$R6" "$MN"
+sed -i 's#<body>#<body><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1 1"><use xlink:href="\#i"/></svg><p>Your profile: https://example.com/u/1</p><img srcset="a.png 1x, b.png 2x" alt="">#' "$MN/docs/ux/screens/a/default.html"
+grep -qF 'xmlns="http://www.w3.org/2000/svg"' "$MN/docs/ux/screens/a/default.html" || bad "[S] infra: N1 fixture not written"
+ux "tl_ux_validate $(q "$MN")"
+[ "$RC" -eq 0 ] && ok "[S] inline SVG xmlns, plain-text https:// URL, local srcset → valid" \
+  || bad "[S] N1 false positive: rc=$RC out='$OUT' err='$ERR'"
 M6="$ROOT/m6tok"; cp -a "$R6" "$M6"; printf ':root{--x:1px}\n' >"$M6/docs/ux/tokens.css"
 sed -i 's#<head>#<head><link rel="stylesheet" href="../../tokens.css">#' "$M6/docs/ux/screens/a/default.html"
 ux "tl_ux_validate $(q "$M6")"

@@ -47,7 +47,7 @@ mkstub() {
 #!$BASH_BIN
 for a in "\$@"; do printf '%s\n' "\$a"; done >>"$ROOT/stub.log"; echo --- >>"$ROOT/stub.log"
 n=\$(( \$(cat "$ROOT/stub.n" 2>/dev/null || echo 0) + 1 )); echo \$n >"$ROOT/stub.n"
-out=""; for a in "\$@"; do case "\$a" in --screenshot=*) out="\${a#--screenshot=}" ;; esac; done
+out=""; for a in "\$@"; do case "\$a" in --screenshot=*) out="\${a#--screenshot=}" ;; file://*) f="\${a#file://}"; f="\$(printf '%b' "\${f//%/\\\\x}")"; cat "\$f" >>"$ROOT/stub.html" 2>/dev/null ;; esac; done
 mode=$1
 [ "\$mode" = failall ] && exit 1
 printf '%s' '$PNG_B64' | base64 -d >"\$out"
@@ -57,7 +57,7 @@ EOF
   chmod +x "$ROOT/stub-$1"
 }
 for m in ok fail2 failall; do mkstub "$m"; done
-reset_stub() { rm -f "$ROOT/stub.log" "$ROOT/stub.n"; }
+reset_stub() { rm -f "$ROOT/stub.log" "$ROOT/stub.n" "$ROOT/stub.html"; }
 SOK="THROUGHLINE_UX_BROWSER=$ROOT/stub-ok"
 
 # PATH dir with python3 and tools but no browser.
@@ -125,8 +125,16 @@ ux "tl_ux_validate $(q "$R7")"
 if rdable "$ROOT/stub.log" && [ -s "$ROOT/stub.log" ]; then
   grep -qx -- '--host-resolver-rules=MAP \* ~NOTFOUND' "$ROOT/stub.log" && grep -qx -- '--headless=new' "$ROOT/stub.log" \
     && grep -qx -- '--window-size=390,844' "$ROOT/stub.log" \
-    && grep -qx -- "file://$R7/docs/ux/screens/a/error.html" "$ROOT/stub.log" \
+    && grep -qE -- '^file:///.+/ux/screens/a/error\.html$' "$ROOT/stub.log" \
     && ok "[7] stub argv: --headless=new, resolver rule, window size, file:// URL" || bad "[7] argv: $(cat "$ROOT/stub.log")"
+  ! grep -qF -- "file://$R7/docs/ux/" "$ROOT/stub.log" \
+    && ok "[7] the browser renders a private copy, never the repo's mock in place" || bad "[7] in-place URL: $(cat "$ROOT/stub.log")"
+  if rdable "$ROOT/stub.html"; then
+    [ "$(grep -c "Content-Security-Policy\" content=\"script-src 'none'" "$ROOT/stub.html")" -eq 4 ] \
+      && ok "[7] every rendered page carries a script-src 'none' CSP (scripts off)" || bad "[7] CSP: $(head -c 600 "$ROOT/stub.html")"
+  fi
+  [ -z "$(find "$R7/docs" -maxdepth 1 -name '.ux-render.*' 2>/dev/null)" ] && ok "[7] the private copy is removed" \
+    || bad "[7] leftover copy: $(ls -a "$R7/docs")"
   ! grep -q -- '--no-sandbox' "$ROOT/stub.log" && ok "[7] stub argv has no --no-sandbox" || bad "[7] --no-sandbox passed"
 else bad "[7] stub log empty"; fi
 
@@ -161,6 +169,8 @@ ux "tl_ux_render $(q "$R9") a" "THROUGHLINE_UX_BROWSER=$ROOT/stub-fail2"
 rdable "$R9/docs/ux/screens/a" && [ "$RC" -eq 4 ] && [ "$(npng "$R9")" -eq 0 ] \
   && printf '%s' "$LAST" | grep -qE '^screenshots not rendered: .*stub-fail2 failed on docs/ux/screens/a/[a-z]+\.html \(rc 1\)$' \
   && ok "[9] 2nd shot fails → rc 4, no PNG from this call remains" || bad "[9] fail2 rc=$RC out='$OUT' pngs=$(pngs "$R9")"
+! printf '%s\n' "$OUT" | grep -q '^rendered ' && ok "[9] no 'rendered' line for a PNG the same call deleted" \
+  || bad "[9] rendered line for a deleted PNG: out='$OUT'"
 T="$ROOT/t"; mk "$T" "{\"screens\":{\"a\":[\"default\"],\"b\":[\"default\"]},$VP2}"
 ux "tl_ux_render $(q "$T") a b" "$SOK"; [ "$RC" -eq 0 ] || bad "[9] infra: two-screen render rc=$RC"
 cp -a "$T" "$ROOT/t-clean"
@@ -272,6 +282,79 @@ RS4="$ROOT/rs4"; mk "$RS4"; mv "$RS4/docs/ux" "$ROOT/uxreal"; ln -s "$ROOT/uxrea
 ux "tl_ux_index_html $(q "$RS4")"
 [ "$RC" -eq 2 ] && [ ! -e "$ROOT/uxreal/index.html" ] && ok "[S] symlinked docs/ux → index-html rc 2, writes nothing" \
   || bad "[S] symlinked docs/ux rc=$RC err='$ERR'"
+
+RS5="$ROOT/rs5"; mk "$RS5" "{\"screens\":{\"a\":[\"default\"],\"b\":[\"default\"]}}"
+ux "tl_ux_render $(q "$RS5") a b" "$SOK"; [ "$RC" -eq 0 ] || bad "[S] infra: rs5 render rc=$RC"
+s5="$(find "$RS5/docs/ux" -type f -exec sha256sum {} + | sort)"; rm -f "$RS5/docs/ux/screens/b/default.html"
+s5="$(printf '%s\n' "$s5" | grep -v 'screens/b/default\.html$')"; reset_stub
+ux "tl_ux_render $(q "$RS5") a b" "$SOK"
+[ "$RC" -eq 2 ] && printf '%s' "$ERR" | grep -qF 'missing mock docs/ux/screens/b/default.html' && [ ! -s "$ROOT/stub.log" ] \
+  && [ "$(find "$RS5/docs/ux" -type f -exec sha256sum {} + | sort)" = "$s5" ] \
+  && ok "[S] mock missing at render → rc 2 (invalid input), nothing cleared or rendered" || bad "[S] missing mock rc=$RC out='$OUT' err='$ERR'"
+RS6="$ROOT/rs 6#x%y"; mk "$RS6"; reset_stub
+ux "tl_ux_render $(q "$RS6") a" "$SOK"
+if rdable "$ROOT/stub.log" && [ "$RC" -eq 0 ]; then
+  u="$(grep '^file://' "$ROOT/stub.log")"
+  printf '%s' "$u" | grep -qE '^file:///[^ #?]+/ux/screens/a/default\.html$' && [ -s "$ROOT/stub.html" ] \
+    && ok "[S] render URL is a proper file URI (pathlib as_uri)" || bad "[S] URL '$u'"
+else bad "[S] special-char repo render rc=$RC err='$ERR'"; fi
+PLUG="$ROOT/plug"; mkdir -p "$PLUG/scripts/lib"; cp "$REPO/scripts/lib/"ux_*.py "$PLUG/scripts/lib/"
+RS7="$ROOT/rs7"; mk "$RS7"
+ux "tl_ux_validate $(q "$RS7"); tl_ux_render $(q "$RS7") a; tl_ux_index_html $(q "$RS7")" "$SOK" CLAUDE_PLUGIN_ROOT="$PLUG"
+rdable "$PLUG/scripts/lib" && [ "$RC" -eq 0 ] && [ -z "$(find "$PLUG" -name '__pycache__' -o -name '*.pyc')" ] \
+  && ok "[S] no __pycache__/.pyc written into the plugin tree" || bad "[S] bytecode: rc=$RC $(find "$PLUG")"
+echo "[S] real browser: a JS-navigating mock cannot pull a local file into the PNG"
+redpx() {  # count pure-red pixels in an 8-bit RGB(A) PNG; 'err' if unreadable
+  python3 -I -c '
+import struct, sys, zlib
+b = open(sys.argv[1], "rb").read()
+assert b[:8] == b"\x89PNG\r\n\x1a\n"
+i, idat, ihdr = 8, b"", None
+while i < len(b):
+    n, t = struct.unpack(">I4s", b[i:i+8]); c = b[i+8:i+8+n]; i += 12 + n
+    if t == b"IHDR": ihdr = struct.unpack(">IIBBBBB", c)
+    elif t == b"IDAT": idat += c
+w, h, depth, ct = ihdr[:4]
+assert depth == 8 and ct in (2, 6)
+bpp = 3 if ct == 2 else 4; st = w * bpp; raw = zlib.decompress(idat); prev = bytearray(st); red = 0
+for y in range(h):
+    f = raw[y*(st+1)]; cur = bytearray(raw[y*(st+1)+1:(y+1)*(st+1)])
+    for x in range(st):
+        a = cur[x-bpp] if x >= bpp else 0; up = prev[x]; ul = prev[x-bpp] if x >= bpp else 0
+        if f == 1: cur[x] = (cur[x] + a) & 255
+        elif f == 2: cur[x] = (cur[x] + up) & 255
+        elif f == 3: cur[x] = (cur[x] + (a + up) // 2) & 255
+        elif f == 4:
+            p = a + up - ul; pa, pb, pc = abs(p-a), abs(p-up), abs(p-ul)
+            cur[x] = (cur[x] + (a if pa <= pb and pa <= pc else up if pb <= pc else ul)) & 255
+    for x in range(0, st, bpp):
+        if cur[x] > 200 and cur[x+1] < 60 and cur[x+2] < 60: red += 1
+    prev = cur
+print(red)' "$1" 2>/dev/null || echo err
+}
+if [ -n "$REAL" ]; then
+  CAN="$ROOT/outside-canary"; mkdir -p "$CAN"
+  printf '<html><body style="margin:0;background:#ff0000"><h1>SECRET-CANARY-1234</h1></body></html>\n' >"$CAN/canary.html"
+  RJ="$ROOT/rj"; mk "$RJ" '{"viewports":[["phone",390,844]]}'
+  printf "<!doctype html><html><head><title>a</title></head><body>b<script>location='file://'+'%s'+'/canary.html'</script></body></html>\n" "$CAN" \
+    >"$RJ/docs/ux/screens/a/default.html"
+  CTL="$ROOT/ctl.png"; cp "$RJ/docs/ux/screens/a/default.html" "$ROOT/ctl.html"
+  timeout 60 "$REAL" --headless=new --disable-gpu --hide-scrollbars --window-size=390,844 --screenshot="$CTL" "file://$ROOT/ctl.html" >/dev/null 2>&1
+  ctl="$(redpx "$CTL")"
+  ux "tl_ux_validate $(q "$RJ")"
+  [ "$RC" -eq 0 ] && ok "[S] infra: the JS-navigating mock passes the static scan (only the browser can stop it)" \
+    || bad "[S] infra: JS mock validate rc=$RC out='$OUT'"
+  ux "tl_ux_render $(q "$RJ") a" XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-}"
+  PJ="$RJ/docs/ux/screens/a/default@phone.png"; got="$(redpx "$PJ")"
+  if [ "$ctl" = err ] || [ "$ctl" -eq 0 ]; then
+    echo "  note — [S] control render did not navigate (red=$ctl); canary check below proves less"
+  else ok "[S] control: the same mock rendered without protection shows the canary ($ctl red px)"; fi
+  [ "$RC" -eq 0 ] && [ "$got" != err ] && [ "$got" -eq 0 ] \
+    && ok "[S] real $REAL render of the JS-navigating mock → PNG has no canary content" \
+    || bad "[S] canary leak: rc=$RC red='$got' out='$OUT' err='$(printf '%s' "$ERR" | tail -n 3)'"
+else
+  echo "  skip — [S] no headless Chrome/Chromium on PATH; real-browser canary check not observed"
+fi
 
 echo "[11] index.html: deterministic, escaped, flow-ordered, provenance"
 R11="$ROOT/r11"
