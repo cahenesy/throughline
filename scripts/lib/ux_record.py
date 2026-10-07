@@ -366,7 +366,7 @@ def _scan_mock(rel, text, mock_abs=None, ud=None):
                 continue
             if v.startswith("#") or mock_abs is None:
                 continue
-            path = re.split(r"[?#]", v, 1)[0]
+            path = re.split(r"[?#]", v, maxsplit=1)[0]
             if not path:
                 continue
             if path.startswith("/") or path.startswith("\\"):
