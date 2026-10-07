@@ -217,7 +217,7 @@ runb ux-validate "$R6" TL_REPO="$R6"
 
 echo "[7] render block: degrade and scoping"
 NOB="$ROOT/nobrowser"; mkdir -p "$NOB"
-for t in bash sh env python3 git grep sed awk cat dirname mkdir rm ls head tail tr timeout cut mktemp; do
+for t in bash sh env python3 git grep sed awk cat dirname mkdir rm ls head tail tr timeout cut mktemp base64; do
   p="$(command -v "$t" 2>/dev/null)" && ln -sf "$p" "$NOB/$t"
 done
 for b in chromium chromium-browser google-chrome chrome; do [ -e "$NOB/$b" ] && bad "infra: $b leaked into $NOB"; done

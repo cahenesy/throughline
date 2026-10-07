@@ -165,6 +165,42 @@ After the first round, `/prd-author` *updates* the existing PRD. You can start
 the next lap's `/prd-author` / `/tdd-author` while a build is still running; a
 single-run lock holds off a second `/build-tdds`, so two builds can't race.
 
+### `/ux-author` (optional UX phase)
+
+When a merged PRD update adds or changes **`[UI]` requirements**
+(`**FR-120 [UI] Saved searches.** …`), run `/ux-author` — *fresh session, on
+`main`, pulled current* — between the PRD merge and `/tdd-author`. With no
+`[UI]` change it prints `no UI-bearing requirements in this PRD delta` and
+stops; it refuses an uncommitted or unmerged `docs/PRD.md`.
+
+- It shows a draft screen plan first, interrogates platforms, viewports, the
+  baseline and the design-system situation, co-creates a `docs/ux/RUBRIC.md`,
+  and persists a resumable draft like `/prd-author`.
+- It writes `docs/ux/`: one self-contained HTML mock per screen state
+  (`default` / `empty` / `loading` / `error`, or `n/a` with a reason),
+  `tokens.css`, `index.json` (requirement → screens), PNG screenshots and a
+  generated `index.html` flow page. Requirement gaps become visible
+  `data-ux-gap` placeholders and a PR section; it never edits `docs/PRD.md`.
+- **Delegated by role.** The mocks come from whatever design skills or tools
+  your session has, by role: `design`, `design-system`, `critique`,
+  `accessibility` (on Claude Code, for example, `frontend-design` or the
+  `design:*` skills). None are required: with no delegate the session authors
+  the mocks itself and the record says `delegates: none: degraded` and the
+  fidelity it actually reached.
+- **Design system.** A merged `tokens.css` is reused; a theme in code is
+  derived into one; with none, it establishes one and writes an ADR through
+  `/adr-new`.
+- An independent `ux-reviewer` worker (fresh context, inherits your model)
+  critiques coverage, states, accessibility basics and token use, and must
+  end `UX_REVIEW: PASS` before the **UX PR** (branch `docs/ux/<slug>`) opens.
+  It never merges. Merge it, then run `/tdd-author`.
+
+Requirements: `python3` (stdlib only) for the UX record library, and a
+headless Chrome/Chromium on `PATH` (or `THROUGHLINE_UX_BROWSER`) for
+screenshots. Without a browser the set ships HTML-only and the PR says
+`screenshots not rendered: no headless Chrome on PATH`. Run one UX PR at a
+time per repo.
+
 ### Feedback edges (the unhappy path)
 
 - **Design blocker at build time:** `/build-tdds` appends infeasible or
@@ -192,11 +228,13 @@ throughline/
 ├── .claude-plugin/{plugin.json, marketplace.json}
 ├── agents/
 │   ├── security-reviewer.md  # in-gate security review
-│   └── design-reviewer.md    # independent design critique before the design PR
+│   ├── design-reviewer.md    # independent design critique before the design PR
+│   └── ux-reviewer.md        # independent UX-set critique before the UX PR
 │   # build → superpowers:test-driven-development; code review → pr-review-toolkit (ADR 0003)
 ├── skills/
 │   ├── bootstrap-project/    # /bootstrap-project — toolchain + docs scaffold (idempotent)
 │   ├── prd-author/           # /prd-author       — the WHAT → docs/PRD.md (draft-persistent)
+│   ├── ux-author/            # /ux-author        — optional UX mocks → docs/ux/ (draft-persistent)
 │   ├── tdd-author/           # /tdd-author       — the HOW  → docs/tdd/NNNN-* (draft-persistent)
 │   ├── adr-new/              # /adr-new          — durable decisions → docs/adr/
 │   ├── implement/            # /build-tdds       — build all merged TDDs
