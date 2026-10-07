@@ -1,6 +1,6 @@
 # TDD 0070: UX record library — `[UI]` requirements, the UX index, validation, rendering
 
-Status: draft
+Status: implemented
 PRD refs: FR-89, FR-90, FR-91, FR-94, FR-99, FR-101, NFR-4
 PRD-rev: 3be6232
 ADR constraints: 0004, 0005, 0006, 0010, 0011, 0017
