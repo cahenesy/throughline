@@ -7,6 +7,7 @@ from rc 2 (invalid input / internal error) — NFR-4.
 """
 import html
 import os
+import pathlib
 import re
 import shutil
 import subprocess
@@ -65,6 +66,51 @@ def _good_png(p):
     return os.path.isfile(p) and os.path.getsize(p) > 0
 
 
+# Every page the render shows carries this policy: no script runs (so nothing
+# can build a path or navigate to a local file at render time — B1), and no
+# frame, plugin, worker, fetch, <base> or form target can load either. A CSP
+# meta is used because --blink-settings=scriptEnabled=false (and a profile
+# that blocks JavaScript) stop headless Chrome from writing --screenshot.
+CSP = ("script-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; "
+       "worker-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'")
+CSP_META = ('<meta http-equiv="Content-Security-Policy" content="%s">' % CSP).encode("ascii")
+_DOCTYPE_RE = re.compile(rb"(?:\xef\xbb\xbf)?\s*(?:<!--.*?-->\s*)*<!doctype[^>]*>", re.I | re.S)
+
+
+def _inject_csp(path):
+    """Put CSP_META first in the document: after a leading doctype (so the page
+    keeps its rendering mode) or BOM, before any element that could run."""
+    with open(path, "rb") as fh:
+        b = fh.read()
+    m = _DOCTYPE_RE.match(b)
+    i = m.end() if m else (3 if b.startswith(b"\xef\xbb\xbf") else 0)
+    with open(path, "wb") as fh:
+        fh.write(b[:i] + CSP_META + b[i:])
+
+
+def _private_copy(root, ud):
+    """Copy docs/ux to docs/.ux-render.XXXX/r/docs/ux (inside the repo, so a
+    confined browser such as snap Chromium can still read it). The browser
+    only ever sees the copy: it is checked and rendered, so a concurrent edit
+    of the real mock cannot slip past the check (N4), and every HTML page in it
+    gets CSP_META. Returns (tmp, copy_root)."""
+    tmp = tempfile.mkdtemp(prefix=".ux-render.", dir=os.path.dirname(ud))
+    croot = os.path.join(tmp, "r")
+    try:
+        shutil.copytree(ud, ux_dir(croot), symlinks=True)
+        bad = symlink_problems(croot)
+        if bad:
+            raise UxError("ux: render refused: %s" % bad[0])
+        for dp, _, fns in os.walk(ux_dir(croot)):
+            for fn in fns:
+                if fn.lower().endswith((".html", ".htm", ".xhtml")):
+                    _inject_csp(os.path.join(dp, fn))
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    return tmp, croot
+
+
 def cmd_render(args):
     if len(args) < 2:
         raise UxError("ux: render needs explicit screen ids")
@@ -79,11 +125,28 @@ def cmd_render(args):
         if sid not in byid:
             raise UxError("ux: unknown screen id %s" % sid)
     # 0. Refuse before touching anything: a symlink under docs/ux/ would make the
-    # clear step delete, or the browser write, outside the repo; an unsafe mock
-    # could bake a local file or a network fetch into a committed PNG.
-    bad = symlink_problems(root) or mock_problems(root, d, set(ids))
+    # clear step delete, or the browser write, outside the repo; a missing mock
+    # is invalid input (rc 2, N6); an unsafe mock could bake a local file or a
+    # network fetch into a committed PNG. The mocks are checked in the private
+    # copy the browser will render, not in place.
+    bad = symlink_problems(root)
     if bad:
         raise UxError("ux: render refused: %s (run tl_ux_validate)" % bad[0])
+    for sid in ids:
+        for st in byid[sid]["states"]:
+            if "file" in st and not os.path.isfile(os.path.join(ud, st["file"])):
+                raise UxError("ux: render refused: missing mock docs/ux/%s (run tl_ux_validate)" % st["file"])
+    tmp, croot = _private_copy(root, ud)
+    try:
+        bad = mock_problems(croot, d, set(ids))
+        if bad:
+            raise UxError("ux: render refused: %s (run tl_ux_validate)" % bad[0])
+        return _render(root, ud, d, byid, ids, ux_dir(croot))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _render(root, ud, d, byid, ids, cud):
     # 1. Clear every image under the named screens, before looking for a browser.
     for sid in ids:
         sd = os.path.join(ud, "screens", sid)
@@ -98,34 +161,34 @@ def cmd_render(args):
     if browser is None:
         reason, rc = NO_BROWSER, 4
     else:
-        # 3. Render each shot.
+        # 3. Render each shot, from the CSP-guarded private copy.
         for sid in ids:
             for st in byid[sid]["states"]:
                 if "file" not in st:
                     continue
                 hrel = "docs/ux/" + st["file"]
-                habs = os.path.join(ud, st["file"])
+                url = pathlib.Path(os.path.join(cud, st["file"])).as_uri()
                 for v in d["viewports"]:
                     prel = "docs/ux/screens/%s/%s@%s.png" % (sid, st["name"], v["name"])
                     pabs = os.path.join(root, prel)
-                    if not os.path.isfile(habs):
-                        reason, rc = "missing mock %s" % hrel, 4
-                        break
-                    wrote.append(pabs)
-                    brc = shoot(browser, v["width"], v["height"], pabs, "file://" + habs, True)
+                    wrote.append((pabs, prel))
+                    brc = shoot(browser, v["width"], v["height"], pabs, url, True)
                     if brc != 0 or not _good_png(pabs):
                         reason, rc = "%s failed on %s (rc %d)" % (browser, hrel, brc), 4
                         break
-                    print("rendered " + prel)
                 if rc:
                     break
             if rc:
                 break
-        # 4. On failure, delete only the PNGs this call wrote.
+        # 4. On failure, delete only the PNGs this call wrote; report a PNG as
+        # rendered only once the whole call has succeeded (N5).
         if rc:
-            for p in wrote:
+            for p, _ in wrote:
                 if os.path.isfile(p):
                     os.remove(p)
+        else:
+            for _, prel in wrote:
+                print("rendered " + prel)
     # 5. Whole-set status, from disk.
     exp, have = present_pngs(root, d)
     if reason is None and len(have) == len(exp):

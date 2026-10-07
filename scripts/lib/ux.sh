@@ -13,8 +13,8 @@
 #   tl_ux_coverage <repo-root> <id>…    covered / stale / uncovered vs the merged set
 #
 # The python halves (ux_record.py, ux_render.py) are stdlib-only and run as
-# `python3 -I`. A wrapper whose input has no `[UI]` returns before looking for
-# python3, so non-UI repos never need it. rc 3 = python3 missing. Sourced, never
+# `python3 -I -B` (no bytecode in the plugin tree). A wrapper whose input has
+# no `[UI]` returns before looking for python3, so non-UI repos never need it. rc 3 = python3 missing. Sourced, never
 # executed: functions only, no top-level side effects beyond sourcing its deps.
 
 for _ux_dep in plugin-root.sh verdicts.sh; do
@@ -34,7 +34,7 @@ _tl_ux_py() {
   root="$(tl_plugin_root)" || return 2
   py="$root/scripts/lib/ux_${which}.py"
   [ -r "$py" ] || { echo "ux: cannot read $py" >&2; return 2; }
-  python3 -I "$py" "$@"
+  python3 -I -B "$py" "$@"
 }
 
 tl_ux_ui_reqs() {

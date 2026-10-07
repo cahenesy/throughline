@@ -7,10 +7,12 @@ Results go to stdout, `ux: …` diagnostics to stderr. No parse failure reads as
 Also imported by ux_render.py for the index loader and the structural checks.
 """
 import hashlib
+import html
 import json
 import os
 import re
 import sys
+import urllib.parse
 
 UI_RE = re.compile(r"^\*\*(?P<id>[A-Z][A-Z0-9]*-[0-9]+) \[UI\] (?P<title>[^*]+?)\.?\*\*")
 REQ_RE = re.compile(r"^\*\*(?P<id>[A-Z][A-Z0-9]*-[0-9]+) ")
@@ -73,6 +75,10 @@ def parse_prd(path):
                 fence = None
             continue
         if line.startswith("#"):
+            # A heading ends a block and is never a [UI] title: a [UI] here is
+            # off-grammar and must fail loudly, not read as "no UI requirements".
+            if "[UI]" in CODE_RE.sub("", line):
+                raise UxError("ux: malformed [UI] marker at %s:%d: %s" % (path, i + 1, line[:120]))
             heads.append((i, "heading", None, None))
             continue
         body = _delist(line)
@@ -331,19 +337,107 @@ def cmd_delta(args):
     return 0
 
 
-# Any scheme that can reach a network or the local filesystem, anywhere in the
-# mock (attributes, CSS, script string literals). IP literals are caught here
-# too: the scheme is what matters, not the host.
-_NET_SCHEME = re.compile(r"""\b(?:https?|wss?|ftp|file)://[^"'\s<>)]*""", re.I)
-# Values of src/href/srcset/action/poster/data, CSS url() and @import.
-_REF_PATS = [r"""\b(?:src|href|srcset|action|poster|data|formaction)\s*=\s*["']?\s*([^"'\s>]+)""",
-             r"""@import\s+(?:url\(\s*)?["']?\s*([^"'\s>);]+)""",
-             r"""url\(\s*["']?\s*([^"'\s)]+)"""]
+# Reference *values* only (N1): text, xmlns and script bodies are not loads —
+# render runs every mock with scripts off (ux_render.py), so a script cannot
+# build a path the scan would have to see.
+_REF_ATTRS = ("src|href|srcset|imagesrcset|action|formaction|poster|data|background|"
+              "manifest|ping|codebase|archive|lowsrc|dynsrc|longdesc|cite")
+_LIST_ATTRS = {"srcset", "imagesrcset"}      # "url [descriptor], url [descriptor], …"
+_SPLIT_ATTRS = {"ping", "archive"}           # space/comma-separated URL lists
+_ATTR_RE = re.compile(r"""\b(%s)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))""" % _REF_ATTRS, re.I)
+_TAG_ATTR_RE = re.compile(r"""([^\s"'<>/=]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))""")
+_META_RE = re.compile(r"""<meta\b(?:[^>"']|"[^"]*"|'[^']*')*>""", re.I)
+_URL_RE = re.compile(r"""\burl\(\s*(?:"([^"]*)"|'([^']*)'|([^)\s]*))""", re.I)
+_IMPORT_RE = re.compile(r"""@import\s+(?:"([^"]*)"|'([^']*)')""", re.I)
+_IMAGESET_RE = re.compile(r"""image-set\(""", re.I)
+_STR_RE = re.compile(r""""([^"]*)"|'([^']*)'""")
+_CSS_ESC_RE = re.compile(r"""\\(?:([0-9a-fA-F]{1,6})[ \t\n\r\f]?|(.))""", re.S)
+_EXTERNAL = re.compile(r"(?:https?|wss?|ftp)://", re.I)
+_OK_SCHEME = re.compile(r"(?:javascript|mailto|tel|about):", re.I)
+_BAD_DATA = re.compile(r"data:[\s]*(?:text/html|application/xhtml)", re.I)
+
+
+def _first(m, start=1):
+    for g in m.groups()[start - 1:]:
+        if g is not None:
+            return g
+    return ""
+
+
+def _css_unescape(t):
+    def sub(m):
+        if m.group(1):
+            cp = int(m.group(1), 16)
+            return chr(cp) if 0 < cp <= 0x10FFFF else "�"
+        return "" if m.group(2) == "\n" else m.group(2)
+    return _CSS_ESC_RE.sub(sub, t)
+
+
+def _refresh_target(content):
+    """The URL a <meta http-equiv=refresh content=…> navigates to ('' = none),
+    parsed the way browsers do (the `url=` part is optional)."""
+    m = re.match(r"\s*[0-9.]*\s*[;,]?\s*(?:url\s*=\s*)?(.*)$", content, re.I | re.S)
+    t = m.group(1).strip() if m else ""
+    if t[:1] in ("'", '"'):
+        q, t = t[0], t[1:]
+        t = t.split(q, 1)[0]
+    return t
+
+
+def _imageset_strings(t):
+    for m in _IMAGESET_RE.finditer(t):
+        depth, i = 1, m.end()
+        while i < len(t) and depth:
+            depth += {"(": 1, ")": -1}.get(t[i], 0)
+            i += 1
+        for sm in _STR_RE.finditer(t[m.end():i]):
+            yield _first(sm)
+
+
+def _ref_values(text):
+    """Every reference target in a mock: src/href/… attribute values (each
+    srcset candidate), <meta refresh> targets, CSS url()/@import/image-set()
+    strings. Entity-decoded variants are scanned too (srcdoc, &#47; paths)."""
+    variants, t = [text], text
+    for _ in range(4):
+        u = html.unescape(t)
+        if u == t:
+            break
+        variants.append(u)
+        t = u
+    for t in variants:
+        for m in _ATTR_RE.finditer(t):
+            name, v = m.group(1).lower(), html.unescape(_first(m, 2))
+            if name in _LIST_ATTRS:
+                for cand in v.split(","):
+                    toks = cand.split()
+                    if toks:
+                        yield toks[0]
+            elif name in _SPLIT_ATTRS:
+                for tok in re.split(r"[\s,]+", v):
+                    if tok:
+                        yield tok
+            else:
+                yield v
+        for tag in _META_RE.finditer(t):
+            attrs = {a.group(1).lower(): html.unescape(_first(a, 2))
+                     for a in _TAG_ATTR_RE.finditer(tag.group(0)[5:])}
+            if attrs.get("http-equiv", "").strip().lower() == "refresh":
+                tgt = _refresh_target(attrs.get("content", ""))
+                if tgt:
+                    yield tgt
+        for c in (t, _css_unescape(t)):
+            for m in _URL_RE.finditer(c):
+                yield _css_unescape(_first(m))
+            for m in _IMPORT_RE.finditer(c):
+                yield _css_unescape(_first(m))
+            for v in _imageset_strings(c):
+                yield _css_unescape(v)
 
 
 def _scan_mock(rel, text, mock_abs=None, ud=None):
-    """Self-containment problems of one mock: network-capable or file: URLs
-    anywhere, protocol-relative refs, and local refs that leave docs/ux/
+    """Self-containment problems of one mock: a reference that can reach the
+    network or another scheme, or a local reference that leaves docs/ux/
     (which a file:// render would otherwise bake into a committed PNG)."""
     probs, seen = [], set()
 
@@ -351,30 +445,30 @@ def _scan_mock(rel, text, mock_abs=None, ud=None):
         if msg not in seen:
             seen.add(msg)
             probs.append(msg)
-    for m in _NET_SCHEME.finditer(text):
-        add("%s: external URL %s (mocks must be self-contained)" % (rel, m.group(0)))
-    for pat in _REF_PATS:
-        for m in re.finditer(pat, text, re.I):
-            v = m.group(1)
-            if v.startswith("//"):
-                add("%s: external URL %s (mocks must be self-contained)" % (rel, v))
+    for raw in _ref_values(text):
+        # Browsers drop tabs/newlines, trim spaces and read '\\' as '/'.
+        v = re.sub(r"[\t\n\r]", "", raw).strip(" \f\x00").replace("\\", "/")
+        if not v or v.startswith("#"):
+            continue
+        if v.startswith("//") or _EXTERNAL.match(v):
+            add("%s: external URL %s (mocks must be self-contained)" % (rel, v))
+            continue
+        if re.match(r"[a-z][a-z0-9+.-]*:", v, re.I):
+            if _OK_SCHEME.match(v) or (v[:5].lower() == "data:" and not _BAD_DATA.match(v)):
                 continue
-            if re.match(r"[a-z][a-z0-9+.-]*:", v, re.I):
-                if re.match(r"(?:data|javascript|mailto|tel|about):", v, re.I):
-                    continue
-                add("%s: reference %s uses a disallowed scheme (mocks must be self-contained)" % (rel, v))
-                continue
-            if v.startswith("#") or mock_abs is None:
-                continue
-            path = re.split(r"[?#]", v, maxsplit=1)[0]
-            if not path:
-                continue
-            if path.startswith("/") or path.startswith("\\"):
-                add("%s: reference %s is outside docs/ux (absolute path)" % (rel, v))
-                continue
-            tgt = os.path.normpath(os.path.join(os.path.dirname(mock_abs), path))
-            if tgt != ud and not tgt.startswith(ud + os.sep):
-                add("%s: reference %s is outside docs/ux" % (rel, v))
+            add("%s: reference %s uses a disallowed scheme (mocks must be self-contained)" % (rel, v))
+            continue
+        if mock_abs is None:
+            continue
+        path = urllib.parse.unquote(re.split(r"[?#]", v, maxsplit=1)[0])
+        if not path:
+            continue
+        if path.startswith("/"):
+            add("%s: reference %s is outside docs/ux (absolute path)" % (rel, v))
+            continue
+        tgt = os.path.normpath(os.path.join(os.path.dirname(mock_abs), path))
+        if tgt != ud and not tgt.startswith(ud + os.sep):
+            add("%s: reference %s is outside docs/ux" % (rel, v))
     return probs
 
 
