@@ -331,19 +331,87 @@ def cmd_delta(args):
     return 0
 
 
-def _scan_mock(rel, text):
-    """External-URL and other per-mock problems."""
+# Any scheme that can reach a network or the local filesystem, anywhere in the
+# mock (attributes, CSS, script string literals). IP literals are caught here
+# too: the scheme is what matters, not the host.
+_NET_SCHEME = re.compile(r"""\b(?:https?|wss?|ftp|file)://[^"'\s<>)]*""", re.I)
+# Values of src/href/srcset/action/poster/data, CSS url() and @import.
+_REF_PATS = [r"""\b(?:src|href|srcset|action|poster|data|formaction)\s*=\s*["']?\s*([^"'\s>]+)""",
+             r"""@import\s+(?:url\(\s*)?["']?\s*([^"'\s>);]+)""",
+             r"""url\(\s*["']?\s*([^"'\s)]+)"""]
+
+
+def _scan_mock(rel, text, mock_abs=None, ud=None):
+    """Self-containment problems of one mock: network-capable or file: URLs
+    anywhere, protocol-relative refs, and local refs that leave docs/ux/
+    (which a file:// render would otherwise bake into a committed PNG)."""
+    probs, seen = [], set()
+
+    def add(msg):
+        if msg not in seen:
+            seen.add(msg)
+            probs.append(msg)
+    for m in _NET_SCHEME.finditer(text):
+        add("%s: external URL %s (mocks must be self-contained)" % (rel, m.group(0)))
+    for pat in _REF_PATS:
+        for m in re.finditer(pat, text, re.I):
+            v = m.group(1)
+            if v.startswith("//"):
+                add("%s: external URL %s (mocks must be self-contained)" % (rel, v))
+                continue
+            if re.match(r"[a-z][a-z0-9+.-]*:", v, re.I):
+                if re.match(r"(?:data|javascript|mailto|tel|about):", v, re.I):
+                    continue
+                add("%s: reference %s uses a disallowed scheme (mocks must be self-contained)" % (rel, v))
+                continue
+            if v.startswith("#") or mock_abs is None:
+                continue
+            path = re.split(r"[?#]", v, 1)[0]
+            if not path:
+                continue
+            if path.startswith("/") or path.startswith("\\"):
+                add("%s: reference %s is outside docs/ux (absolute path)" % (rel, v))
+                continue
+            tgt = os.path.normpath(os.path.join(os.path.dirname(mock_abs), path))
+            if tgt != ud and not tgt.startswith(ud + os.sep):
+                add("%s: reference %s is outside docs/ux" % (rel, v))
+    return probs
+
+
+def symlink_problems(root):
+    """Every symlink at or under docs/ux/ (followed by nothing here). A link
+    there could make render delete or write outside the repo, or render an
+    arbitrary local file into a committed PNG."""
+    ud = ux_dir(root)
     probs = []
-    pats = [r"""(?:src|href)\s*=\s*["']?\s*((?:https?:|//)[^"'\s>]*)""",
-            r"""@import\s+(?:url\(\s*)?["']?\s*((?:https?:|//)[^"'\s>);]*)""",
-            r"""url\(\s*["']?\s*((?:https?:|//)[^"'\s)]*)"""]
-    found = []
-    for p in pats:
-        for m in re.finditer(p, text, re.I):
-            if m.group(1) not in found:
-                found.append(m.group(1))
-    for u in found:
-        probs.append("%s: external URL %s (mocks must be self-contained)" % (rel, u))
+    if os.path.islink(ud):
+        return ["docs/ux: symlink not allowed"]
+    for dirpath, dirnames, filenames in os.walk(ud, followlinks=False):
+        dirnames.sort()
+        for n in sorted(dirnames + filenames):
+            fp = os.path.join(dirpath, n)
+            if os.path.islink(fp):
+                probs.append("docs/ux/%s: symlink not allowed"
+                             % os.path.relpath(fp, ud).replace(os.sep, "/"))
+    return probs
+
+
+def mock_problems(root, d, ids=None):
+    """Self-containment problems of the listed mocks (all, or screens `ids`)."""
+    ud = ux_dir(root)
+    probs = []
+    for s in d["screens"]:
+        if ids is not None and s["id"] not in ids:
+            continue
+        for st in s["states"]:
+            if "file" not in st:
+                continue
+            fa = os.path.join(ud, st["file"])
+            if os.path.islink(fa) or not os.path.isfile(fa):
+                continue
+            with open(fa, "rb") as fh:
+                text = fh.read().decode("utf-8", "replace")
+            probs.extend(_scan_mock("docs/ux/" + st["file"], text, fa, ud))
     return probs
 
 
@@ -379,7 +447,7 @@ def cmd_validate(args):
         for r in errs:
             print("ux-invalid: %s: %s" % (rel_index, r))
         return 1
-    probs = []
+    probs = symlink_problems(root)
     ui, _ = parse_prd_strict(os.path.join(root, "docs", "PRD.md"))
     cur = {rid: h for rid, h, _, _ in ui}
     for r in d["requirements"]:
@@ -398,16 +466,18 @@ def cmd_validate(args):
             listed.add(st["file"])
             rel = "docs/ux/" + st["file"]
             fa = os.path.join(ud, st["file"])
+            if os.path.islink(fa):
+                continue  # reported by symlink_problems; never read through it
             if not os.path.isfile(fa):
                 probs.append("%s: missing mock" % rel)
                 continue
             with open(fa, "rb") as fh:
                 text = fh.read().decode("utf-8", "replace")
-            probs.extend(_scan_mock(rel, text))
+            probs.extend(_scan_mock(rel, text, fa, ud))
             if has_tokens and not _links_tokens(fa, text, tokens_abs):
                 probs.append('%s: does not link tokens.css (<link rel="stylesheet" href="…tokens.css">)' % rel)
     expected = set(expected_pngs(d))
-    for dirpath, dirnames, filenames in os.walk(ud):
+    for dirpath, dirnames, filenames in os.walk(ud, followlinks=False):
         dirnames.sort()
         for fn in sorted(filenames):
             rel = os.path.relpath(os.path.join(dirpath, fn), ud).replace(os.sep, "/")

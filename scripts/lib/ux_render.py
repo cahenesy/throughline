@@ -17,7 +17,8 @@ import tempfile
 # without leaving a __pycache__ in the plugin tree.
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ux_record import IMG_EXT, UxError, checked_index, present_pngs, run, ux_dir  # noqa: E402
+from ux_record import (IMG_EXT, UxError, checked_index, mock_problems,  # noqa: E402
+                       present_pngs, run, symlink_problems, ux_dir)
 
 BROWSERS = ["chromium", "chromium-browser", "google-chrome", "chrome"]
 NO_BROWSER = "no headless Chrome on PATH"
@@ -41,7 +42,10 @@ def shoot(browser, w, h, png, url, block_network):
     """Run one headless screenshot. Returns the browser's exit code."""
     cmd = [browser, "--headless=new", "--disable-gpu", "--hide-scrollbars"]
     if block_network:
-        cmd.append("--host-resolver-rules=MAP * ~NOTFOUND")
+        # The resolver rule stops DNS names; the dead proxy (with loopback not
+        # bypassed) also stops IP literals and localhost, for http(s) and ws(s).
+        cmd += ["--host-resolver-rules=MAP * ~NOTFOUND",
+                "--proxy-server=http://127.0.0.1:9", "--proxy-bypass-list=<-loopback>"]
     cmd += ["--window-size=%d,%d" % (w, h), "--screenshot=" + png, url]
     if shutil.which("timeout"):
         cmd = ["timeout", "60"] + cmd
@@ -74,6 +78,12 @@ def cmd_render(args):
     for sid in ids:
         if sid not in byid:
             raise UxError("ux: unknown screen id %s" % sid)
+    # 0. Refuse before touching anything: a symlink under docs/ux/ would make the
+    # clear step delete, or the browser write, outside the repo; an unsafe mock
+    # could bake a local file or a network fetch into a committed PNG.
+    bad = symlink_problems(root) or mock_problems(root, d, set(ids))
+    if bad:
+        raise UxError("ux: render refused: %s (run tl_ux_validate)" % bad[0])
     # 1. Clear every image under the named screens, before looking for a browser.
     for sid in ids:
         sd = os.path.join(ud, "screens", sid)
@@ -216,6 +226,9 @@ def cmd_index_html(args):
         raise UxError("ux: usage: index-html <repo-root>")
     root = os.path.abspath(args[0])
     ud = ux_dir(root)
+    bad = symlink_problems(root)
+    if bad:
+        raise UxError("ux: index-html refused: %s" % bad[0])
     d = checked_index(os.path.join(ud, "index.json"))
     page = _page(d, root)
     fd, tmp = tempfile.mkstemp(prefix=".index.html.", dir=ud)
