@@ -3,7 +3,10 @@
 # rendering (scoped clear, whole-set status, rc-4 degrade), captures that are
 # never in-repo, and the generated index.html flow page.
 #
-# Observation points 7–11, 9b and 10b of the TDD's Verification plan. A stub
+# Observation points 7–11, 9b and 10b of the TDD's Verification plan.
+# Section [C] covers cleanup: a SIGTERM/SIGHUP to render removes the private
+# copy and stops the browser; the browser profile, HOME and TMPDIR stay inside
+# the private tree (no ~/Downloads write from a downloading mock). A stub
 # browser (THROUGHLINE_UX_BROWSER) writes a 1×1 PNG, logs its argv, and fetches
 # its http://127.0.0.1 URL while render's loopback server is live (body, headers);
 # when a real Chrome/Chromium is on PATH, obs 10 and the 10b isolation probe
@@ -42,8 +45,8 @@ ux() {
 
 # Stub browsers. Each logs argv (one per line, then ---) to $ROOT/stub.log and
 # counts calls in $ROOT/stub.n. A render URL is fetched by fetch.py (body →
-# stub.html, first 57 bytes → stub.heads, headers → stub.hdrs), and $TMPDIR's
-# listing goes to stub.tmpls. ok: always writes a 1×1 PNG. fail2: writes the
+# stub.html, first 57 bytes → stub.heads, headers → stub.hdrs), and the
+# browser's TMPDIR and HOME go to stub.tmpls. ok: always writes a 1×1 PNG. fail2: writes the
 # PNG then exits 1 on its 2nd call. failall: exits 1 without writing.
 cat >"$ROOT/fetch.py" <<'PY'
 import sys, urllib.error, urllib.request
@@ -70,7 +73,7 @@ mkstub() {
 for a in "\$@"; do printf '%s\n' "\$a"; done >>"$ROOT/stub.log"; echo --- >>"$ROOT/stub.log"
 n=\$(( \$(cat "$ROOT/stub.n" 2>/dev/null || echo 0) + 1 )); echo \$n >"$ROOT/stub.n"
 out=""; for a in "\$@"; do case "\$a" in --screenshot=*) out="\${a#--screenshot=}" ;; http://127.0.0.1:*/screens/*) python3 -I "$ROOT/fetch.py" "\$a" "$ROOT" 2>>"$ROOT/stub.ferr" ;; esac; done
-[ -n "\${TMPDIR:-}" ] && ls -A "\$TMPDIR" >>"$ROOT/stub.tmpls"
+printf 'TMPDIR=%s\nHOME=%s\n' "\${TMPDIR:-}" "\${HOME:-}" >>"$ROOT/stub.tmpls"
 mode=$1
 [ "\$mode" = failall ] && exit 1
 printf '%s' '$PNG_B64' | base64 -d >"\$out"
@@ -195,9 +198,16 @@ if rdable "$ROOT/stub.log" && [ -s "$ROOT/stub.log" ]; then
       && ok "[7] 404s (missing file, %2e%2e climb) also carry the CSP header" || bad "[7] error responses: $(grep ^ERR "$ROOT/stub.hdrs")"
   else bad "[7] the stub fetched nothing: $(cat "$ROOT/stub.ferr" 2>/dev/null)"; fi
   rdable "$ROOT/stub.tmpls" && [ -s "$ROOT/stub.tmpls" ] && rdable "$T7" && [ -z "$(ls -A "$T7")" ] \
+    && [ "$(grep -cF "TMPDIR=$T7/ux-render." "$ROOT/stub.tmpls")" -eq 4 ] \
+    && [ "$(grep -cF "HOME=$T7/ux-render." "$ROOT/stub.tmpls")" -eq 4 ] \
     && [ -z "$(find "$R7/docs" -maxdepth 1 -name '.ux-render.*')" ] \
-    && ok "[7] the render copy lived in \$TMPDIR (outside the repo) during the call and is gone after" \
+    && ok "[7] the browser's TMPDIR and HOME lived in the private \$TMPDIR/ux-render.* tree and are gone after" \
     || bad "[7] copy: during='$(cat "$ROOT/stub.tmpls" 2>/dev/null)' after='$(ls -A "$T7")' docs='$(ls -a "$R7/docs")'"
+  udd="$(grep -m1 '^--user-data-dir=' "$ROOT/stub.log")"; udd="${udd#--user-data-dir=}"
+  [ "$(grep -c '^--user-data-dir=' "$ROOT/stub.log")" -eq 4 ] && [ "$(grep '^--user-data-dir=' "$ROOT/stub.log" | sort -u | wc -l)" -eq 1 ] \
+    && case "$udd" in "$T7"/ux-render.*/*) true ;; *) false ;; esac && [ ! -e "$udd" ] \
+    && ok "[7] every shot gets one per-render --user-data-dir inside the private tree, removed after" \
+    || bad "[7] user-data-dir: '$(grep '^--user-data-dir=' "$ROOT/stub.log")' exists-after=$([ -e "$udd" ] && echo y)"
   ! grep -q -- '--no-sandbox' "$ROOT/stub.log" && ok "[7] stub argv has no --no-sandbox" || bad "[7] --no-sandbox passed"
 else bad "[7] stub log empty"; fi
 
@@ -288,8 +298,8 @@ echo "[9b] capture: reference only, never in-repo"
 PORT="$(python3 -I -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])')"
 mkdir -p "$ROOT/www"; printf '<h1>live</h1>\n' >"$ROOT/www/index.html"
 python3 -I -m http.server --bind 127.0.0.1 --directory "$ROOT/www" "$PORT" >/dev/null 2>&1 & SRV=$!
-CAP="$ROOT/caps/home"; reset_stub
-ux "tl_ux_capture http://127.0.0.1:$PORT/ $(q "$CAP") 390x844" "$SOK"
+CAP="$ROOT/caps/home"; reset_stub; TC="$ROOT/tmpc"; mkdir -p "$TC"
+ux "tl_ux_capture http://127.0.0.1:$PORT/ $(q "$CAP") 390x844" "$SOK" TMPDIR="$TC"
 [ "$RC" -eq 0 ] && [ -s "$CAP/capture-390x844.png" ] && [ "$OUT" = "$CAP/capture-390x844.png" ] \
   && ok "[9b] capture outside the repo → rc 0, PNG written, path printed" || bad "[9b] rc=$RC out='$OUT' err='$ERR'"
 if rdable "$ROOT/stub.log" && [ -s "$ROOT/stub.log" ]; then
@@ -297,6 +307,11 @@ if rdable "$ROOT/stub.log" && [ -s "$ROOT/stub.log" ]; then
     && ! grep -q -- '--proxy-server' "$ROOT/stub.log" && ! grep -q -- '--proxy-bypass-list' "$ROOT/stub.log" \
     && grep -qx -- "http://127.0.0.1:$PORT/" "$ROOT/stub.log" \
     && ok "[9b] capture argv: the URL, no resolver rule, no proxy flags, no --no-sandbox" || bad "[9b] argv: $(cat "$ROOT/stub.log")"
+  udd="$(grep -m1 '^--user-data-dir=' "$ROOT/stub.log")"; udd="${udd#--user-data-dir=}"
+  rdable "$TC" && case "$udd" in "$TC"/ux-capture.*/*) true ;; *) false ;; esac && [ ! -e "$udd" ] && [ -z "$(ls -A "$TC")" ] \
+    && grep -qF "HOME=$TC/ux-capture." "$ROOT/stub.tmpls" && grep -qF "TMPDIR=$TC/ux-capture." "$ROOT/stub.tmpls" \
+    && ok "[9b] capture: throwaway --user-data-dir, HOME and TMPDIR under its own mkdtemp, removed after" \
+    || bad "[9b] capture profile: udd='$udd' left='$(ls -A "$TC")' env='$(cat "$ROOT/stub.tmpls" 2>/dev/null)'"
 else bad "[9b] stub log empty"; fi
 git -C "$T" init -q
 ux "tl_ux_capture http://127.0.0.1:$PORT/ $(q "$T/caps/a") 390x844" "$SOK"
@@ -310,6 +325,36 @@ UXPATH="$NOB" ux "tl_ux_capture http://127.0.0.1:$PORT/ $(q "$ROOT/caps/n") 390x
 [ "$RC" -eq 4 ] && printf '%s' "$OUT$ERR" | grep -q 'capture failed: ' && ok "[9b] no browser → rc 4 capture failed" \
   || bad "[9b] nobrowser rc=$RC"
 
+echo "[C] a signalled render removes its private copy and stops its browser"
+# stub-sleep logs argv, records its pid and a child sleep's pid, then blocks.
+cat >"$ROOT/stub-sleep" <<EOF
+#!$BASH_BIN
+for a in "\$@"; do printf '%s\n' "\$a"; done >>"$ROOT/stub.log"; echo --- >>"$ROOT/stub.log"
+sleep 300 & echo "\$\$ \$!" >"$ROOT/stub.pids"
+wait
+EOF
+chmod +x "$ROOT/stub-sleep"
+gone() { local i; for i in $(seq 50); do kill -0 "$1" 2>/dev/null || return 0; sleep 0.1; done; return 1; }
+for sig in TERM:143 HUP:129; do
+  s="${sig%%:*}"; want="${sig#*:}"; RG="$ROOT/rg-$s"; TG="$ROOT/tg-$s"; mk "$RG"; mkdir -p "$TG"
+  reset_stub; rm -f "$ROOT/stub.pids"
+  env -i HOME="$H" PATH="$PATH" TMPDIR="$TG" THROUGHLINE_UX_BROWSER="$ROOT/stub-sleep" \
+    python3 -I -B "$REPO/scripts/lib/ux_render.py" render "$RG" a >"$ROOT/out" 2>"$ROOT/err" & PY=$!
+  for i in $(seq 100); do [ -s "$ROOT/stub.pids" ] && break; sleep 0.1; done
+  during="$(ls -A "$TG")"
+  kill -"$s" "$PY"; wait "$PY"; rc=$?
+  read -r sp cp <"$ROOT/stub.pids" 2>/dev/null || { sp=""; cp=""; }
+  printf '%s' "$during" | grep -q '^ux-render\.' || bad "[C] infra: no private copy in \$TMPDIR before SIG$s ('$during')"
+  rdable "$TG" && [ "$rc" -eq "$want" ] && [ -z "$(ls -A "$TG")" ] \
+    && ok "[C] SIG$s mid-render → rc $want, no ux-render.* left in \$TMPDIR" \
+    || bad "[C] SIG$s: rc=$rc left='$(ls -A "$TG")' err='$(cat "$ROOT/err")'"
+  [ -n "$sp" ] && gone "$sp" && gone "$cp" && ok "[C] SIG$s: the stub browser and its child are gone" \
+    || { bad "[C] SIG$s: browser survived (pids '$sp' '$cp')"; kill -9 $sp $cp 2>/dev/null; }
+  udd="$(grep -m1 '^--user-data-dir=' "$ROOT/stub.log" 2>/dev/null)"; udd="${udd#--user-data-dir=}"
+  case "$udd" in "$TG"/ux-render.*/*) [ ! -e "$udd" ] ;; *) false ;; esac \
+    && ok "[C] SIG$s: --user-data-dir was inside the private tree and is gone" || bad "[C] SIG$s: user-data-dir '$udd'"
+done
+
 echo "[10] real render (when Chrome/Chromium is present)"
 REAL=""; for b in chromium chromium-browser google-chrome chrome; do command -v "$b" >/dev/null 2>&1 && { REAL="$b"; break; }; done
 if [ -n "$REAL" ]; then
@@ -321,6 +366,34 @@ if [ -n "$REAL" ]; then
     || bad "[10] real render rc=$RC wh='$wh' out='$OUT' err='$(printf '%s' "$ERR" | tail -n 5)'"
 else
   echo "  skip — [10] no headless Chrome/Chromium on PATH; real render not observed"
+fi
+
+echo "[C] real browser: a mock that downloads a file writes nothing into \$HOME"
+if [ -n "$REAL" ]; then
+  RD="$ROOT/rd"; mk "$RD" '{"viewports":[["phone",390,844]]}'; FH="$ROOT/fakehome"; TD="$ROOT/td"; mkdir -p "$FH/Downloads" "$TD"
+  printf '<!doctype html><html><head><title>d</title><meta http-equiv="refresh" content="0;url=e"></head><body>x</body></html>\n' \
+    >"$RD/docs/ux/screens/a/default.html"
+  printf 'payload' >"$RD/docs/ux/screens/a/e"
+  env -i HOME="$FH" PATH="$PATH" TMPDIR="$TD" XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-}" \
+    python3 -I -B "$REPO/scripts/lib/ux_render.py" render "$RD" a >"$ROOT/out" 2>"$ROOT/err" & PY=$!
+  # The download stalls the shot until its timeout; stop the render once the
+  # private copy of the download exists (also exercises SIGTERM with Chrome).
+  seen=""; for i in $(seq 700); do
+    kill -0 "$PY" 2>/dev/null || break
+    [ -n "$(find "$TD" -path '*/Downloads/*' -type f 2>/dev/null)" ] && { seen=y; break; }; sleep 0.1
+  done
+  kill -TERM "$PY" 2>/dev/null; wait "$PY"; rc=$?
+  [ -n "$seen" ] || echo "  note — [C] the download never appeared in the private tree (rc $rc); the HOME check proves less"
+  rdable "$FH/Downloads" && [ -z "$(ls -A "$FH/Downloads")" ] && [ "$(find "$FH" -mindepth 1 | wc -l)" -eq 1 ] \
+    && ok "[C] real $REAL: nothing downloaded into \$HOME/Downloads, nothing else written under \$HOME" \
+    || bad "[C] HOME written: $(find "$FH" -mindepth 1 -maxdepth 2 | tr '\n' ' ')"
+  gone_c=y; for i in $(seq 50); do pgrep -f -- "$TD" >/dev/null || break; sleep 0.1; done
+  pgrep -f -- "$TD" >/dev/null && gone_c=""
+  rdable "$TD" && [ -z "$(ls -A "$TD")" ] && [ -n "$gone_c" ] && case "$rc" in 0|4|143) true ;; *) false ;; esac \
+    && ok "[C] real $REAL: render stopped (rc $rc), no Chrome left running, nothing left in \$TMPDIR" \
+    || { bad "[C] after real download render: rc=$rc left='$(ls -A "$TD")' chrome-left=$([ -z "$gone_c" ] && echo y)"; pkill -9 -f -- "$TD"; }
+else
+  echo "  skip — [C] no headless Chrome/Chromium on PATH; real-browser download check not observed"
 fi
 
 echo "[10b] isolation probe matrix (real Chrome): the browser holds the boundary"
