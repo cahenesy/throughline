@@ -11,10 +11,12 @@ import http.server
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import urllib.parse
 
 # -I drops the script dir from sys.path; load the sibling module explicitly,
@@ -42,30 +44,72 @@ def find_browser():
     return None
 
 
-def shoot(browser, w, h, png, url, port=None):
-    """Run one headless screenshot. Returns the browser's exit code. With
+def _browser_home(tmp):
+    """Private browser state under the caller's mkdtemp `tmp`: the profile
+    (--user-data-dir), HOME (so downloads land in <tmp>/b/h/Downloads, not
+    ~/Downloads), XDG dirs and TMPDIR. All of it goes when `tmp` is removed.
+    Short names: Chrome's socket path under TMPDIR has a 108-byte limit."""
+    b = os.path.join(tmp, "b")
+    h, t, p = os.path.join(b, "h"), os.path.join(b, "t"), os.path.join(b, "p")
+    for x in (h, t, p):
+        os.makedirs(x, mode=0o700)
+    env = dict(os.environ, HOME=h, TMPDIR=t, XDG_CONFIG_HOME=os.path.join(h, ".config"),
+               XDG_CACHE_HOME=os.path.join(h, ".cache"), XDG_DATA_HOME=os.path.join(h, ".local", "share"))
+    return p, env
+
+
+def _kill_group(proc):
+    """Stop the browser's whole process group (Chrome and its helpers): TERM,
+    then KILL after 3 s. The browser runs in its own session, so this never
+    reaches render itself."""
+    for sig, grace in ((signal.SIGTERM, 3.0), (signal.SIGKILL, 3.0)):
+        try:
+            os.killpg(proc.pid, sig)
+        except (ProcessLookupError, PermissionError):
+            pass
+        end = time.monotonic() + grace
+        while proc.poll() is None and time.monotonic() < end:
+            time.sleep(0.05)
+        if proc.poll() is not None:
+            break
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)   # helpers outliving the leader
+    except (ProcessLookupError, PermissionError):
+        pass
+    proc.wait()
+
+
+def shoot(browser, w, h, png, url, profile, env, port=None):
+    """Run one headless screenshot. Returns the browser's exit code (124 on
+    timeout). `profile`/`env` come from _browser_home: a throwaway profile
+    (--incognito: a fresh --user-data-dir otherwise stalls on first run),
+    with HOME and TMPDIR inside the caller's private temp tree. With
     `port` (render), the network is cut to render's own server: the resolver
     rule stops DNS names (127.0.0.1 is excluded: Chrome otherwise maps IP
     literals too and the page itself fails ERR_NAME_NOT_RESOLVED), and the
     dead proxy — bypassed only for 127.0.0.1:<port>, with the implicit
     loopback bypass removed — stops IP literals, localhost and every other
     loopback port. A capture (no port)
-    must reach the user's live app, so it gets none of these flags."""
-    cmd = [browser, "--headless=new", "--disable-gpu", "--hide-scrollbars"]
+    must reach the user's live app, so it gets none of these flags.
+    The browser runs in its own session; on timeout, or on any exception
+    (a signal turned into SystemExit), its whole process group is killed."""
+    cmd = [browser, "--headless=new", "--disable-gpu", "--hide-scrollbars",
+           "--incognito", "--user-data-dir=" + profile]
     if port is not None:
         cmd += ["--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1",
                 "--proxy-server=http://127.0.0.1:9",
                 "--proxy-bypass-list=<-loopback>;127.0.0.1:%d" % port]
     cmd += ["--window-size=%d,%d" % (w, h), "--screenshot=" + png, url]
-    if shutil.which("timeout"):
-        cmd = ["timeout", "60"] + cmd
+    p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.PIPE, env=env, start_new_session=True)
     try:
-        p = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE, timeout=90)
+        _, err = p.communicate(timeout=60)
     except subprocess.TimeoutExpired:
         return 124
+    finally:
+        _kill_group(p)
     if p.returncode != 0:
-        tail = p.stderr.decode("utf-8", "replace").strip().splitlines()[-3:]
+        tail = err.decode("utf-8", "replace").strip().splitlines()[-3:]
         for line in tail:
             print("ux: browser: " + line, file=sys.stderr)
     return p.returncode
@@ -191,7 +235,7 @@ def cmd_render(args):
             raise UxError("ux: render refused: %s (run tl_ux_validate)" % bad[0])
         srv = _serve(ux_dir(croot))
         try:
-            return _render(root, ud, d, byid, ids, srv.server_address[1])
+            return _render(root, ud, d, byid, ids, srv.server_address[1], tmp)
         finally:
             srv.shutdown()
             srv.server_close()
@@ -199,7 +243,13 @@ def cmd_render(args):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def _render(root, ud, d, byid, ids, port):
+def _drop(wrote):
+    for p, _ in wrote:
+        if os.path.isfile(p):
+            os.remove(p)
+
+
+def _render(root, ud, d, byid, ids, port, tmp):
     # 1. Clear every image under the named screens, before looking for a browser.
     for sid in ids:
         sd = os.path.join(ud, "screens", sid)
@@ -214,31 +264,35 @@ def _render(root, ud, d, byid, ids, port):
     if browser is None:
         reason, rc = NO_BROWSER, 4
     else:
-        # 3. Render each shot, served from the CSP-guarded private copy.
-        for sid in ids:
-            for st in byid[sid]["states"]:
-                if "file" not in st:
-                    continue
-                hrel = "docs/ux/" + st["file"]
-                url = "http://127.0.0.1:%d/%s" % (port, urllib.parse.quote(st["file"]))
-                for v in d["viewports"]:
-                    prel = "docs/ux/screens/%s/%s@%s.png" % (sid, st["name"], v["name"])
-                    pabs = os.path.join(root, prel)
-                    wrote.append((pabs, prel))
-                    brc = shoot(browser, v["width"], v["height"], pabs, url, port)
-                    if brc != 0 or not _good_png(pabs):
-                        reason, rc = "%s failed on %s (rc %d)" % (browser, hrel, brc), 4
+        # 3. Render each shot, served from the CSP-guarded private copy, with
+        # one browser profile/HOME/TMPDIR for the call inside the same tree.
+        profile, env = _browser_home(tmp)
+        try:
+            for sid in ids:
+                for st in byid[sid]["states"]:
+                    if "file" not in st:
+                        continue
+                    hrel = "docs/ux/" + st["file"]
+                    url = "http://127.0.0.1:%d/%s" % (port, urllib.parse.quote(st["file"]))
+                    for v in d["viewports"]:
+                        prel = "docs/ux/screens/%s/%s@%s.png" % (sid, st["name"], v["name"])
+                        pabs = os.path.join(root, prel)
+                        wrote.append((pabs, prel))
+                        brc = shoot(browser, v["width"], v["height"], pabs, url, profile, env, port)
+                        if brc != 0 or not _good_png(pabs):
+                            reason, rc = "%s failed on %s (rc %d)" % (browser, hrel, brc), 4
+                            break
+                    if rc:
                         break
                 if rc:
                     break
-            if rc:
-                break
+        except BaseException:   # a signal (SystemExit) mid-call: same as a failure
+            _drop(wrote)
+            raise
         # 4. On failure, delete only the PNGs this call wrote; report a PNG as
         # rendered only once the whole call has succeeded (N5).
         if rc:
-            for p, _ in wrote:
-                if os.path.isfile(p):
-                    os.remove(p)
+            _drop(wrote)
         else:
             for _, prel in wrote:
                 print("rendered " + prel)
@@ -280,7 +334,11 @@ def cmd_capture(args):
         print("capture failed: " + NO_BROWSER)
         return 4
     png = os.path.join(os.path.abspath(outdir), "capture-%dx%d.png" % (w, h))
-    brc = shoot(browser, w, h, png, url)
+    tmp = tempfile.mkdtemp(prefix="ux-capture.")
+    try:
+        brc = shoot(browser, w, h, png, url, *_browser_home(tmp))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
     if brc != 0 or not _good_png(png):
         if os.path.isfile(png):
             os.remove(png)
@@ -363,5 +421,19 @@ def cmd_index_html(args):
 
 CMDS = {"render": cmd_render, "capture": cmd_capture, "index-html": cmd_index_html}
 
+def _on_signal(signum, frame):
+    """SIGTERM/SIGHUP/SIGINT → SystemExit(128+signum), so every `finally`
+    runs: the browser group is killed, the loopback server shut down and the
+    private temp tree removed. Further signals are ignored while that runs."""
+    for s in _SIGS:
+        signal.signal(s, signal.SIG_IGN)
+    raise SystemExit(128 + signum)
+
+
+_SIGS = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)
+
 if __name__ == "__main__":
+    for _s in _SIGS:
+        if signal.getsignal(_s) is not signal.SIG_IGN:   # respect nohup / ignored SIGINT
+            signal.signal(_s, _on_signal)
     sys.exit(run(CMDS, sys.argv))
