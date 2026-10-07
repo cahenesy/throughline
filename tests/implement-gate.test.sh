@@ -202,12 +202,13 @@ echo "=== 0063 observations: $PASS passed, $FAIL failed ==="
 # via stdin against stub tools in temp repos; real tools are the
 # runtime-verify gate's job) + 0069 build-hardening (FR-18/FR-43: the
 # session-owned lock under real python3 parents and concurrent racers on temp
-# repos; the 0067 follow-ups). A registered eval that is missing is a failure,
+# repos; the 0067 follow-ups) + 0070 ux-record / ux-render (FR-89–FR-101:
+# the UX record library driven in temp repos with a stub browser). A registered eval that is missing is a failure,
 # never a silent skip (L-011).
 EVAL_FAIL=0
 for ev in plugin-root verdicts run-record build-tdds-skill model-roles \
           parent-session-check model-dispatch escalation \
-          format-and-lint-hook build-hardening; do
+          format-and-lint-hook build-hardening ux-record ux-render; do
   f="$(dirname "$0")/${ev}.test.sh"
   echo
   if [ -f "$f" ]; then
