@@ -5,14 +5,17 @@ Subcommands: render, capture, index-html. stdlib only. Never writes index.json.
 rc 4 is the declared screenshot degrade (no browser / failed shot), distinct
 from rc 2 (invalid input / internal error) — NFR-4.
 """
+import functools
 import html
+import http.server
 import os
-import pathlib
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import urllib.parse
 
 # -I drops the script dir from sys.path; load the sibling module explicitly,
 # without leaving a __pycache__ in the plugin tree.
@@ -39,14 +42,20 @@ def find_browser():
     return None
 
 
-def shoot(browser, w, h, png, url, block_network):
-    """Run one headless screenshot. Returns the browser's exit code."""
+def shoot(browser, w, h, png, url, port=None):
+    """Run one headless screenshot. Returns the browser's exit code. With
+    `port` (render), the network is cut to render's own server: the resolver
+    rule stops DNS names (127.0.0.1 is excluded: Chrome otherwise maps IP
+    literals too and the page itself fails ERR_NAME_NOT_RESOLVED), and the
+    dead proxy — bypassed only for 127.0.0.1:<port>, with the implicit
+    loopback bypass removed — stops IP literals, localhost and every other
+    loopback port. A capture (no port)
+    must reach the user's live app, so it gets none of these flags."""
     cmd = [browser, "--headless=new", "--disable-gpu", "--hide-scrollbars"]
-    if block_network:
-        # The resolver rule stops DNS names; the dead proxy (with loopback not
-        # bypassed) also stops IP literals and localhost, for http(s) and ws(s).
-        cmd += ["--host-resolver-rules=MAP * ~NOTFOUND",
-                "--proxy-server=http://127.0.0.1:9", "--proxy-bypass-list=<-loopback>"]
+    if port is not None:
+        cmd += ["--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1",
+                "--proxy-server=http://127.0.0.1:9",
+                "--proxy-bypass-list=<-loopback>;127.0.0.1:%d" % port]
     cmd += ["--window-size=%d,%d" % (w, h), "--screenshot=" + png, url]
     if shutil.which("timeout"):
         cmd = ["timeout", "60"] + cmd
@@ -66,23 +75,25 @@ def _good_png(p):
     return os.path.isfile(p) and os.path.getsize(p) > 0
 
 
-# Every page the render shows carries this policy: no script runs (so nothing
-# can build a path or navigate to a local file at render time — B1), and no
-# frame, plugin, worker, fetch, <base> or form target can load either. A CSP
-# meta is used because --blink-settings=scriptEnabled=false (and a profile
-# that blocks JavaScript) stop headless Chrome from writing --screenshot.
-CSP = ("script-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; "
-       "worker-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'")
+# Render isolation (TDD 0070 rev 2). The browser never opens a repo file and
+# never uses file://: it loads http://127.0.0.1:<port>/ from a loopback server
+# rooted at a private copy of docs/ux outside the repo. This policy rides on
+# every response as a header and at byte 0 of every HTML page as a meta, so
+# the browser enforces it: no script runs; images, fonts, media and CSS load
+# only from the server ('self') or data:; no frame, plugin, worker, <base> or
+# form target. An absolute or ../ path resolves on the server (404); file: is
+# never 'self'. The regex scan in validate is defence in depth only.
+CSP = ("default-src 'self' data:; script-src 'none'; object-src 'none'; frame-src 'none'; "
+       "worker-src 'none'; base-uri 'none'; form-action 'none'; style-src 'self' 'unsafe-inline' data:")
 CSP_META = ('<meta http-equiv="Content-Security-Policy" content="%s">' % CSP).encode("ascii")
 _PREFIX = b"<!DOCTYPE html>" + CSP_META
+_HTML_EXT = (".html", ".htm", ".xhtml")
 
 
 def _inject_csp(path):
     """Write _PREFIX at byte 0, before the mock's own bytes (one leading UTF-8
-    BOM dropped). No HTML is parsed: whatever the mock starts with (comments,
-    abruptly-closed <!--> comments, script, no doctype) comes after the CSP.
-    Our doctype comes first, so the page renders in standards mode and the
-    mock's own later doctype is ignored."""
+    BOM dropped). No HTML is parsed, so no mock prefix (comments, <!-->,
+    script, no doctype) can precede the policy."""
     with open(path, "rb") as fh:
         b = fh.read()
     if b.startswith(b"\xef\xbb\xbf"):
@@ -91,13 +102,12 @@ def _inject_csp(path):
         fh.write(_PREFIX + b)
 
 
-def _private_copy(root, ud):
-    """Copy docs/ux to docs/.ux-render.XXXX/r/docs/ux (inside the repo, so a
-    confined browser such as snap Chromium can still read it). The browser
-    only ever sees the copy: it is checked and rendered, so a concurrent edit
-    of the real mock cannot slip past the check (N4), and every HTML page in it
-    gets CSP_META. Returns (tmp, copy_root)."""
-    tmp = tempfile.mkdtemp(prefix=".ux-render.", dir=os.path.dirname(ud))
+def _private_copy(ud):
+    """Copy docs/ux into <mkdtemp>/r/docs/ux, outside the repo. Only render's
+    python server reads it. The copy is re-checked for symlinks (closing the
+    check-to-copy race) and every HTML page in it gets _PREFIX. The caller
+    removes the returned tmp dir. Returns (tmp, copy_root)."""
+    tmp = tempfile.mkdtemp(prefix="ux-render.")
     croot = os.path.join(tmp, "r")
     try:
         shutil.copytree(ud, ux_dir(croot), symlinks=True)
@@ -106,12 +116,47 @@ def _private_copy(root, ud):
             raise UxError("ux: render refused: %s" % bad[0])
         for dp, _, fns in os.walk(ux_dir(croot)):
             for fn in fns:
-                if fn.lower().endswith((".html", ".htm", ".xhtml")):
+                if fn.lower().endswith(_HTML_EXT):
                     _inject_csp(os.path.join(dp, fn))
     except BaseException:
         shutil.rmtree(tmp, ignore_errors=True)
         raise
     return tmp, croot
+
+
+class _Handler(http.server.SimpleHTTPRequestHandler):
+    """GET only, rooted at the copy; the policy header on every response
+    (pages, assets, redirects, errors); no directory listings; silent."""
+    extensions_map = dict(http.server.SimpleHTTPRequestHandler.extensions_map,
+                          **{e: "text/html; charset=utf-8" for e in _HTML_EXT})
+
+    def end_headers(self):
+        self.send_header("Content-Security-Policy", CSP)
+        super().end_headers()
+
+    def do_HEAD(self):
+        self.send_error(405)
+
+    def list_directory(self, path):
+        self.send_error(404)
+        return None
+
+    def log_message(self, *a):
+        pass
+
+
+class _Server(http.server.ThreadingHTTPServer):
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        pass  # nothing reaches the ux: stderr channel
+
+
+def _serve(cud):
+    """Start the loopback server for the copy at `cud` on 127.0.0.1:<free>."""
+    srv = _Server(("127.0.0.1", 0), functools.partial(_Handler, directory=cud))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
 
 
 def cmd_render(args):
@@ -128,10 +173,10 @@ def cmd_render(args):
         if sid not in byid:
             raise UxError("ux: unknown screen id %s" % sid)
     # 0. Refuse before touching anything: a symlink under docs/ux/ would make the
-    # clear step delete, or the browser write, outside the repo; a missing mock
-    # is invalid input (rc 2, N6); an unsafe mock could bake a local file or a
-    # network fetch into a committed PNG. The mocks are checked in the private
-    # copy the browser will render, not in place.
+    # clear step delete, or the render write, outside the repo; a missing mock
+    # is invalid input (rc 2, N6); a mock failing the scan is refused as well
+    # (defence in depth; the browser boundary is the CSP + loopback server).
+    # The mocks are scanned in the private copy that is served, not in place.
     bad = symlink_problems(root)
     if bad:
         raise UxError("ux: render refused: %s (run tl_ux_validate)" % bad[0])
@@ -139,17 +184,22 @@ def cmd_render(args):
         for st in byid[sid]["states"]:
             if "file" in st and not os.path.isfile(os.path.join(ud, st["file"])):
                 raise UxError("ux: render refused: missing mock docs/ux/%s (run tl_ux_validate)" % st["file"])
-    tmp, croot = _private_copy(root, ud)
+    tmp, croot = _private_copy(ud)
     try:
         bad = mock_problems(croot, d, set(ids))
         if bad:
             raise UxError("ux: render refused: %s (run tl_ux_validate)" % bad[0])
-        return _render(root, ud, d, byid, ids, ux_dir(croot))
+        srv = _serve(ux_dir(croot))
+        try:
+            return _render(root, ud, d, byid, ids, srv.server_address[1])
+        finally:
+            srv.shutdown()
+            srv.server_close()
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def _render(root, ud, d, byid, ids, cud):
+def _render(root, ud, d, byid, ids, port):
     # 1. Clear every image under the named screens, before looking for a browser.
     for sid in ids:
         sd = os.path.join(ud, "screens", sid)
@@ -164,18 +214,18 @@ def _render(root, ud, d, byid, ids, cud):
     if browser is None:
         reason, rc = NO_BROWSER, 4
     else:
-        # 3. Render each shot, from the CSP-guarded private copy.
+        # 3. Render each shot, served from the CSP-guarded private copy.
         for sid in ids:
             for st in byid[sid]["states"]:
                 if "file" not in st:
                     continue
                 hrel = "docs/ux/" + st["file"]
-                url = pathlib.Path(os.path.join(cud, st["file"])).as_uri()
+                url = "http://127.0.0.1:%d/%s" % (port, urllib.parse.quote(st["file"]))
                 for v in d["viewports"]:
                     prel = "docs/ux/screens/%s/%s@%s.png" % (sid, st["name"], v["name"])
                     pabs = os.path.join(root, prel)
                     wrote.append((pabs, prel))
-                    brc = shoot(browser, v["width"], v["height"], pabs, url, True)
+                    brc = shoot(browser, v["width"], v["height"], pabs, url, port)
                     if brc != 0 or not _good_png(pabs):
                         reason, rc = "%s failed on %s (rc %d)" % (browser, hrel, brc), 4
                         break
@@ -230,7 +280,7 @@ def cmd_capture(args):
         print("capture failed: " + NO_BROWSER)
         return 4
     png = os.path.join(os.path.abspath(outdir), "capture-%dx%d.png" % (w, h))
-    brc = shoot(browser, w, h, png, url, False)
+    brc = shoot(browser, w, h, png, url)
     if brc != 0 or not _good_png(png):
         if os.path.isfile(png):
             os.remove(png)

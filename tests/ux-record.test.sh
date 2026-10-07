@@ -242,7 +242,7 @@ mut "symlinked mock" 'default\.html: symlink' \
 mut "symlinked screen dir" 'screens/a: symlink' \
   "mv docs/ux/screens/a \"$ROOT/adir$RANDOM\" && ln -s \"\$(ls -d $ROOT/adir* | tail -n1)\" docs/ux/screens/a"
 MD="$ROOT/m6data"; cp -a "$R6" "$MD"
-sed -i 's#<head>#<head><img src="data:image/png;base64,AAAA" alt=""><a href="#top">t</a>#' "$MD/docs/ux/screens/a/default.html"
+sed -i 's#<head>#<head><img src="data:image/png;base64,AAAA" alt=""><a href="\#top">t</a>#' "$MD/docs/ux/screens/a/default.html"
 ux "tl_ux_validate $(q "$MD")"
 [ "$RC" -eq 0 ] && ok "[S] data: URI and #fragment stay valid" || bad "[S] data/fragment: rc=$RC out='$OUT' err='$ERR'"
 MN="$ROOT/m6n1"; cp -a "$R6" "$MN"

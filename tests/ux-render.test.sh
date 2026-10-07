@@ -177,7 +177,7 @@ ux "tl_ux_validate $(q "$R7")"
   && ok "[7] validate reports screenshots 4/4" || bad "[7] validate rc=$RC out='$OUT' err='$ERR'"
 if rdable "$ROOT/stub.log" && [ -s "$ROOT/stub.log" ]; then
   url7="$(grep -E '^http://127\.0\.0\.1:[0-9]+/screens/a/error\.html$' "$ROOT/stub.log" | head -n1)"; p7="${url7#http://127.0.0.1:}"; p7="${p7%%/*}"
-  grep -qx -- '--host-resolver-rules=MAP \* ~NOTFOUND' "$ROOT/stub.log" && grep -qx -- '--headless=new' "$ROOT/stub.log" \
+  grep -qx -- '--host-resolver-rules=MAP \* ~NOTFOUND, EXCLUDE 127.0.0.1' "$ROOT/stub.log" && grep -qx -- '--headless=new' "$ROOT/stub.log" \
     && grep -qx -- '--window-size=390,844' "$ROOT/stub.log" && [ -n "$url7" ] \
     && grep -qx -- '--proxy-server=http://127.0.0.1:9' "$ROOT/stub.log" \
     && grep -qxF -- "--proxy-bypass-list=<-loopback>;127.0.0.1:$p7" "$ROOT/stub.log" \
@@ -189,7 +189,7 @@ if rdable "$ROOT/stub.log" && [ -s "$ROOT/stub.log" ]; then
       && [ "$(grep -cF "content=\"$POLICY\"" "$ROOT/stub.html")" -eq 4 ] \
       && ok "[7] each served page starts with our doctype + the exact CSP meta" || bad "[7] bodies: $(head -c 600 "$ROOT/stub.html")"
     [ "$(grep -cxF "Content-Security-Policy: $POLICY" "$ROOT/stub.hdrs")" -eq 4 ] \
-      && [ "$(grep -cxF 'Content-Type: text/html; charset=utf-8' "$ROOT/stub.hdrs")" -eq 4 ] \
+      && [ "$(grep -cixF 'Content-Type: text/html; charset=utf-8' "$ROOT/stub.hdrs")" -eq 4 ] \
       && ok "[7] each page response has the CSP header and text/html; charset=utf-8" || bad "[7] headers: $(cat "$ROOT/stub.hdrs")"
     [ "$(grep -cxF "ERR 404 CSP: $POLICY" "$ROOT/stub.hdrs")" -eq 8 ] \
       && ok "[7] 404s (missing file, %2e%2e climb) also carry the CSP header" || bad "[7] error responses: $(grep ^ERR "$ROOT/stub.hdrs")"
