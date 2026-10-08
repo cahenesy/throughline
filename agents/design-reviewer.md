@@ -75,6 +75,15 @@ cite (`docs/adr/INDEX.md` + the referenced bodies). Then check:
   headers) — design must be specific enough to implement without guessing. Also
   flag the SAME concept named differently across TDDs in the set (a type/function
   called `X` in one and `X'` in another), which is a latent bug.
+- **UX coverage (FR-101).** For each `[UI]` requirement in scope (its PRD
+  title reads `**<ID> [UI] <title>**`), the traceability row cites merged
+  `docs/ux/screens/<sid>/` paths or records `mock waived: <rationale>`. Open
+  the cited mocks. A design that contradicts a cited mock (a state the mock
+  shows that the design omits, or styling values that diverge from
+  `docs/ux/tokens.css`) is a finding. A boilerplate waiver rationale (empty of
+  a real reason, or one that would fit any requirement) is a `BLOCK ux-waiver`:
+  end with `DESIGN_REVIEW: BLOCK ux-waiver — <id and why>`. The mocks are
+  design input; do not grade the mocks themselves.
 
 **Evaluation rubric (FR-77).** Each artifact under review may carry a
 `## Evaluation rubric` section co-created with the user — a table of criteria with

@@ -417,6 +417,127 @@ tl_lint_sequencing() {  # <tdd-path>
   esac
 }
 
+# This file's directory, captured at source time: tl_lint_ux_citations sources
+# its sibling ux.sh from here and pins the UX helpers to this same plugin tree.
+_TL_LINT_LIB="${BASH_SOURCE[0]%/*}"
+
+# tl_lint_ux_citations — a TDD that designs a `[UI]` requirement must cite the
+# merged mock or record a waiver (TDD 0072 / FR-101). For each id on the TDD's
+# `PRD refs:` line that `tl_ux_ui_reqs` (TDD 0070) reports as `[UI]`, a
+# `## Requirement traceability` line containing the id must either carry
+# `mock waived: <rationale>` (non-empty, before any `|`), or — when
+# `tl_ux_coverage` says `covered` — name every merged `docs/ux/screens/<sid>/`
+# path on that coverage line. `stale` / `uncovered` without a waiver is a
+# finding. Findings: `major ux.citation` (rc 1).
+#
+# No git root, no docs/PRD.md, or no `[UI]` anywhere in the PRD → rc 0 without
+# sourcing ux.sh (so non-UI repos never need python3). Never fetches
+# (THROUGHLINE_UX_NOFETCH=1). Any helper failure is rc 2 with a named
+# `tdd-lint: ux:` message — a failure never reads as clean (L-005).
+tl_lint_ux_citations() {  # <tdd-path>
+  local f="$1"
+  if [ ! -f "$f" ]; then
+    echo "tdd-lint: ux: input not found: $f" >&2
+    return 2
+  fi
+  local root prd
+  root="$(git -C "$(dirname "$f")" rev-parse --show-toplevel 2>/dev/null)" || return 0
+  [ -n "$root" ] || return 0
+  prd="$root/docs/PRD.md"
+  [ -f "$prd" ] || return 0
+  [ -r "$prd" ] || { echo "tdd-lint: ux: cannot read $prd" >&2; return 2; }
+  grep -qF '[UI]' "$prd" || return 0
+
+  local libdir
+  libdir="$(cd "$_TL_LINT_LIB" 2>/dev/null && pwd)" \
+    || { echo "tdd-lint: ux: cannot source ux.sh (no lib dir $_TL_LINT_LIB)" >&2; return 2; }
+  if ! declare -F tl_ux_coverage >/dev/null || ! declare -F tl_ux_ui_reqs >/dev/null; then
+    # shellcheck source=scripts/lib/ux.sh
+    { [ -r "$libdir/ux.sh" ] && . "$libdir/ux.sh"; } \
+      || { echo "tdd-lint: ux: cannot source ux.sh" >&2; return 2; }
+  fi
+  # The lint never reaches the network, and the python halves come from the
+  # same plugin tree as this file (no CLAUDE_PLUGIN_ROOT needed by the caller).
+  local -x THROUGHLINE_UX_NOFETCH=1
+  local -x CLAUDE_PLUGIN_ROOT
+  CLAUDE_PLUGIN_ROOT="$(cd "$libdir/../.." && pwd)" \
+    || { echo "tdd-lint: ux: cannot resolve the plugin tree from $libdir" >&2; return 2; }
+
+  local reqs rc
+  reqs="$(tl_ux_ui_reqs "$prd")"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "tdd-lint: ux: tl_ux_ui_reqs failed (rc $rc) on $f" >&2
+    return 2
+  fi
+  [ -n "$reqs" ] || return 0
+
+  local refs_line refs_num refs_ids ids
+  refs_line="$(grep -nE '^PRD refs:' "$f" | head -1)"
+  [ -n "$refs_line" ] || return 0   # structural lint already flagged this
+  refs_num="${refs_line%%:*}"
+  refs_ids="$(printf '%s\n' "${refs_line#*PRD refs:}" | grep -oE '[A-Z][A-Z0-9]*-[0-9]+' | sort -u)"
+  [ -n "$refs_ids" ] || return 0
+  ids="$(printf '%s\n' "$reqs" | cut -f1 | sort -u | grep -xF -f <(printf '%s\n' "$refs_ids"))"
+  [ -n "$ids" ] || return 0
+
+  local body
+  body="$(md_section_body "$f" "Requirement traceability")"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "tdd-lint: ux: md_section_body failed (rc $rc) on $f" >&2
+    return 2
+  fi
+
+  local errf
+  errf="$(mktemp)" || { echo "tdd-lint: ux: mktemp failed on $f" >&2; return 2; }
+  local id lines ln reason waived cov status paths p cited missing result=0
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    lines="$(printf '%s\n' "$body" | grep -E "(^|[^A-Za-z0-9-])${id}([^0-9]|\$)" || true)"
+    waived=0
+    while IFS= read -r ln; do
+      case "$ln" in
+        *'mock waived: '*)
+          reason="${ln#*mock waived: }"; reason="${reason%%|*}"; reason="${reason//[[:space:]]/}"
+          [ -n "$reason" ] && waived=1 ;;
+      esac
+    done <<< "$lines"
+    [ "$waived" -eq 1 ] && continue
+
+    cov="$(tl_ux_coverage "$root" "$id" 2>"$errf")"; rc=$?
+    if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
+      cat "$errf" >&2
+      echo "tdd-lint: ux: tl_ux_coverage failed (rc $rc) on $f" >&2
+      rm -f "$errf"
+      return 2
+    fi
+    status="$(printf '%s\n' "$cov" | head -1 | cut -f1)"
+    missing=""
+    case "$status" in
+      covered)
+        paths="$(printf '%s\n' "$cov" | head -1 | cut -f3)"
+        cited=1
+        while IFS= read -r p; do
+          [ -n "$p" ] || continue
+          printf '%s\n' "$lines" | grep -qF -- "$p" || cited=0
+        done <<< "$(printf '%s\n' "$paths" | tr ',' '\n')"
+        [ -n "$paths" ] || cited=0
+        [ "$cited" -eq 1 ] && continue
+        missing="$(printf '%s' "$paths" | sed 's/,/, /g')" ;;
+      stale|uncovered) : ;;
+      *)
+        cat "$errf" >&2
+        echo "tdd-lint: ux: tl_ux_coverage gave unexpected output for $id on $f: $cov" >&2
+        rm -f "$errf"
+        return 2 ;;
+    esac
+    _tl_emit "$f" "$refs_num" major "ux.citation" \
+      "$id is [UI]: cite ${missing:-docs/ux/screens/<sid>/} from the merged UX set, or record 'mock waived: <rationale>'${status:+ ($status)}"
+    result=1
+  done <<< "$ids"
+  rm -f "$errf"
+  return "$result"
+}
+
 # ============================================================================
 # Scope-bound checks (TDD 0014 / FR-53 + FR-54). These are a SEPARATE concern
 # from the tl_lint_* structural pre-pass: they enforce the declared-scope bounds
@@ -622,13 +743,14 @@ tl_check_bounds() {  # <tdd-path>...
   return "$rc"
 }
 
-# tl_lint_all — run the three lints over each TDD in turn. All three lints
+# tl_lint_all — run the lints over each TDD in turn. All three lints
 # always run (no early-exit) so findings accumulate; the aggregate exit is the
 # MAX of any sub-lint's exit code, capped at 2.
 tl_lint_all() {  # <tdd-path>...
   local max=0 rc tdd
   for tdd in "$@"; do
-    for fn in tl_lint_structural tl_lint_placeholders tl_lint_traced tl_lint_sequencing; do
+    for fn in tl_lint_structural tl_lint_placeholders tl_lint_traced tl_lint_sequencing \
+              tl_lint_ux_citations; do
       "$fn" "$tdd"
       rc=$?
       [ "$rc" -gt "$max" ] && max="$rc"

@@ -150,6 +150,14 @@ a collaborative scribe. Apply this discipline throughout that interview:
   drop one. A user who refuses to disposition an item ("just move on") is recorded
   as `waived: user deferred without rationale` — the record stays honest rather
   than blocking the phase indefinitely.
+- **`[UI]` marker (FR-89).** For each new or changed requirement, ask a
+  structured yes/no question: "Does this change what a user sees or does in a graphical web or mobile UI?"
+  A yes adds ` [UI]` after the id in the requirement's bold title
+  (`**FR-120 [UI] Saved searches.**`); a no leaves the title unmarked. CLI,
+  API and log surfaces are never `[UI]`. Append each answer to the draft with
+  header `ui: <ID>` (same helper, same quoting and STOP-on-non-zero rules as
+  step 3). The marker is the only signal `/ux-author` and `/tdd-author` read,
+  so a wrong answer here silently skips or forces the UX phase.
 
 3. Interview the user with structured multiple-choice questions. Surface scope, non-goals,
    constraints, and edge cases the user hasn't stated. Skip obvious questions; dig
@@ -250,11 +258,42 @@ After writing the PRD, reread it with fresh eyes and fix issues inline:
   above), not "a test exists for X". A new requirement without one is not done.
 - **Open-assumptions record** — every surfaced item has a disposition; the PR body
   section is present and matches the draft's assumption entries.
+- **`[UI]` markers** — every requirement answered yes carries `[UI]`; none
+  answered no does; the marker grammar is `**<ID> [UI] <title>**`.
 - **Draft is the source of truth.** Self-review reads the draft, not in-memory
   state. If the draft and in-memory state disagree, the draft wins (you may have
   crossed a compaction). Update your in-memory state from the draft and continue.
 
 Fix and move on (no re-review loop) then commit and open the PR.
+
+### `[UI]` marker check (FR-89)
+
+After `docs/PRD.md` is written and self-reviewed, and BEFORE the commit, run
+this block as one shell command with `TL_REPO` set to the absolute repo root.
+It sources its own helpers and parses the markers with the same grammar
+`/ux-author` uses (`tl_ux_ui_reqs`), so a malformed marker fails here instead
+of silently skipping the UX phase.
+
+<!-- tl:ui-markers -->
+```bash
+: "${TL_REPO:?TL_REPO required (absolute repo root)}"
+_tl_src="${CLAUDE_PLUGIN_ROOT:-${GROK_PLUGIN_ROOT:-}}"
+. "${_tl_src}/scripts/lib/plugin-root.sh" || { echo "throughline: cannot source plugin-root.sh" >&2; exit 1; }
+. "$(tl_plugin_root)/scripts/lib/ux.sh" || { echo "throughline: cannot source ux.sh" >&2; exit 1; }
+_reqs="$(tl_ux_ui_reqs "$TL_REPO/docs/PRD.md")" || exit $?
+if [ -z "$_reqs" ]; then
+  echo "ui-requirements: 0"
+else
+  echo "ui-requirements: $(printf '%s\n' "$_reqs" | wc -l | tr -d ' ')"
+  printf '%s\n' "$_reqs"
+fi
+```
+
+On rc 0 it prints `ui-requirements: <n>`, then one `<id>\t<hash>\t<title>`
+line per `[UI]` requirement; check the list against the interview's `ui:`
+answers. On non-zero, show its stderr (a `malformed [UI] marker` line names
+the PRD line), fix the PRD, and re-run the block. Never commit a PRD for which
+this block fails.
 
 ## Template
 
@@ -299,6 +338,12 @@ Unless the user says "skip git":
   `/tdd-author` session and makes the design intent of the PRD change auditable.
   For purely additive PRD changes with no downstream cascade, write "Cascade:
   none" so the absence is intentional, not an oversight.
+- **UI requirements (in the commit message body, FR-89).** When the delta adds
+  or changes any `[UI]` requirement, add a `## UI requirements` section listing
+  each one (`- <ID> <title>`, from the `tl:ui-markers` output), followed by the
+  line `Next: merge this PR, then run /ux-author before /tdd-author.`.
+  Otherwise write `UI requirements: none`. This is for review visibility only;
+  no script reads it (the marker in the PRD is the signal).
 - Open a PR with `gh pr create --fill` (base `main`). `--fill` carries the
   commit message into the PR body, so the cascade audit travels with the PR.
   Do NOT merge — the merge is the human approval gate.
@@ -309,6 +354,7 @@ Unless the user says "skip git":
   (`CLAUDE_PLUGIN_DATA` or `GROK_PLUGIN_DATA`), so it
   is never committed and `git ls-files` can never include it.
 - Tell the user to merge the PRD PR before running `/tdd-author`, so design
-  builds on approved requirements. (The PRD commit history is also what
+  builds on approved requirements. When the delta has `[UI]` requirements, the
+  order is merge, then `/ux-author`, then `/tdd-author`. (The PRD commit history is also what
   `/tdd-author` diffs to scope the design work; the cascade audit tells it
   where to look first.)

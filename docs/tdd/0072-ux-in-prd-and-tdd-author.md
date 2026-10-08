@@ -1,6 +1,6 @@
 # TDD 0072: `[UI]` in `/prd-author`, merged mocks in `/tdd-author`
 
-Status: draft
+Status: implemented
 PRD refs: FR-89, FR-101, FR-10
 PRD-rev: 3be6232
 ADR constraints: 0005, 0006, 0010, 0017

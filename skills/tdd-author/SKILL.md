@@ -115,6 +115,55 @@ without asking. If the block exits non-zero, show its stderr and stop
 - If `docs/PRD.md` has uncommitted changes, ask the user to commit it first so
   the delta is well-defined (or, with consent, diff the working tree vs HEAD).
 
+### 1a. UX coverage (FR-101)
+A `[UI]` requirement (FR-89) is designed on top of its merged mocks, not
+around them. Compute `TL_IDS`: the ids `tl_ux_ui_reqs` reports for
+`docs/PRD.md` (the `tl:ui-markers` grammar) that fall in this pass's PRD
+delta, one per line (empty when none). Then run this block as one shell
+command with `TL_REPO` set to the absolute repo root. It sources its own
+helpers. `tl_ux_coverage` reads the integration branch's merged
+`docs/ux/index.json` (fetching first on a best-effort basis, and naming the
+ref and SHA it read on stderr), so a UX PR merged on the host but not yet
+fetched locally is not misreported.
+
+<!-- tl:ux-coverage -->
+```bash
+: "${TL_REPO:?TL_REPO required (absolute repo root)}"
+: "${TL_IDS?TL_IDS required (in-scope [UI] ids, one per line; empty when none)}"
+_tl_src="${CLAUDE_PLUGIN_ROOT:-${GROK_PLUGIN_ROOT:-}}"
+. "${_tl_src}/scripts/lib/plugin-root.sh" || { echo "throughline: cannot source plugin-root.sh" >&2; exit 1; }
+. "$(tl_plugin_root)/scripts/lib/ux.sh" || { echo "throughline: cannot source ux.sh" >&2; exit 1; }
+if [ -z "$(printf '%s' "$TL_IDS" | tr -d '[:space:]')" ]; then
+  echo "ux-coverage: no [UI] requirements in scope"
+  exit 0
+fi
+set -f
+# shellcheck disable=SC2086  # one id per word, split on purpose
+tl_ux_coverage "$TL_REPO" $TL_IDS
+```
+
+It prints one line per id: `covered\t<ID>\t<screen paths>`,
+`stale\t<ID>\thash differs from merged index`, or `uncovered\t<ID>`.
+
+- **rc 0** — every id is covered. Proceed, and keep the coverage lines: each
+  covered id's TDD must cite those screen paths (step 5).
+- **rc 1** — for each `stale` / `uncovered` id, print exactly:
+  `throughline: <ID> is a [UI] requirement with no merged UX set (<uncovered|stale: reason>); run /ux-author first, or waive the mock.`
+  Then ask one structured question per id with exactly three options:
+  - **Stop and run `/ux-author`** — end the skill. The draft persists for a
+    later resume.
+  - **Waive the mock** — ask for a rationale of 20–400 characters (re-ask if
+    it is outside that range), append it with
+    `tl_draft_append_elicit tdd-author question "assumption: mock waived <ID>" "<ID> has no merged UX set; design without a mock?" "waived: <rationale>"`
+    (same quoting and STOP-on-non-zero rules as step 5), and proceed. The TDD
+    records the same waiver in its traceability row (step 5).
+  - **Drop `<ID>` from this pass** — record it as a `decision` with
+    `tl_draft_append_elicit tdd-author decision "ux: drop <ID>" "<ID> has no merged UX set" "dropped from this pass"`,
+    and leave the id out of every TDD's scope this pass.
+- **rc 2 or 3** — show stderr and STOP. Never proceed on an unreadable or
+  invalid merged index (`ux: invalid index …`) or a missing `python3`
+  (`ux: python3 required`).
+
 ## 2. Inventory existing coverage
 - Read every `docs/tdd/*.md` and its `PRD refs`. Build the map of which PRD
   requirements are already covered by a TDD, and by which.
@@ -355,6 +404,14 @@ TDD MUST include a traceability table mapping every PRD requirement in its scope
 the co-created `## Evaluation rubric` section (identical across the set) in every
 TDD you write.
 
+**`[UI]` citations (FR-101).** A `[UI]` id in a TDD's `PRD refs` must have a
+traceability row that cites every merged screen its step-1a coverage line
+named, as `docs/ux/screens/<sid>/`. An id waived in step 1a has the row text
+`mock waived: <rationale>` instead (the same rationale as the draft entry). Any
+visual styling the design specifies uses the merged `docs/ux/tokens.css`
+values. `tdd-lint` (step 7a) checks the citation-or-waiver rule mechanically
+(`ux.citation`), and the design-reviewer opens the cited mocks.
+
 - **Before drafting any section, re-read the draft** to refresh your working
   state across any compaction or long pause: `cat "$(tl_draft_path tdd-author)"`.
   After EACH TDD section (or each TDD in a multi-TDD set) you write or revise,
@@ -507,7 +564,11 @@ and address every finding. The pre-pass detects the structural-gap findings the
 design-reviewer would otherwise spend tokens on (missing required section,
 missing frontmatter, placeholder strings outside fences, untraced FR/NFR,
 non-integer or non-sequential `## Sequencing` labels — the STEP_COMMIT protocol
-requires integer step ids 1..N).
+requires integer step ids 1..N, and a `[UI]` id cited without its merged
+screen paths or a `mock waived: <rationale>` row — `ux.citation`). A
+`tdd-lint: ux:` error on stderr (exit 2) means a UX helper failed; fix the
+cause (an invalid merged index, a malformed `[UI]` marker, a missing
+`python3`), never treat it as clean.
 If `tl_lint_all` exits non-zero, fix the findings or record an explicit waiver
 in the design PR body before invoking the design-reviewer in 7b. The
 design-reviewer subagent is NOT invoked when there are unaddressed mechanical
@@ -605,7 +666,13 @@ Unless the user says "skip git":
   it into the PR (or pass it via `--body`); it must be part of the PR body at
   creation time, never added after the PR already exists. A design PR whose
   interview surfaced no assumptions states "Open assumptions: none surfaced"
-  explicitly (the absence is declared, never silent).
+  explicitly (the absence is declared, never silent). A step-1a mock waiver is
+  an `assumption:` entry, so it renders here as
+  `- mock waived <ID> — waived: <rationale>`.
+- **UX coverage (FR-101).** When step 1a had any `[UI]` ids in scope, add a
+  **"UX coverage"** section to the same body: one line per covered id with its
+  screen paths (`- <ID> — docs/ux/screens/<sid>/, …`). Waived ids appear under
+  "Open assumptions & waivers" and dropped ids are listed as dropped.
 - Open the design PR with `gh pr create` (base `main`). The PR body MUST carry
   BOTH the design-critique verdict + findings summary (and any waivers) AND the
   "Open assumptions & waivers" section rendered above, so the human reviews an
