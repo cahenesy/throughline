@@ -4,7 +4,22 @@
 > design-of-record baseline. New capabilities are added from here via the normal
 > `/prd-author` → `/tdd-author` → `/build-tdds` flow.
 >
-> **This update (UX authoring):** an optional `/ux-author` phase sits between
+> **This update (review rigor):** every phase's independent review now has
+> the same contract:
+> - a mechanical pre-pass;
+> - a fixed reviewer prompt shipped with the plugin;
+> - findings that cite where they come from;
+> - an exact verdict line;
+> - recorded, re-checkable overrides.
+>
+> `/prd-author` gains a coverage scan in its interview, a PRD pre-pass and
+> an independent requirements review. The TDD pre-pass checks that paths
+> exist and that no codebase discovery is deferred to the build. The
+> design review adds a cited simulation trace, an alternatives table,
+> terminology and duplication checks, and metrics. The `/build-tdds`
+> review stops being improvised per run.
+>
+> **Earlier update (UX authoring):** an optional `/ux-author` phase sits between
 > `/prd-author` and `/tdd-author`. When a PRD update marks requirements as
 > UI-bearing, `/ux-author` produces in-repo UI mocks (web or mobile) for
 > them, gets an independent critique, and opens a UX PR that the human
@@ -177,6 +192,95 @@ plugin updates, and consumer repos do not accumulate plugin-generated noise.
   for a new screen shows `[UI]` in that requirement's title line; a PRD PR
   that adds only a CLI or API requirement adds no `[UI]` marker; `grep -n
   '\[UI\]' docs/PRD.md` lists exactly the marked requirements.
+
+
+### Review rigor (this update)
+Every authoring phase ends in a review by a fresh worker that is not the
+author's session. Before this update, the depth of that review varied by
+phase:
+- requirements were self-reviewed only;
+- designs had a fixed design-reviewer;
+- `/build-tdds` dispatched a reviewer whose prompt the parent session
+  improvised on each run.
+
+This update gives every phase a review with the same contract shape:
+- a mechanical pre-pass, so model time goes to judgment;
+- a fixed reviewer prompt shipped with the plugin;
+- findings that cite where they come from;
+- an exact verdict line;
+- a recorded, re-checkable override.
+
+These reviews are decision support for the human merge. They do not
+certify quality: a 2026 benchmark found the best LLM caught about half of
+expert-found requirement issues.
+
+- **FR-102 Interview coverage scan.** During the interview, `/prd-author`
+  classifies the change against nine categories as `Clear`, `Partial` or
+  `Missing`:
+  - functional scope;
+  - domain and data;
+  - interaction and flow;
+  - non-functional qualities;
+  - integrations and dependencies;
+  - edge cases and failure handling;
+  - constraints and trade-offs;
+  - terminology;
+  - completion signals.
+
+  It asks first about the categories where the answer would most change the
+  design and is least settled. Every `Partial` or `Missing` category is
+  resolved, or recorded under Open questions, before the PRD is written.
+  — Acceptance: the PRD PR body contains a coverage table with exactly
+  those nine rows, each marked `Clear`, `Partial` or `Missing`. Each
+  `Partial` or `Missing` row names the open question or the requirement
+  that resolved it.
+- **FR-103 Mechanical PRD pre-pass.** Before the requirements review
+  (FR-104), `/prd-author` runs a mechanical check of the PRD. Three kinds
+  of finding block, and the reviewer is not invoked:
+  - placeholder text (`TBD`, `TODO`, `???`, an empty section) outside code;
+  - a new or changed requirement with no `— Acceptance:` clause;
+  - a duplicate or malformed requirement id.
+
+  Unquantified terms in new requirements (for example *fast*, *scalable*,
+  *robust*, *user-friendly*) are reported as non-blocking findings passed
+  to the reviewer. — Acceptance: on a PRD where a new FR lacks an
+  acceptance clause, the pre-pass exits non-zero, names that FR id, and no
+  requirements review is dispatched. A new FR containing *fast* produces a
+  non-blocking finding naming the term, and the pre-pass still exits 0 when
+  nothing else is wrong.
+- **FR-104 Independent requirements review.** After the pre-pass is clean,
+  and before the PRD PR opens, a fresh worker that is not the author's
+  session (NFR-3) reviews the PRD change against a fixed reviewer prompt
+  shipped with the plugin.
+  - **Per requirement,** for new and changed requirements only, it checks
+    the established requirement-quality characteristics: necessary,
+    unambiguous, complete, singular, feasible, verifiable, with an
+    observable acceptance criterion (FR-24), and conforming to the
+    template.
+  - **Across the set,** it compares the delta against the whole PRD for
+    contradiction, duplication, terminology drift, and conflict with
+    non-goals.
+  - **Readers' perspectives:** it reviews from the points of view of the
+    product owner, an implementer, a tester and a stakeholder.
+  - It grades the rubric (FR-77).
+  - Its report ends with exactly `REQUIREMENTS_REVIEW: PASS` or
+    `REQUIREMENTS_REVIEW: BLOCK <reason>`.
+
+  A BLOCK stops the PRD PR from opening unless every blocking finding is
+  overridden (FR-105). Requirements written before this update are not
+  re-reviewed. A resumed session runs the review fresh and never reuses an
+  earlier verdict (as FR-50). — Acceptance: a PRD PR body carries the
+  reviewer's verdict line and findings. A PRD change containing a
+  requirement with two readings gets `REQUIREMENTS_REVIEW: BLOCK` naming
+  that requirement id, and no PR opens until it is fixed or overridden.
+- **FR-105 Recorded, re-checkable overrides.** The user may override a
+  specific requirements-review finding. The override records the finding
+  and a rationale of 20–400 characters in the PRD PR body and under the
+  PRD's Open questions. A re-run reviewer sees the overrides, and may
+  BLOCK again on a boilerplate rationale. — Acceptance: an overridden
+  finding appears in the PR body as `<finding> — overridden: <rationale>`
+  and in `## Open questions`. A re-run given the override rationale `ok`
+  returns BLOCK citing it.
 
 ### UX authoring
 An optional phase between requirements and design. It runs when a merged
@@ -352,6 +456,39 @@ delegated (FR-22, FR-83).
   `<FR id> — waived: <rationale>`; a TDD for a mocked `[UI]` requirement
   has a traceability row citing a `docs/ux/` screen path.
 
+- **FR-106 TDD workspace grounding.** The mechanical TDD pre-pass (FR-51)
+  checks every path in a TDD's `## Touched files`. A path must either exist
+  on the integration branch or carry the marker `(new)` right after it. A
+  path that does neither is a blocking finding. This applies to TDDs
+  written after this update; existing TDDs are never re-checked against
+  it. — Acceptance: a new TDD that lists `scripts/lib/nope.sh` without
+  `(new)`, in a repo with no such file, makes the pre-pass exit non-zero
+  with a finding naming that path, and no design review is dispatched.
+  The same path marked `(new)` passes.
+- **FR-107 No deferred discovery.** The TDD pre-pass reports, as a blocking
+  placeholder finding, any phrase outside code that puts off discovering
+  the codebase until the build. Examples: "find the file", "locate during
+  implementation", "to be determined during implementation". —
+  Acceptance: a TDD containing "locate the caller during implementation"
+  in its prose makes the pre-pass exit non-zero and quote the phrase. The
+  same phrase inside a code fence does not.
+- **FR-108 Design review rigor.** The design-reviewer (FR-10) report adds
+  four things:
+  - **A simulation trace** of each TDD's main interface. It walks the
+    happy, boundary and failure paths as state-to-state steps, and each
+    step cites the TDD section or `file:line` it rests on. An uncited
+    step is marked `unverified` and cannot by itself support a PASS.
+  - **An alternatives table** for every blocker or major finding, with
+    columns rejected approach, failure mechanism, viable alternative and
+    trade-offs.
+  - **Terminology and duplication checks** across the TDD set.
+  - **A metrics line:** requirements traced, and findings by severity.
+
+  — Acceptance: a design PR body's critique section contains a trace
+  whose steps each cite a source or are marked `unverified`, and a
+  metrics line. Every blocker or major finding in it has the four-column
+  table. A critique with a blocker finding and no table is non-compliant.
+
 ### Decisions
 - **FR-12 Append-only ADRs.** `/adr-new` records decisions to `docs/adr/NNNN-*` with a
   status (`proposed` | `accepted` | `superseded by NNNN`) and maintains `INDEX.md`. An
@@ -412,6 +549,39 @@ delegated (FR-22, FR-83).
 - **FR-20 Worktree dependency install.** Each fresh build worktree installs the
   project's dependencies first (package-manager-aware) since a worktree carries no
   gitignored `node_modules`; opt out with `THROUGHLINE_SKIP_DEPS=1`.
+
+- **FR-109 Build review contract.** The FR-15(d) reviewer runs from a
+  fixed reviewer prompt shipped with the plugin, never a prompt improvised
+  per run. Every build review checks:
+  - conformance to the TDD's interfaces, return codes and messages;
+  - a judgement on each declared deviation;
+  - that tests observe behaviour rather than grep for text;
+  - fail-loud parsing;
+  - scope against `## Touched files`;
+  - the security checklist, always, whether or not the parent asks.
+
+  The report includes a simulation trace with cited steps, as in FR-108.
+  A finding on code the diff did not change is reported as non-blocking
+  pre-existing debt and never causes a FAIL. The report's last line is
+  `REVIEW_RESULT: PASS|FAIL` (FR-82). — Acceptance: every build review
+  report contains a trace section with cited steps, a security section,
+  and the exact verdict line. A review whose only finding is on an
+  unchanged line ends `REVIEW_RESULT: PASS` and lists that finding as
+  pre-existing. The skill names one reviewer prompt file for every review
+  dispatch.
+- **FR-110 Reviewable non-findings.** Any reviewer may set aside a
+  candidate finding as a named non-finding:
+  - *pedantic escalation:* a style preference raised as a defect;
+  - *imaginary architecture:* a requirement nobody stated, such as
+    multi-tenancy.
+
+  It must quote the finding it sets aside, so a dismissal is visible in
+  the report. No reviewer dismisses whole categories by rule: race,
+  concurrency, filesystem and security findings are always judged on
+  their merits. — Acceptance: a reviewer report that sets a finding aside
+  shows the quoted finding next to the non-finding label. No reviewer
+  prompt contains a rule that dismisses race, concurrency, filesystem or
+  security findings as a category.
 
 ### Verification (runtime observation at the surface)
 Verification — confirming the *real artifact* behaves where a user (human or
@@ -985,8 +1155,8 @@ can use.
   capable model) produces no such warning and no network fetch.
 - **FR-87 Judgment workers inherit the parent; pins and light-pin warning.**
   The implementer worker, the FR-15(d) reviewer worker, the FR-10
-  design-reviewer worker, the FR-97 UX critique worker, and a
-  non-mechanical runtime-verify worker run on
+  design-reviewer worker, the FR-97 UX critique worker, the FR-104
+  requirements reviewer, and a non-mechanical runtime-verify worker run on
   the parent session's model and effort unless FR-88 escalation applies.
   throughline ships no default judgment model. Mechanical runtime-verify
   runs on the light tier at low effort (FR-52). An env/flag pin
@@ -1074,8 +1244,9 @@ can use.
   choice through the parent session's model and effort. Judgment work runs
   on the parent session's model and effort: authoring requirements
   (`/prd-author`), authoring UX mocks (`/ux-author`), authoring TDDs
-  (`/tdd-author`), reviewing UX sets (the FR-97 critique worker), the
-  `/build-tdds` parent session, writing code and tests (the implementer worker), reviewing code
+  (`/tdd-author`), reviewing UX sets (the FR-97 critique worker),
+  reviewing requirements (the FR-104 worker), the `/build-tdds` parent
+  session, writing code and tests (the implementer worker), reviewing code
   and tests (the FR-15(d) reviewer), reviewing designs (the FR-10
   design-reviewer), and runtime-verify when the plan is not mechanical
   (FR-52). Mechanical runtime-verify (exit code, log line, file presence,
@@ -1226,6 +1397,20 @@ can use.
 - **`/ux-author` editing requirements.** Gaps go back through
   `/prd-author` (FR-95).
 - **Requiring Git LFS** for UX screenshots.
+- **Reviews as a quality guarantee.** Requirement, design and build reviews
+  are decision support for the human merge (NFR-1). A PASS does not
+  certify a document or a build correct.
+- **Re-reviewing or re-linting existing work.** Requirements written
+  before this update are not re-reviewed (FR-104), and TDDs written before
+  it are not checked for path grounding (FR-106). Both rules apply going
+  forward.
+- **Repo-specific rules in the plugin's lints and reviewers.** A
+  convention of throughline's own repo, such as registering every new eval
+  in its aggregator, lives in that repo's own instructions. The plugin's
+  `tdd-lint` and reviewer prompts run in any consumer repo.
+- **Dismissing whole categories of findings by rule.** No reviewer
+  dismisses race, concurrency, filesystem or security findings as a
+  category (FR-110).
 - **Mocks for non-graphical surfaces.** CLI output, API shapes, and logs
   are not mocked. `[UI]` covers only graphical web and mobile UI (FR-89).
 
@@ -1236,6 +1421,12 @@ can use.
   install (FR-83).
 - PR creation needs a git remote + the `gh` CLI; without them, commits stay on
   branches to be PR'd manually.
+- Assumption: LLM reviewers miss many real issues. A 2026 benchmark of
+  ten OpenAI and Anthropic models against INCOSE criteria found the best
+  model caught a median 47% of expert-found requirement issues and
+  false-flagged 11%. It almost always missed necessity and correctness
+  issues. Review gates therefore stay decision support, and every override
+  stays visible (FR-105, FR-110).
 - UX screenshots (FR-91) need a renderer that can load HTML at a given
   viewport, such as a headless browser, in the user's environment. It is
   not an install dependency of throughline: without one, the UX PR carries
@@ -1361,21 +1552,33 @@ can use.
 - **UX record layout (FR-91).** The directory layout under `docs/ux/`,
   the UX index format, the viewport names, and how `/tdd-author` locates
   the screens for a requirement id are design, deferred to `/tdd-author`.
+- **Cross-model-family review.** A 2026 controlled study of design-review
+  setups ranked generating with one model family and reviewing with
+  another second. An adversarial reviewer that demands rewrites ranked
+  first, and merging parallel reviews ranked last. Throughline currently
+  reviews on the same model as the author (ADR 0015, NFR-3) and lists
+  cross-vendor review as a non-goal. The existing reviewer pin
+  (`THROUGHLINE_REVIEW_MODEL`, FR-87) already lets an operator choose a
+  different model. Whether to make a cross-family reviewer a default or a
+  recommendation is open, and would need ADR 0015 superseded.
+- **Unquantified-term list and trace depth (FR-103, FR-108, FR-109).**
+  Which terms count as unquantified, and which interfaces count as "main"
+  for the simulation trace, are design, deferred to `/tdd-author`.
 - **`[UI]` backfill (FR-89).** Retrofitting `[UI]` markers onto
   requirements written before this update is out of scope. Only new or
   changed requirements are marked.
 
 ## Evaluation rubric
 
-Co-created for this update (UX authoring). A later design gate and the
+Co-created for this update (review rigor). A later design gate and the
 human PR reviewer grade the PRD against these.
 
 | Criterion | High-quality | Acceptable | Failing |
 |---|---|---|---|
-| requirement testability | Every new FR has an acceptance criterion observing a file, PR body, or command output | One criterion needs a judgment call to observe | An FR says only "supports" / "is implemented" |
-| acceptance-criterion observability | Each criterion names the surface (path under `docs/ux/`, PR-body line, `/tdd-author` refusal text) | One criterion names the surface loosely | A criterion is a test-exists claim |
-| scope coherence | One effort: `/ux-author` + the `/prd-author` `[UI]` marker + `/tdd-author` consumption | One adjacent edit justified inline | Adds visual-diff gating or a design tool |
-| non-goal explicitness | Prototype engine, native rendering, visual-diff gate, mock sync, live-capture commit each listed | One exclusion implied | A rejected option is neither required nor excluded |
-| open-question honesty | Grok delegate inventory and delegate selection left open, not invented | One open item phrased as a decision | Grok support asserted as known |
-| delegation, not reinvention | FRs require using present delegates and name none as mandatory; degrade path stated | Delegates named only as examples | PRD specifies how to draw/design mocks itself |
-| cascade completeness | Every FR naming the authoring skills (FR-46–49, 75–77, 79, 81, 86, NFR-1, NFR-3) amended or listed in the cascade | One enumeration missed but listed in cascade | `/ux-author` absent from an FR that lists all authoring skills |
+| requirement testability | Every new FR falsifiable by one observation | One needs a small clarification | An FR reads "reviewer is rigorous" / "better reviews" |
+| acceptance-criterion observability | Each names the surface: verdict line, PR-body section, lint finding, reviewer prompt file | One surface loosely named | "a test exists" / "is implemented" |
+| scope coherence | Only review gates, pre-passes, interview scan; no new phase, no model-policy change | One adjacent clarification | Changes model policy or adds a build gate |
+| non-goal explicitness | Cross-model review, blanket theater dismissal, retroactive lint of old TDDs/PRD reqs, repo-specific lint rules each excluded | One implied | A rejected option neither required nor excluded |
+| open-question honesty | Cross-model evidence + ADR 0015 conflict recorded; HOW left to TDD | One open item phrased as decided | Benchmark recall overstated as a guarantee |
+| gate symmetry | Requirements, design, UX, build reviewers share one contract shape: fresh worker, fixed reviewer prompt, cited findings, exact verdict line, override/waiver rule | One reviewer differs with a stated reason | A reviewer still improvised per run |
+| anti-theater balance | Named non-findings must quote what they dismiss; concurrency/filesystem findings never blanket-dismissed | Rule present, one guard implied | A category of real defects can be dismissed silently |
