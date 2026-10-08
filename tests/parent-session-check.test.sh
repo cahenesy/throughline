@@ -2,7 +2,7 @@
 # parent-session-check.test.sh — eval for TDD 0065 / FR-86, NFR-3, NFR-4.
 #
 # EXTRACTS the first fenced bash block after the line `<!-- tl:fr86-check -->`
-# from /prd-author, /tdd-author and /build-tdds and RUNS each one the way the
+# from /prd-author, /tdd-author, /build-tdds and /ux-author and RUNS each one the way the
 # harness does: a fresh shell, nothing pre-sourced, no positional args —
 #   env -i HOME=<tmp> PATH="$PATH" CLAUDE_PLUGIN_ROOT=<repo> \
 #     CLAUDE_CONFIG_DIR=<tmp>/.claude [CLAUDE_CODE_SESSION_ID=<sid>] bash <block>
@@ -15,7 +15,7 @@
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 MODELS="$REPO/scripts/lib/models.sh"
-NAMES=(prd-author tdd-author implement)
+NAMES=(prd-author tdd-author implement ux-author)
 MARKER='<!-- tl:fr86-check -->'
 RESULTS="$(mktemp)"; export RESULTS
 ok()  { printf 'ok\n'   >>"$RESULTS"; printf '  ok   — %s\n' "$1"; }
@@ -125,7 +125,7 @@ echo "[extract] extractor self-test: a bad skill fails closed"
 
 echo "[extract] the block after '$MARKER' is extracted from each skill"
 BLK=(); GOT=()
-for i in 0 1 2; do
+for i in "${!NAMES[@]}"; do
   n="${NAMES[$i]}"; f="$REPO/skills/$n/SKILL.md"; BLK[i]="$ROOT/blocks/$n.sh"; GOT[i]=0
   extract "$f" "${BLK[i]}"; rc=$?
   case "$rc" in
@@ -139,23 +139,24 @@ for i in 0 1 2; do
   esac
 done
 
-echo "[1] the three extracted blocks are byte-identical (and are the TDD's block)"
+echo "[1] the extracted blocks are byte-identical (and are the TDD's block)"
 cat >"$ROOT/want-block.sh" <<'EOF'
 _tl_src="${CLAUDE_PLUGIN_ROOT:-${GROK_PLUGIN_ROOT:-}}"
 . "${_tl_src}/scripts/lib/plugin-root.sh" || { echo "throughline: cannot source plugin-root.sh" >&2; exit 1; }
 . "$(tl_plugin_root)/scripts/lib/models.sh" || { echo "throughline: cannot source models.sh" >&2; exit 1; }
 tl_fr86_message
 EOF
-if [ "${GOT[0]}${GOT[1]}${GOT[2]}" = 111 ]; then
-  cmp -s "${BLK[0]}" "${BLK[1]}" && cmp -s "${BLK[0]}" "${BLK[2]}" \
-    && ok "[1] prd-author, tdd-author, implement blocks are byte-identical" \
-    || bad "[1] blocks differ:"$'\n'"$(diff "${BLK[0]}" "${BLK[1]}"; diff "${BLK[0]}" "${BLK[2]}")"
+if [ "$(IFS=; echo "${GOT[*]}")" = 1111 ]; then
+  for i in 1 2 3; do
+    cmp -s "${BLK[0]}" "${BLK[i]}" && ok "[1] ${NAMES[i]} block is byte-identical to prd-author's" \
+      || bad "[1] ${NAMES[i]} block differs:"$'\n'"$(diff "${BLK[0]}" "${BLK[i]}")"
+  done
   cmp -s "${BLK[0]}" "$ROOT/want-block.sh" && ok "[1] block bytes are the TDD's four lines" \
     || bad "[1] block differs from the TDD:"$'\n'"$(diff "$ROOT/want-block.sh" "${BLK[0]}")"
 else bad "[1] infra: not every skill yielded a block (see [extract])"; fi
 
 echo "[2]-[5] the extracted block, run in a fresh env -i shell"
-for i in 0 1 2; do
+for i in "${!NAMES[@]}"; do
   n="${NAMES[$i]}"; b="${BLK[i]}"
   [ "${GOT[i]}" = 1 ] || { bad "[2]-[5] $n: infra: no extracted block to run"; continue; }
   runb "$b" CLAUDE_CODE_SESSION_ID=s-opus;   want_silent "[2] $n: parent claude-opus-5-5 → no output, rc 0"
@@ -171,7 +172,7 @@ EMPTY="$ROOT/emptyroot"; PART="$ROOT/partial"; BROKEN="$ROOT/broken"
 mkdir -p "$EMPTY" "$PART/scripts/lib" "$BROKEN/scripts/lib"
 cp "$REPO/scripts/lib/plugin-root.sh" "$PART/scripts/lib/"
 cp "$REPO/scripts/lib/plugin-root.sh" "$MODELS" "$BROKEN/scripts/lib/"   # no plan-classifier.sh
-for i in 0 1 2; do
+for i in "${!NAMES[@]}"; do
   n="${NAMES[$i]}"; b="${BLK[i]}"
   [ "${GOT[i]}" = 1 ] || { bad "[6] $n: infra: no extracted block to run"; continue; }
   runb "$b" CLAUDE_CODE_SESSION_ID=s-sonnet CLAUDE_PLUGIN_ROOT="$EMPTY"
@@ -193,7 +194,7 @@ case "$WORKP" in
     mkdir -p "$GH/sessions/$enc/g-light" "$GH/sessions/$enc/g-above"
     printf '%s\n' '{"current_model_id":"grok-4.5"}' >"$GH/sessions/$enc/g-light/summary.json"
     printf '%s\n' '{"current_model_id":"grok-4.6"}' >"$GH/sessions/$enc/g-above/summary.json"
-    for i in 0 1 2; do
+    for i in "${!NAMES[@]}"; do
       n="${NAMES[$i]}"; b="${BLK[i]}"
       [ "${GOT[i]}" = 1 ] || { bad "[grok] $n: infra: no extracted block to run"; continue; }
       runb "$b" CLAUDE_PLUGIN_ROOT= GROK_PLUGIN_ROOT="$REPO" GROK_HOME="$GH" GROK_SESSION_ID=g-light
@@ -224,7 +225,7 @@ echo "[fn] tl_fr86_message contract, called directly"
 ) || true
 
 echo "[7] Continue / Stop / fail closed prose within 15 lines after the block"
-for i in 0 1 2; do
+for i in "${!NAMES[@]}"; do
   n="${NAMES[$i]}"; f="$REPO/skills/$n/SKILL.md"
   { [ -r "$f" ] && [ -s "$f" ]; } || { bad "[7] infra: skills/$n/SKILL.md missing/unreadable/empty"; continue; }
   win="$(after_block "$f" 15)"
@@ -236,10 +237,11 @@ done
 p0="$(prose_para "$REPO/skills/${NAMES[0]}/SKILL.md")"
 p1="$(prose_para "$REPO/skills/${NAMES[1]}/SKILL.md")"
 p2="$(prose_para "$REPO/skills/${NAMES[2]}/SKILL.md")"
-[ -n "$p0" ] && [ "$p0" = "$p1" ] && [ "$p0" = "$p2" ] \
+p3="$(prose_para "$REPO/skills/${NAMES[3]}/SKILL.md")"
+[ -n "$p0" ] && [ "$p0" = "$p1" ] && [ "$p0" = "$p2" ] && [ "$p0" = "$p3" ] \
   && printf '%s' "$p0" | grep -qF 'exactly two options' \
-  && ok "the prose after the block is the same in all three skills" \
-  || bad "prose after the block differs or is empty:"$'\n'"--- $p0"$'\n'"--- $p1"$'\n'"--- $p2"
+  && ok "the prose after the block is the same in all four skills" \
+  || bad "prose after the block differs or is empty:"$'\n'"--- $p0"$'\n'"--- $p1"$'\n'"--- $p2"$'\n'"--- $p3"
 
 echo "[placement] the check runs before the interview / lock / queue"
 place() {  # <name> <after-ERE> <before-ERE>
@@ -254,8 +256,9 @@ place() {  # <name> <after-ERE> <before-ERE>
 place prd-author '^0\. \*\*Resume check\.\*\*' '^1\. Explore the problem space'
 place tdd-author '^## 0\. Resume check'        '^## 1\. '
 place implement  '^## 1\. Source helpers'      '^## 2\. Lock'
+place ux-author  '^0\. \*\*Resume \+ FR-86\.\*\*' '^1\. \*\*Preflight'
 
-echo "[8] no vendor-page fetch text in the three skills"
+echo "[8] no vendor-page fetch text in the four skills"
 ( total=0; infra=0
   for n in "${NAMES[@]}"; do
     f="$REPO/skills/$n/SKILL.md"
@@ -264,7 +267,7 @@ echo "[8] no vendor-page fetch text in the three skills"
     if [ "$grc" -ge 2 ] || [ -z "$c" ]; then bad "[8] infra: grep rc=$grc on $n"; infra=1
     else total=$((total + c)); fi
   done
-  [ "$infra" = 0 ] && [ "$total" = 0 ] && ok "[8] grep -c total is 0 across the three skills" \
+  [ "$infra" = 0 ] && [ "$total" = 0 ] && ok "[8] grep -c total is 0 across the four skills" \
     || bad "[8] total=$total infra=$infra"
 ) || true
 

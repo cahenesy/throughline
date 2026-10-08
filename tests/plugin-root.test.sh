@@ -199,9 +199,9 @@ echo "[J] tl_plugin_root does not consult git or cwd"
     || bad "outside git repo: rc=$rc out='$out'"
 ) || true
 
-# --- [K] five authoring/status skills: no vendor tool/CLI names (FR-81) ------
+# --- [K] authoring/status skills: no vendor tool/CLI names (FR-81) -----------
 # TDD 0060 verification observation 3: a case-insensitive search of these
-# five files for AskUserQuestion / claude -p / grok -p as required names
+# files (plus /ux-author, TDD 0071) for AskUserQuestion / claude -p / grok -p as required names
 # is empty. ${CLAUDE_PLUGIN_ROOT} may remain only as an env *name*.
 echo "[K] authoring/status skills name actions, not vendor tools"
 SKILLS=(
@@ -210,10 +210,14 @@ SKILLS=(
   "$REPO/skills/adr-new/SKILL.md"
   "$REPO/skills/bootstrap-project/SKILL.md"
   "$REPO/skills/implement-status/SKILL.md"
+  "$REPO/skills/ux-author/SKILL.md"
 )
-( hits="$(grep -nEi 'AskUserQuestion|claude -p|grok -p' "${SKILLS[@]}" 2>/dev/null || true)"
+( for f in "${SKILLS[@]}"; do
+    { [ -r "$f" ] && [ -s "$f" ]; } || bad "infra: $f missing/unreadable/empty"
+  done
+  hits="$(grep -nEi 'AskUserQuestion|claude -p|grok -p' "${SKILLS[@]}" 2>/dev/null || true)"
   if [ -z "$hits" ]; then
-    ok "five skills contain no AskUserQuestion / claude -p / grok -p"
+    ok "the skills contain no AskUserQuestion / claude -p / grok -p"
   else
     bad "vendor tool/CLI names still present:"$'\n'"$hits"
   fi

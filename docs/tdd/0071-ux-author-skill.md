@@ -1,6 +1,6 @@
 # TDD 0071: `/ux-author` — the UX phase skill and its independent critique
 
-Status: draft
+Status: implemented
 PRD refs: FR-90, FR-91, FR-92, FR-93, FR-94, FR-95, FR-96, FR-97, FR-98, FR-99, FR-100, FR-22, FR-79, FR-81, FR-86, FR-87, NFR-1, NFR-3
 PRD-rev: 3be6232
 ADR constraints: 0004, 0006, 0010, 0011, 0015, 0017
