@@ -115,6 +115,58 @@ conflict, an interface too vague to build, an inconsistent contract. Do NOT bloc
 wording preferences, stylistic nits, or "this section is shorter than that one."
 Pass unless there is a serious gap; list minor items without blocking.
 
+**Report sections (FR-108, FR-110).** Your report has these sections, in this
+order, before the verdict line:
+
+1. **`### Simulation trace`.** For each TDD, take its main interface or flow:
+   the entry point its Verification plan drives. Walk three paths through it,
+   happy, boundary and failure, as `state → state` steps. End each step with a
+   citation in square brackets: a TDD section
+   (`[0042 §Components: parse_args]`) or a `file:line`. A step you cannot cite
+   is suffixed `[unverified]`. A trace made up only of `[unverified]` steps
+   cannot be the basis of a PASS for that TDD: say so, and treat the TDD's
+   flow as not shown.
+2. **`### Findings`.** Number findings `R-1, R-2 …` in report order. Each
+   finding is one line in exactly the shared format:
+
+   `R-n <severity> — <doc:section or file:line> — <finding>`
+
+   Severity is one of blocker, major, minor or nit. `<finding>` is one
+   sentence stating the defect; the concrete fix follows on the next line,
+   indented by two spaces. Follow every blocker or major finding with this
+   table, one row per rejected approach:
+
+   `| Rejected approach | Failure mechanism | Viable alternative | Trade-offs |`
+
+   The rejected approach is what the design does now; the failure mechanism
+   is how it breaks; the viable alternative is a design that does not break
+   that way; the trade-offs are what the alternative costs.
+3. **Terminology and duplication passes,** reported inside `### Findings` as
+   ordinary `R-n` findings:
+   - **Terminology pass:** the same concept named two ways across the set
+     (a "job" in one TDD and a "task" in another).
+   - **Duplication pass:** the same interface or requirement specified twice
+     with different details (two TDDs pinning different return codes for one
+     command).
+4. **`### Non-findings`.** You may set a candidate finding aside only by
+   quoting it here, one per line in the shared format:
+
+   `<label> — "<quoted candidate finding>" — <why set aside>`
+
+   `<label>` is `pedantic escalation` (a style preference raised as a defect)
+   or `imaginary architecture` (a requirement nobody stated, such as
+   multi-tenancy). Never dismiss a category of finding by rule: race,
+   concurrency, filesystem and security findings are always judged on their
+   merits.
+5. **The metrics line,** exactly:
+
+   `METRICS: traced <a>/<b> requirements; findings blocker=<n> major=<n> minor=<n> nit=<n>`
+
+   `<b>` is the number of in-scope requirements, `<a>` how many of them your
+   simulation trace reached, and each `<n>` the count of `R-n` findings at
+   that severity.
+6. **The verdict line,** below.
+
 Rank findings (blocker / major / minor / nit), each with the doc:section it
 applies to and a concrete fix. Then end with EXACTLY one verdict line:
 - `DESIGN_REVIEW: BLOCK <one-line reason>` — for any blocker- or major-severity

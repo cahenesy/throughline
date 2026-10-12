@@ -648,6 +648,13 @@ conflicts, and scope coherence, ending with `DESIGN_REVIEW: PASS` or
 - Carry the critique's verdict and findings summary (and any waivers) into the
   design PR body (step 9) so the human reviewer gates on an informed view, not a
   bare diff.
+- **Keep the report for the PR body (FR-108).** The design-reviewer returns its
+  report as text, not as a file. Hold the returned report text in this session
+  until step 9 has written the PR body: its `### Simulation trace` section,
+  every blocker or major finding with its alternatives table, the `METRICS:`
+  line and its `### Non-findings` section all go into that body. Hold it only
+  in-session and never write it to the draft (see the next bullet); a resumed
+  session re-runs the critique.
 - **The design-reviewer verdict is NEVER persisted to the draft (FR-50).** It is
   produced only inside the live skill session, consumed only when assembling the
   design PR body, and lost when this session ends — reviewer freshness across
@@ -691,7 +698,12 @@ Unless the user says "skip git":
 - Open the design PR with `gh pr create` (base `main`). The PR body MUST carry
   BOTH the design-critique verdict + findings summary (and any waivers) AND the
   "Open assumptions & waivers" section rendered above, so the human reviews an
-  INFORMED design, not a bare diff. Do NOT merge — the human merge of this PR is
+  INFORMED design, not a bare diff. From the reviewer's report held in this
+  session (step 7b), the body carries the reviewer's
+  `### Simulation trace` section, verbatim; every blocker or major finding
+  with its alternatives table; the `METRICS:` line; and the
+  `### Non-findings` section. Minor findings and nits may stay summarised.
+  Do NOT merge — the human merge of this PR is
   the design gate: merging is what makes the TDDs buildable, so they are built
   only after it lands.
 - After the PR is opened, run `tl_draft_discard tdd-author`. This is the ONLY

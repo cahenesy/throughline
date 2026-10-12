@@ -316,6 +316,13 @@ Then ask a structured question that shows that output verbatim. Modes:
 previous sequential HEAD). Install deps unless `THROUGHLINE_SKIP_DEPS=1`.
 Call the worktree path `WT`. `REPO` stays the human checkout.
 
+Right after `git worktree add`, append the line `base-sha=<sha>` to the
+per-TDD log `docs/tdd/.implement-logs/<run>/<slug>.log`, where `<sha>` is
+`git -C "$WT" rev-parse HEAD`. It is the commit this TDD's build starts
+from, so step 10 reviews only this TDD's changes even in a stacked
+sequential run. A Retry or Resume reuses the recorded line; it never
+appends a new one.
+
 ## 7. Implementer worker
 
 First run this block (inputs `TL_REPO`, `TL_RUN`, `TL_SLUG`, `TL_TDD`).
@@ -520,6 +527,19 @@ passes its path. Worker drives the TDD verification plan and writes a last line
 `escalated` TDD, apply the step 7 escalation check first
 (`TL_WORKER=verify`).
 
+**Parent-dispatched observations.** A verification plan may name
+parent-dispatched observations: behaviour that only a dispatched reviewer
+or agent can show (a prompt file run on a fixture). The runtime-verify
+worker builds those fixtures, marks each such observation `PENDING-PARENT`
+with the exact fixture paths and prompt file, and sets its verdict on the
+rest. The parent then dispatches **one** fresh worker per fixture, whose
+instructions are the named prompt file (no model parameter, must not spawn
+children), and appends each report's last line and the relevant excerpts
+to the verify report under the observation's number. The parent then
+revises the verdict: a `PENDING-PARENT` observation that does not meet its
+expected result makes the verify FAIL, and the revised last line is
+written before the verdict below.
+
 Parent then `tl_verdict_write "$REPO" "$run" "$slug" runtime-verify`.
 FAIL or BLOCKED → halt (`failed`/`blocked`), unlock, **stop**. PASS or
 SKIP (with evidence) → continue.
@@ -533,8 +553,23 @@ worker. Before dispatch, append
 `reviewer model=<review> (src=<review_src>)` to the per-TDD log, with
 both values from the sidecar. Read-only. **must not spawn children.**
 
-Inputs: TDD path, `git diff` of the build branch vs integration,
-optional `agents/security-reviewer.md` if that file exists.
+The worker's instructions are the file
+`$(tl_plugin_root)/agents/build-reviewer.md` (dispatch by prompt file, so
+it works on any harness); a Retry re-enters this step and uses the same
+file. Pass it exactly these inputs:
+- the TDD path;
+- `base-sha`: the value of the last `base-sha=` line in the per-TDD log.
+  When the log has no such line (a run started before this was recorded),
+  use `git -C "$WT" merge-base <integration> HEAD` and tell the reviewer it
+  is a merge-base fallback;
+- the build worktree `WT`;
+- the report-file path (below);
+- the implementer's report `<run-dir>/<slug>.build.txt`;
+- the runtime-verify report `<run-dir>/<slug>.verify.txt`;
+- the absolute path `$(tl_plugin_root)/agents/security-reviewer.md`.
+
+The parent adds nothing to the prompt beyond those inputs and the facts
+of the run; the review rules live only in the prompt file.
 
 Parent creates the empty report `<run-dir>/<slug>.review.txt` and
 passes its path. Accept the token only as a whole line `^REVIEW_RESULT: (PASS|FAIL)$` (last matching
