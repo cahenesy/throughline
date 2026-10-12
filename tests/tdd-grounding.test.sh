@@ -320,7 +320,8 @@ echo "[S2] git pathspec magic is matched literally, never interpreted"
 mk_tdd "$NEW" "" '`:/scripts/lib/real.sh` — x' '`:(glob)scripts/lib/*.sh` — y'
 lint "$R" "$NEW"
 if [ "$RC" -eq 1 ] && has "$OUT" ":/scripts/lib/real.sh is not on master" \
-   && has "$OUT" ":(glob)scripts/lib/*.sh is not on master" && hasnt "$ERR" "git ls-tree failed"; then
+   && has "$OUT" ":(glob)scripts/lib/*.sh is not on master" \
+   && ! printf '%s' "$ERR" | grep -qF "git ls-tree failed"; then  # ERR may be empty
   ok "[S2] ':/x' and ':(glob)x' are literal paths → grounding.missing, not a pass or a git failure"
 else bad "[S2] pathspec magic (rc=$RC) out=[$OUT] err=[$ERR]"; fi
 
