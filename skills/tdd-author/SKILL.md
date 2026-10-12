@@ -454,6 +454,15 @@ build-time surprise:
   extractor splits on the em-dash and strips backticks) — but backtick it for
   rendering, matching every existing TDD; keep any annotation AFTER the em-dash so
   the path before it stays clean.
+
+  **Grounding (TDD 0074 / FR-106).** A file the TDD creates is written
+  `` - `<path>` (new) — <purpose> ``, with `(new)` right after the path and
+  before the em-dash. Every other path must already exist on the integration
+  branch, and `tdd-lint` checks it: an unmarked path that is not there is a
+  `grounding.missing` finding, and an absolute path or one with a `..` segment
+  is `grounding.invalid`. A file another TDD in the same unmerged set creates
+  is still `(new)` in every TDD that touches it. Look the path up in the
+  codebase now; never leave finding a file or a caller to the build (FR-107).
 - `## Expected diff size` — a per-file estimate of lines added/removed, one per
   line as `- <path> — <N> lines`, closed by a summary line
   `Total expected diff: <N> lines across <M> files.`. A file legitimately over
@@ -564,8 +573,14 @@ and address every finding. The pre-pass detects the structural-gap findings the
 design-reviewer would otherwise spend tokens on (missing required section,
 missing frontmatter, placeholder strings outside fences, untraced FR/NFR,
 non-integer or non-sequential `## Sequencing` labels — the STEP_COMMIT protocol
-requires integer step ids 1..N, and a `[UI]` id cited without its merged
-screen paths or a `mock waived: <rationale>` row — `ux.citation`). A
+requires integer step ids 1..N, a `[UI]` id cited without its merged
+screen paths or a `mock waived: <rationale>` row — `ux.citation`, a
+`## Touched files` path that is neither on the integration branch nor marked
+`(new)` — `grounding.missing` (FR-106), and prose that defers finding code to
+the build — `placeholder.deferred_discovery` (FR-107)). A `grounding.missing`
+finding means fix the path or mark it `(new)`; never suppress it or waive it
+away. A `tdd-lint: grounding:` error on stderr (exit 2) means a git call
+failed; it is never clean. A
 `tdd-lint: ux:` error on stderr (exit 2) means a UX helper failed; fix the
 cause (an invalid merged index, a malformed `[UI]` marker, a missing
 `python3`), never treat it as clean.

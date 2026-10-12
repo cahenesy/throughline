@@ -75,6 +75,27 @@ md_bullet_path_of_line() {  # <bullet-line>
   printf '%s\n' "$file"
 }
 
+# _md_bullet_mark <bullet-line> — `(new)` or `-` for md_bullet_path's marked
+# mode. The annotation text is the em-dash-left segment minus the path token
+# (the leading backtick-quoted token, else the first whitespace token — the same
+# split md_bullet_path_of_line makes); `(new)` must be a whitespace-delimited
+# token in it, so `(newer)` or a `(new)` after the em-dash is not a mark.
+_md_bullet_mark() {  # <bullet-line>
+  local seg="${1#- }" rest
+  seg="${seg%%—*}"
+  seg="${seg#"${seg%%[![:space:]]*}"}"
+  if [ "${seg:0:1}" = '`' ]; then
+    rest="${seg#\`}"
+    case "$rest" in *'`'*) rest="${rest#*\`}" ;; *) rest="" ;; esac
+  else
+    case "$seg" in *[[:space:]]*) rest="${seg#*[[:space:]]}" ;; *) rest="" ;; esac
+  fi
+  case " ${rest//[[:space:]]/ } " in
+    *' (new) '*) printf '(new)' ;;
+    *) printf -- '-' ;;
+  esac
+}
+
 # md_bullet_path <file> <heading> [mode] — emit one declared path per `- ` bullet
 # of the (fence-aware ```+~~~) `^## <heading>` section: it is
 # `md_section_body <file> <heading>` filtered to `/^- /` lines, each run through
@@ -83,6 +104,10 @@ md_bullet_path_of_line() {  # <bullet-line>
 # underlying md_section_body → return 2 + stderr diagnostic, NOT a silent empty
 # list (L-005). mode=paths (default): emit each non-empty path. mode=malformed:
 # emit the 60-char excerpt of each `- ` bullet whose extracted path is empty.
+# mode=marked (TDD 0074 / FR-106): emit `<path>\t(new)` when the text between
+# the path and the em-dash holds the standalone, case-sensitive token `(new)`,
+# else `<path>\t-`. The path is the SAME md_bullet_path_of_line result `paths`
+# prints, so the two modes cannot disagree on what the path is.
 md_bullet_path() {  # <file> <heading> [mode]
   local f="$1" heading="$2" mode="${3:-paths}" body rc line file
   body="$(md_section_body "$f" "$heading")"; rc=$?
@@ -99,6 +124,8 @@ md_bullet_path() {  # <file> <heading> [mode]
     file="$(md_bullet_path_of_line "$line")"
     if [ "$mode" = malformed ]; then
       [ -z "$file" ] && printf '%s\n' "${line:0:60}"
+    elif [ "$mode" = marked ]; then
+      [ -n "$file" ] && printf '%s\t%s\n' "$file" "$(_md_bullet_mark "$line")"
     else
       [ -n "$file" ] && printf '%s\n' "$file"
     fi
