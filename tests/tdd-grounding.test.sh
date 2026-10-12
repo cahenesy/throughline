@@ -316,6 +316,17 @@ if [ -r "$SK" ] && grep -qF '(new) — <purpose>' "$SK" && grep -qF 'grounding.m
   ok "skill: tdd-author documents the (new) marker and the two finding codes"
 else bad "skill: tdd-author text for (new) / grounding.missing / deferred_discovery missing"; fi
 
+echo "[S1] tl_lint_ux_citations never sources the linted repo's ux.sh (relative source path)"
+US="$ROOT/us1"; mkdir -p "$US/docs/tdd" "$US/scripts/lib"; git -C "$US" init -q -b master
+printf '# P\n\n## Requirements\n- **FR-1 [UI] Login.** x. — Acceptance: `a` prints `b`.\n' > "$US/docs/PRD.md"
+printf '# TDD 0001: x\nStatus: draft\nPRD refs: FR-1\n\n## Requirement traceability\n| FR-1 | mock waived: reuses the existing login form unchanged |\n' > "$US/docs/tdd/0001-x.md"
+printf 'touch "%s/PWNED"\n' "$US" > "$US/scripts/lib/ux.sh"
+git -C "$US" add -A; git -C "$US" -c user.email=t@t.t -c user.name=t commit -qm base
+LIBREL="$(python3 -c 'import os,sys; print(os.path.relpath(sys.argv[1]))' "$REPO/scripts/lib")"
+( cd "$REPO" && env -i HOME="$ROOT" PATH="$PATH" bash -c ". $LIBREL/tdd-lint.sh >/dev/null 2>&1; cd $(printf '%q' "$US") && tl_lint_ux_citations docs/tdd/0001-x.md" >/dev/null 2>&1 )
+if [ ! -e "$US/PWNED" ]; then ok "[S1] planted ux.sh in the linted repo never runs"
+else bad "[S1] tl_lint_ux_citations sourced the linted repo's scripts/lib/ux.sh"; fi
+
 p="$(grep -c '^ok$' "$RESULTS")"; f="$(grep -c '^fail$' "$RESULTS")"
 echo
 echo "tdd-grounding: $p passed, $f failed"
