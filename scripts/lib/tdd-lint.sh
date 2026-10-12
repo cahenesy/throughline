@@ -576,7 +576,9 @@ esac
 # "failed"): rc 0 + output = present, rc 0 + no output = absent, else failure.
 _tl_ground_ls_tree() {  # <root> <ref> <path>
   local out rc
-  out="$(git -C "$1" ls-tree "$2" -- "$3")"; rc=$?
+  # Literal pathspecs: a TDD path like `:/x` or `:(glob)x` is a filename, never
+  # git pathspec magic (which could pass a wrong path or blame git for a typo).
+  out="$(GIT_LITERAL_PATHSPECS=1 git -C "$1" ls-tree "$2" -- "$3")"; rc=$?
   [ "$rc" -eq 0 ] || { _TL_GROUND_GIT_RC="$rc"; return 2; }
   [ -n "$out" ] && return 0
   return 1
