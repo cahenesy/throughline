@@ -159,6 +159,31 @@ a collaborative scribe. Apply this discipline throughout that interview:
   step 3). The marker is the only signal `/ux-author` and `/tdd-author` read,
   so a wrong answer here silently skips or forces the UX phase.
 
+### Coverage scan (FR-102)
+
+Before the first substantive question of step 3, mark each of these nine
+categories `Clear`, `Partial` or `Missing` for this change:
+- functional scope;
+- domain and data;
+- interaction and flow;
+- non-functional qualities;
+- integrations and dependencies;
+- edge cases and failure handling;
+- constraints and trade-offs;
+- terminology;
+- completion signals.
+
+Ask first about the `Partial`/`Missing` categories with the highest
+(impact on the design × uncertainty): where the answer would most change the
+design and is least settled. Persist each category with the step-3 helper and
+its quoting and STOP-on-non-zero rules, header `coverage: <category>`, answer
+`initial <status>; final <status>; <resolution or open question>`. Append it
+again when its status or resolution changes; the latest entry per header is
+authoritative. Before writing the PRD, every `Partial`/`Missing` category has
+a resolution (the requirement or answer that settled it) or an Open questions
+entry. The `## Coverage scan` table in the commit body (Git, below) shows both
+statuses, so a `Partial`/`Missing` row names what resolved it.
+
 3. Interview the user with structured multiple-choice questions. Surface scope, non-goals,
    constraints, and edge cases the user hasn't stated. Skip obvious questions; dig
    into ambiguity and conflicting goals. Prefer multiple-choice options; don't
@@ -248,7 +273,8 @@ out of scope here — enforce it for new requirements.
 ## Self-review (before the PR)
 After writing the PRD, reread it with fresh eyes and fix issues inline:
 - **Placeholder scan** — any "TBD"/"TODO"/empty section/vague requirement? Resolve
-  it or move it to Open questions.
+  it or move it to Open questions. (The `tl:prd-lint` pre-pass below checks
+  this mechanically too.)
 - **Consistency** — do any requirements or goals contradict each other?
 - **Scope** — still one coherent product, or did it sprawl into several?
 - **Ambiguity** — could a requirement be read two different ways? Pick one and make
@@ -295,6 +321,78 @@ answers. On non-zero, show its stderr (a `malformed [UI] marker` line names
 the PRD line), fix the PRD, and re-run the block. Never commit a PRD for which
 this block fails.
 
+### Requirements review (FR-103, FR-104, FR-105)
+
+After the `[UI]` marker check and BEFORE the commit:
+
+1. **Pre-pass.** Run this block as one shell command with `TL_REPO` set to
+   the absolute repo root. It sources its own helpers, lints `docs/PRD.md`
+   against the integration branch's copy, then prints the delta (the
+   requirement ids this change adds, changes or removes).
+
+<!-- tl:prd-lint -->
+```bash
+: "${TL_REPO:?TL_REPO required (absolute repo root)}"
+_tl_src="${CLAUDE_PLUGIN_ROOT:-${GROK_PLUGIN_ROOT:-}}"
+. "${_tl_src}/scripts/lib/plugin-root.sh" || { echo "throughline: cannot source plugin-root.sh" >&2; exit 2; }
+. "$(tl_plugin_root)/scripts/lib/prd-lint.sh" || { echo "throughline: cannot source prd-lint.sh" >&2; exit 2; }
+tl_prd_lint "$TL_REPO"; _lint_rc=$?
+tl_prd_delta "$TL_REPO"; _delta_rc=$?
+[ "$_lint_rc" -ne 0 ] && exit "$_lint_rc"
+exit "$_delta_rc"
+```
+
+   The lint prints `prd-lint: base <ref>` (or `prd-lint: base none`), then
+   one `docs/PRD.md:<line> <severity> <code>: <message>` line per finding,
+   then `prd-lint: delta <n> requirements, <m> major, <k> info`. The delta
+   lines that follow are `new<TAB><id>`, `changed<TAB><id>` or
+   `removed<TAB><id>`.
+   - rc 0: continue to the review. `info` lines (for example `vague.term`)
+     do not block; they go to the reviewer.
+   - rc 1: a major finding (`placeholder`, `acceptance.missing`,
+     `id.duplicate`, `id.malformed`, `override.rationale`). Fix the PRD and
+     re-run the block. Do not dispatch the reviewer while it returns rc 1.
+   - rc 3: no python3. Record `Pre-pass unavailable: python3 required` for
+     the PR body; the review still runs (step 2).
+   - rc 2: a real git failure or a parse error. Show stderr and stop.
+   - Copy any `prd-lint: base is HEAD …`, `prd-lint: no base …` or
+     `prd-lint: base unparseable …` line into the PR body under
+     `## Requirements review`.
+
+2. **Independent review.** Dispatch **one** fresh worker that is not this
+   session, whose instructions are the file
+   `$(tl_plugin_root)/agents/requirements-reviewer.md` (dispatch by prompt
+   file, so it works on any harness):
+   - no model parameter: the worker inherits this session's model (FR-87);
+   - it must not spawn children;
+   - give it the repo root, the PRD path, the `prd-lint: base <ref>` line
+     and any degrade line, the delta lines, the prd-lint `vague.term` info
+     lines, and a report file created by a fresh `mktemp` for this dispatch.
+     The report path is never recorded in the draft. A resumed session always
+     makes a new one and dispatches a new reviewer, so an earlier verdict is
+     never reused (FR-104);
+   - when the pre-pass returned rc 3, give it no delta lines. Tell it instead
+     to derive the delta itself from `git diff <base> -- docs/PRD.md`, or
+     from the whole PRD when there is no base.
+
+   Read the report file. Its last line is authoritative: exactly
+   `REQUIREMENTS_REVIEW: PASS` continues to Git. A missing file, or any other
+   last line, counts as BLOCK.
+
+3. **On BLOCK,** for each blocking `R-n` finding, ask a structured question
+   with three options:
+   - **Fix** the requirement (edit the PRD);
+   - **Override** with a rationale of 20–400 characters specific to the
+     finding. Write it under the PRD's `## Open questions` as exactly
+     `- "<finding>" — overridden: <rationale>`, where `<finding>` is the
+     finding's one-sentence text only (no `R-n`, severity or citation);
+   - **Stop** the skill.
+
+   Then re-run the pre-pass block and dispatch a **new** reviewer with a new
+   `mktemp` report file. A verdict is never reused (as FR-50) or written to
+   the draft. The re-run reviewer re-checks each override and may BLOCK
+   again on a boilerplate rationale.
+
 ## Template
 
 ```
@@ -302,7 +400,10 @@ this block fails.
 
 ## Problem & context
 ## Users & goals
-## Requirements        (numbered, each independently testable)
+## Requirements        (numbered, each independently testable; each title is
+                       **<ID>-<n> <title>.** with an uppercase id prefix, e.g.
+                       **FR-12 Saved searches.** … — Acceptance: …; a retired
+                       id is **FR-12** *Retired.*)
 ## Non-goals
 ## Constraints & assumptions
 ## Open questions
@@ -338,6 +439,19 @@ Unless the user says "skip git":
   `/tdd-author` session and makes the design intent of the PRD change auditable.
   For purely additive PRD changes with no downstream cascade, write "Cascade:
   none" so the absence is intentional, not an oversight.
+- **Coverage scan (in the commit message body, FR-102).** Add a
+  `## Coverage scan` section: a table `| Category | Initial | Final |
+  Resolution |` with exactly the nine categories, from the latest
+  `coverage:` draft entries. Each `Partial`/`Missing` row names the
+  requirement or open question that resolved it.
+- **Requirements review (in the commit message body, FR-104, FR-105).** Add
+  a `## Requirements review` section with: the reviewer's verdict line; the
+  findings summary, one `R-n <severity> — <finding>` line each; each override
+  as `"<finding>" — overridden: <rationale>`, the same form as its Open
+  questions line; any prd-lint degrade line; and
+  `Pre-pass unavailable: python3 required` when the pre-pass returned rc 3.
+  The review is decision support for the human merge, not a quality
+  guarantee.
 - **UI requirements (in the commit message body, FR-89).** When the delta adds
   or changes any `[UI]` requirement, add a `## UI requirements` section listing
   each one (`- <ID> <title>`, from the `tl:ui-markers` output), followed by the

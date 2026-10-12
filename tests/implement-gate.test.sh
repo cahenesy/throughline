@@ -207,13 +207,16 @@ echo "=== 0063 observations: $PASS passed, $FAIL failed ==="
 # ux-author-skill (FR-90..FR-100: the extracted /ux-author tl: blocks run
 # under env -i in temp repos; the ux-reviewer contract) + 0072 ux-pipeline
 # (FR-89/FR-101/FR-10: the extracted tl:ui-markers / tl:ux-coverage blocks and
-# the tdd-lint ux.citation check on fixture TDDs). A registered eval that is missing is a failure,
+# the tdd-lint ux.citation check on fixture TDDs) + 0073 prd-lint /
+# requirements-review (FR-102..FR-105, FR-110: the PRD pre-pass in temp git
+# repos, the extracted tl:prd-lint block, the requirements-reviewer contract).
+# A registered eval that is missing is a failure,
 # never a silent skip (L-011).
 EVAL_FAIL=0
 for ev in plugin-root verdicts run-record build-tdds-skill model-roles \
           parent-session-check model-dispatch escalation \
           format-and-lint-hook build-hardening ux-record ux-render \
-          ux-author-skill ux-pipeline; do
+          ux-author-skill ux-pipeline prd-lint requirements-review; do
   f="$(dirname "$0")/${ev}.test.sh"
   echo
   if [ -f "$f" ]; then
