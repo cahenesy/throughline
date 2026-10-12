@@ -395,6 +395,17 @@ pl "$ROOT" "tl_prd_lint"
 [ "$RC" -eq 2 ] && has "$ERR" "usage" && ok "[rc2] tl_prd_lint without a repo root → usage, rc 2" \
   || bad "[rc2] usage: rc=$RC err='$ERR'"
 
+echo "[S1] relative sourcing never runs the linted repo's own prd_lint.py"
+RS="$ROOT/rs1"; mkdir -p "$RS/docs" "$RS/scripts/lib"; git -C "$RS" init -q -b master
+printf '# P\n\n## Requirements\n- **FR-1 A.** x. — Acceptance: `a` prints `b`.\n' > "$RS/docs/PRD.md"
+git -C "$RS" add -A; git -C "$RS" -c user.email=t@t.t -c user.name=t commit -qm base
+printf 'import sys\nopen(sys.argv[0]+".pwned","w").write("x")\nprint("PLANTED")\n' > "$RS/scripts/lib/prd_lint.py"
+LIBREL="$(python3 -c 'import os,sys; print(os.path.relpath(sys.argv[1]))' "$REPO/scripts/lib")"
+out="$(cd "$REPO" && env -i HOME="$ROOT" PATH="$PATH" bash -c ". $LIBREL/prd-lint.sh && tl_prd_lint $(printf '%q' "$RS")" 2>&1)"
+if [ ! -e "$RS/scripts/lib/prd_lint.py.pwned" ] && ! printf '%s' "$out" | grep -q PLANTED; then
+  ok "[S1] relative source path: plugin's prd_lint.py used, planted one never runs"
+else bad "[S1] planted prd_lint.py ran: out='$out'"; fi
+
 echo
 PASS="$(grep -c '^ok$' "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
