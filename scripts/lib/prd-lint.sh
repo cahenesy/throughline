@@ -17,7 +17,10 @@
 # short-circuit: every PRD needs the parser, so no python3 is rc 3. Sourced,
 # never executed: functions only, no top-level side effects beyond its deps.
 
-_TL_PRD_LINT_DIR="${BASH_SOURCE[0]%/*}"
+# Absolute at source time: helpers later `cd` into the linted repo, so a
+# relative dir would resolve to that repo's own scripts/lib/prd_lint.py.
+_TL_PRD_LINT_DIR="$(cd "${BASH_SOURCE[0]%/*}" 2>/dev/null && pwd -P)" || {
+  echo "prd-lint: cannot resolve its own directory" >&2; return 2 2>/dev/null || exit 2; }
 for _pl_dep in plugin-root.sh verdicts.sh; do
   # shellcheck source=/dev/null
   { [ -r "$_TL_PRD_LINT_DIR/$_pl_dep" ] && . "$_TL_PRD_LINT_DIR/$_pl_dep"; } || {
