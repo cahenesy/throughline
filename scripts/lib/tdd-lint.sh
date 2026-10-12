@@ -435,9 +435,14 @@ tl_lint_sequencing() {  # <tdd-path>
   esac
 }
 
-# This file's directory, captured at source time: tl_lint_ux_citations sources
-# its sibling ux.sh from here and pins the UX helpers to this same plugin tree.
-_TL_LINT_LIB="${BASH_SOURCE[0]%/*}"
+# This file's directory, resolved ABSOLUTE at source time: tl_lint_ux_citations
+# sources its sibling ux.sh from here and pins the UX helpers to this same
+# plugin tree. A relative dir would be re-resolved after the caller `cd`s into
+# the linted repo and pick up THAT repo's scripts/lib/ux.sh.
+case "${BASH_SOURCE[0]:-}" in
+  */*) _TL_LINT_LIB="$(cd "${BASH_SOURCE[0]%/*}" 2>/dev/null && pwd -P)" || _TL_LINT_LIB="" ;;
+  *)   _TL_LINT_LIB="$(pwd -P)" ;;
+esac
 
 # tl_lint_ux_citations — a TDD that designs a `[UI]` requirement must cite the
 # merged mock or record a waiver (TDD 0072 / FR-101). For each id on the TDD's
@@ -467,8 +472,9 @@ tl_lint_ux_citations() {  # <tdd-path>
   grep -qF '[UI]' "$prd" || return 0
 
   local libdir
-  libdir="$(cd "$_TL_LINT_LIB" 2>/dev/null && pwd)" \
-    || { echo "tdd-lint: ux: cannot source ux.sh (no lib dir $_TL_LINT_LIB)" >&2; return 2; }
+  libdir="$_TL_LINT_LIB"
+  [ -n "$libdir" ] && [ -d "$libdir" ] \
+    || { echo "tdd-lint: ux: cannot source ux.sh (no lib dir)" >&2; return 2; }
   if ! declare -F tl_ux_coverage >/dev/null || ! declare -F tl_ux_ui_reqs >/dev/null; then
     # shellcheck source=scripts/lib/ux.sh
     { [ -r "$libdir/ux.sh" ] && . "$libdir/ux.sh"; } \
