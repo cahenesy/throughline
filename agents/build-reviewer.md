@@ -65,8 +65,9 @@ with `REVIEW_RESULT: FAIL`, never a guessed PASS.
    happy, boundary and failure paths as `state → state` steps. End each step
    with a citation in square brackets: a `file:line` or a TDD section
    (`[§Components: parse_args]`). A step you cannot cite is suffixed
-   `[unverified]`. A trace made up only of `[unverified]` steps cannot be the
-   basis of a PASS.
+   `[unverified]`. A trace made up only of `[unverified]` steps is itself a
+   major finding (`R-n major — <TDD path> — trace could not be verified`), so
+   rule 9 turns it into FAIL.
 8. **Pre-existing debt.** A finding whose `file:line` is not in the diff's
    changed lines (`git diff -U0 <base-sha>..HEAD`, run in `<wt>`) is labelled
    `pre-existing` and is non-blocking: it never causes FAIL. Exception: a
