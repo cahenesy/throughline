@@ -193,6 +193,12 @@ if readable "$TA"; then
 else bad "[4b] infra: $TA missing/unreadable/empty (L-001)"; fi
 
 echo
+# Review R-1: rule 7's "no PASS on an all-[unverified] trace" must route
+# through rule 9's FAIL-iff (a major finding), not float as a bare ban.
+if readable "$BR"; then
+  has "build-reviewer rule 7" "$(norm "$BR")" 'only of `[unverified]` steps is itself a major finding'
+fi
+
 PASS="$(grep -c '^ok$' "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
 echo "=== reviewer-contracts (TDD 0075): $PASS passed, $FAIL failed ==="
