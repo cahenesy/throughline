@@ -199,6 +199,24 @@ if readable "$BR"; then
   has "build-reviewer rule 7" "$(norm "$BR")" 'only of `[unverified]` steps is itself a major finding'
 fi
 
+# Follow-ups: plugin-internal citations are labelled as such in every
+# reviewer prompt that carries them; /tdd-author 7b dispatches by prompt file;
+# /prd-author's self-review no longer sends a TBD token to Open questions.
+CITE='Citations such as (FR-55) or (ADR 0005) in this prompt refer to the plugin'"'"'s own design records'
+for f in "$REPO/agents/design-reviewer.md" "$REPO/agents/build-reviewer.md" "$REPO/agents/requirements-reviewer.md"; do
+  if readable "$f"; then has "$(basename "$f") citation note" "$(norm "$f")" "$CITE"; fi
+done
+TA="$REPO/skills/tdd-author/SKILL.md"
+if readable "$TA"; then
+  has "tdd-author 7b" "$(norm "$TA")" 'whose instructions are the file `$(tl_plugin_root)/agents/design-reviewer.md`'
+  if norm "$TA" | grep -qF 'Spawn the `design-reviewer` subagent'; then bad "tdd-author 7b still names an agent type"
+  else ok "tdd-author 7b names no agent type"; fi
+fi
+PA="$REPO/skills/prd-author/SKILL.md"
+if readable "$PA"; then
+  has "prd-author self-review" "$(norm "$PA")" 'without the TBD/TODO token'
+fi
+
 PASS="$(grep -c '^ok$' "$RESULTS" 2>/dev/null)"; PASS="${PASS:-0}"
 FAIL="$(grep -c '^fail$' "$RESULTS" 2>/dev/null)"; FAIL="${FAIL:-0}"
 echo "=== reviewer-contracts (TDD 0075): $PASS passed, $FAIL failed ==="
