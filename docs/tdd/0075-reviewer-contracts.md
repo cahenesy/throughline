@@ -1,6 +1,6 @@
 # TDD 0075: Reviewer contracts — design rigor, a fixed build reviewer, reviewable non-findings
 
-Status: draft
+Status: implemented
 PRD refs: FR-108, FR-109, FR-110, FR-15, FR-10, FR-87
 PRD-rev: d526c55
 ADR constraints: 0004, 0006, 0010, 0011, 0013, 0015

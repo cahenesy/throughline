@@ -59,7 +59,26 @@ BLOCK.
 
 ## Report
 Rank findings (blocker / major / minor / nit), each with the screen and state it
-applies to and a concrete fix. **Write your full report to the report-file path
+applies to and a concrete fix. Under `### Findings`, number them `R-1, R-2 …`
+in report order, each one line in exactly the shared format:
+
+`R-n <severity> — <file:line or docs/ux path> — <finding>`
+
+Name the screen and state in `<finding>`; the concrete fix follows on the next
+line, indented by two spaces.
+
+Then `### Non-findings`. You may set a candidate finding aside only by quoting
+it there, one per line in the shared format:
+
+`<label> — "<quoted candidate finding>" — <why set aside>`
+
+`<label>` is `pedantic escalation` (a style preference raised as a defect) or
+`imaginary architecture` (a requirement nobody stated, such as a screen the PRD
+never asks for). Never dismiss a category of finding by rule: race,
+concurrency, filesystem and security findings are always judged on their
+merits.
+
+**Write your full report to the report-file path
 given in the dispatch prompt**, overwriting it. Its LAST line must be exactly one
 of:
 - `UX_REVIEW: BLOCK <one-line reason>` (any blocker, any unmapped id, a failed
