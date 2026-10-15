@@ -436,9 +436,10 @@ tl_lint_sequencing() {  # <tdd-path>
 }
 
 # This file's directory, resolved ABSOLUTE at source time: tl_lint_ux_citations
-# sources its sibling ux.sh from here and pins the UX helpers to this same
-# plugin tree. A relative dir would be re-resolved after the caller `cd`s into
-# the linted repo and pick up THAT repo's scripts/lib/ux.sh.
+# and tl_lint_grounding source their siblings (ux.sh, verdicts.sh) from here,
+# pinning the helpers to this same plugin tree. A relative dir would be
+# re-resolved after the caller `cd`s into the linted repo and pick up THAT
+# repo's scripts/lib files.
 case "${BASH_SOURCE[0]:-}" in
   */*) _TL_LINT_LIB="$(cd "${BASH_SOURCE[0]%/*}" 2>/dev/null && pwd -P)" || _TL_LINT_LIB="" ;;
   *)   _TL_LINT_LIB="$(pwd -P)" ;;
@@ -562,14 +563,6 @@ tl_lint_ux_citations() {  # <tdd-path>
   return "$result"
 }
 
-# This file's directory resolved ABSOLUTE at source time (pwd -P), for the lazy
-# verdicts.sh source in tl_lint_grounding: a caller may `cd` into the linted
-# repo afterwards, and a relative dir would then resolve to THAT repo's files.
-case "${BASH_SOURCE[0]:-}" in
-  */*) _TL_LINT_LIB_ABS="$(cd "${BASH_SOURCE[0]%/*}" 2>/dev/null && pwd -P)" || _TL_LINT_LIB_ABS="" ;;
-  *)   _TL_LINT_LIB_ABS="$(pwd -P)" ;;
-esac
-
 # _tl_ground_ls_tree <root> <ref> <path> — 0 exists, 1 absent, 2 git failed
 # (the failing rc is left in _TL_GROUND_GIT_RC for the caller's message).
 # `git ls-tree` (never `cat-file -e`, whose 128 means both "missing" and
@@ -608,8 +601,8 @@ tl_lint_grounding() {  # <tdd-path>
   # own absolute directory, the first time grounding is needed.
   if ! declare -F _tl_integration_ref >/dev/null; then
     # shellcheck source=scripts/lib/verdicts.sh
-    { [ -n "$_TL_LINT_LIB_ABS" ] && [ -r "$_TL_LINT_LIB_ABS/verdicts.sh" ] \
-        && . "$_TL_LINT_LIB_ABS/verdicts.sh" && declare -F _tl_integration_ref >/dev/null; } \
+    { [ -n "$_TL_LINT_LIB" ] && [ -r "$_TL_LINT_LIB/verdicts.sh" ] \
+        && . "$_TL_LINT_LIB/verdicts.sh" && declare -F _tl_integration_ref >/dev/null; } \
       || { echo "tdd-lint: grounding: cannot source verdicts.sh" >&2; return 2; }
   fi
   ref="$(_tl_integration_ref "$root")" || { ref=HEAD; fallback=1; }

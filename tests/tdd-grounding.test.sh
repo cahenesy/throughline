@@ -336,6 +336,15 @@ LIBREL="$(python3 -c 'import os,sys; print(os.path.relpath(sys.argv[1]))' "$REPO
 if [ ! -e "$US/PWNED" ]; then ok "[S1] planted ux.sh in the linted repo never runs"
 else bad "[S1] tl_lint_ux_citations sourced the linted repo's scripts/lib/ux.sh"; fi
 
+echo "[S3] tdd-lint resolves its lib dir once"
+TLS="$REPO/scripts/lib/tdd-lint.sh"
+if [ -r "$TLS" ] && [ -s "$TLS" ]; then
+  c="$(grep -c '_TL_LINT_LIB_ABS' "$TLS")"
+  d="$(grep -c '^  \*/\*) _TL_LINT_LIB=' "$TLS")"
+  if [ "$c" = 0 ] && [ "$d" = 1 ]; then ok "[S3] one source-time lib-dir resolution (_TL_LINT_LIB)"
+  else bad "[S3] lib dir resolved more than once (ABS refs=$c, defs=$d)"; fi
+else bad "[S3] infra: $TLS unreadable"; fi
+
 p="$(grep -c '^ok$' "$RESULTS")"; f="$(grep -c '^fail$' "$RESULTS")"
 echo
 echo "tdd-grounding: $p passed, $f failed"

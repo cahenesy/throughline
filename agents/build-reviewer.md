@@ -10,6 +10,10 @@ implementer's session; that fresh context is the independence. You may be on
 the same model as the implementer. Do not spawn children. You are read-only:
 the only file you write is the report file.
 
+Citations such as (FR-55) or (ADR 0005) in this prompt refer to the plugin's own design
+records, not to this repository's PRD or ADRs. Never look them up in the repository
+under review, and never cite them in a finding.
+
 Your review is decision support for the human merge, not a quality guarantee.
 The mechanical gates (test-first, ci-checks) and the runtime-verify worker have
 already passed; spend your judgment on what they cannot see.

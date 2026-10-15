@@ -214,14 +214,22 @@ echo "=== 0063 observations: $PASS passed, $FAIL failed ==="
 # phrases on fixture TDDs in temp git repos) + 0075 reviewer-contracts
 # (FR-108..FR-110: the design/build/ux/security reviewer contracts and the
 # /build-tdds and /tdd-author wiring, as text checks by necessity).
+# The second block re-registers the evals dropped with the coprocess runner
+# (TDD 0063); the [registry] check below keeps the list complete.
 # A registered eval that is missing is a failure,
 # never a silent skip (L-011).
 EVAL_FAIL=0
-for ev in plugin-root verdicts run-record build-tdds-skill model-roles \
-          parent-session-check model-dispatch escalation \
-          format-and-lint-hook build-hardening ux-record ux-render \
-          ux-author-skill ux-pipeline prd-lint requirements-review \
-          tdd-grounding reviewer-contracts; do
+REGISTERED_EVALS="plugin-root verdicts run-record build-tdds-skill model-roles
+          parent-session-check model-dispatch escalation
+          format-and-lint-hook build-hardening ux-record ux-render
+          ux-author-skill ux-pipeline prd-lint requirements-review
+          tdd-grounding reviewer-contracts
+          bootstrap-marker-wiring bounded-tdd-scope evaluation-rubric
+          gitignore-helper interactive-draft-persistence interrogator-discipline
+          json-helper learnings-inform-tdd-author lifecycle-helpers markers
+          md-parser releases-manifest repo-id session-reconcile-hook
+          tdd-author-redteam token-spend-reduction"
+for ev in $REGISTERED_EVALS; do
   f="$(dirname "$0")/${ev}.test.sh"
   echo
   if [ -f "$f" ]; then
@@ -231,5 +239,19 @@ for ev in plugin-root verdicts run-record build-tdds-skill model-roles \
     EVAL_FAIL=1
   fi
 done
+
+# Every tests/*.test.sh must be registered above (ci-checks runs only this
+# aggregator, so an unregistered eval silently never gates a build).
+echo
+echo "[registry] every tests/*.test.sh is registered in this aggregator"
+unreg=""; n=0
+for t in "$(dirname "$0")"/*.test.sh; do
+  [ -f "$t" ] || continue
+  b="$(basename "$t" .test.sh)"; n=$((n + 1))
+  [ "$b" = implement-gate ] && continue
+  case " $(printf '%s ' $REGISTERED_EVALS)" in *" $b "*) ;; *) unreg="$unreg $b" ;; esac
+done
+if [ "$n" -gt 1 ] && [ -z "$unreg" ]; then echo "  ok   — all $((n - 1)) evals registered"
+else echo "  FAIL — unregistered evals (ci-checks never runs them):${unreg:- <none found: n=$n>}"; EVAL_FAIL=1; fi
 
 [ "$FAIL" -eq 0 ] && [ "$EVAL_FAIL" -eq 0 ]
