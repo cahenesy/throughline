@@ -1,6 +1,6 @@
 # TDD 0074: `tdd-lint` workspace grounding and no deferred discovery
 
-Status: draft
+Status: implemented
 PRD refs: FR-106, FR-107
 PRD-rev: d526c55
 ADR constraints: 0005, 0006, 0010

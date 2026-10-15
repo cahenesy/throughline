@@ -207,7 +207,9 @@ tl_lint_structural() {  # <tdd-path>
 # Two well-known false-positive patterns are silenced:
 #   - TBD inside a ``` fenced code block
 #   - <TBD> inside angle brackets (template metasyntax)
-# Every match is a major-severity finding.
+# Every match is a major-severity finding. The deferred-discovery phrases
+# (TDD 0074 / FR-107) are a second list under `placeholder.deferred_discovery`,
+# matched with inline `…` code removed first; the old list is matched as before.
 tl_lint_placeholders() {  # <tdd-path>
   local f="$1"
   if [ ! -f "$f" ]; then
@@ -221,12 +223,28 @@ tl_lint_placeholders() {  # <tdd-path>
       # Forbidden phrases (case-insensitive substring match).
       n = split("TBD|verify it works|verify it is correct|tests will pass|the change works as expected|handle errors appropriately|handle errors gracefully|add validation|to be determined|to be decided", phrases, "|")
       for (i = 1; i <= n; i++) lower[i] = tolower(phrases[i])
+      # Deferred-discovery phrases (TDD 0074 / FR-107): putting off finding
+      # code until the build. One more split string, so a new phrase is a
+      # one-line change. Matched AFTER removing `…` inline-code spans, which
+      # applies to THESE phrases only (the list above keeps its old matching).
+      nd = split("find the file|search for the file|locate the file|locate during implementation|located during implementation|locate the caller|search for callers|determined during implementation|discover during implementation|figure out during implementation|during implementation, find", dphr, "|")
+      for (i = 1; i <= nd; i++) dlower[i] = tolower(dphr[i])
       in_fence = 0
     }
     {
       # Toggle fenced-code state on lines starting with ```
       if ($0 ~ /^[[:space:]]*```/) { in_fence = !in_fence; next }
       if (in_fence) next
+
+      dl = $0
+      gsub(/`[^`]*`/, "", dl)
+      dl = tolower(dl)
+      for (i = 1; i <= nd; i++) {
+        if (index(dl, dlower[i]) == 0) continue
+        printf "%s:%d major placeholder.deferred_discovery: \"%s\" defers codebase discovery to the build; name the file or function now\n", FILE, NR, dphr[i]
+        found = 1
+        break  # one deferred-discovery finding per line
+      }
 
       lc = tolower($0)
       for (i = 1; i <= n; i++) {
@@ -417,9 +435,14 @@ tl_lint_sequencing() {  # <tdd-path>
   esac
 }
 
-# This file's directory, captured at source time: tl_lint_ux_citations sources
-# its sibling ux.sh from here and pins the UX helpers to this same plugin tree.
-_TL_LINT_LIB="${BASH_SOURCE[0]%/*}"
+# This file's directory, resolved ABSOLUTE at source time: tl_lint_ux_citations
+# sources its sibling ux.sh from here and pins the UX helpers to this same
+# plugin tree. A relative dir would be re-resolved after the caller `cd`s into
+# the linted repo and pick up THAT repo's scripts/lib/ux.sh.
+case "${BASH_SOURCE[0]:-}" in
+  */*) _TL_LINT_LIB="$(cd "${BASH_SOURCE[0]%/*}" 2>/dev/null && pwd -P)" || _TL_LINT_LIB="" ;;
+  *)   _TL_LINT_LIB="$(pwd -P)" ;;
+esac
 
 # tl_lint_ux_citations — a TDD that designs a `[UI]` requirement must cite the
 # merged mock or record a waiver (TDD 0072 / FR-101). For each id on the TDD's
@@ -449,8 +472,9 @@ tl_lint_ux_citations() {  # <tdd-path>
   grep -qF '[UI]' "$prd" || return 0
 
   local libdir
-  libdir="$(cd "$_TL_LINT_LIB" 2>/dev/null && pwd)" \
-    || { echo "tdd-lint: ux: cannot source ux.sh (no lib dir $_TL_LINT_LIB)" >&2; return 2; }
+  libdir="$_TL_LINT_LIB"
+  [ -n "$libdir" ] && [ -d "$libdir" ] \
+    || { echo "tdd-lint: ux: cannot source ux.sh (no lib dir)" >&2; return 2; }
   if ! declare -F tl_ux_coverage >/dev/null || ! declare -F tl_ux_ui_reqs >/dev/null; then
     # shellcheck source=scripts/lib/ux.sh
     { [ -r "$libdir/ux.sh" ] && . "$libdir/ux.sh"; } \
@@ -535,6 +559,120 @@ tl_lint_ux_citations() {  # <tdd-path>
     result=1
   done <<< "$ids"
   rm -f "$errf"
+  return "$result"
+}
+
+# This file's directory resolved ABSOLUTE at source time (pwd -P), for the lazy
+# verdicts.sh source in tl_lint_grounding: a caller may `cd` into the linted
+# repo afterwards, and a relative dir would then resolve to THAT repo's files.
+case "${BASH_SOURCE[0]:-}" in
+  */*) _TL_LINT_LIB_ABS="$(cd "${BASH_SOURCE[0]%/*}" 2>/dev/null && pwd -P)" || _TL_LINT_LIB_ABS="" ;;
+  *)   _TL_LINT_LIB_ABS="$(pwd -P)" ;;
+esac
+
+# _tl_ground_ls_tree <root> <ref> <path> — 0 exists, 1 absent, 2 git failed
+# (the failing rc is left in _TL_GROUND_GIT_RC for the caller's message).
+# `git ls-tree` (never `cat-file -e`, whose 128 means both "missing" and
+# "failed"): rc 0 + output = present, rc 0 + no output = absent, else failure.
+_tl_ground_ls_tree() {  # <root> <ref> <path>
+  local out rc
+  # Literal pathspecs: a TDD path like `:/x` or `:(glob)x` is a filename, never
+  # git pathspec magic (which could pass a wrong path or blame git for a typo).
+  out="$(GIT_LITERAL_PATHSPECS=1 git -C "$1" ls-tree "$2" -- "$3")"; rc=$?
+  [ "$rc" -eq 0 ] || { _TL_GROUND_GIT_RC="$rc"; return 2; }
+  [ -n "$out" ] && return 0
+  return 1
+}
+
+# tl_lint_grounding — TDD 0074 / FR-106. Every `## Touched files` path of a NEW
+# TDD (one absent from the integration branch) must exist on that branch or be
+# marked `(new)` right after the path. Findings: `major grounding.missing`,
+# `major grounding.invalid` (a `..` segment or an absolute path) → rc 1.
+# Outside git / no commits → a stderr skip line, rc 0 (a declared skip, never a
+# silent pass). Any git or extractor failure → rc 2 with a named
+# `tdd-lint: grounding:` line; a failure never reads as clean (L-005).
+tl_lint_grounding() {  # <tdd-path>
+  local f="$1"
+  if [ ! -f "$f" ]; then
+    echo "tdd-lint: grounding: input not found: $f" >&2
+    return 2
+  fi
+  local dir base root ref fallback=0 note="" rel prefix rc
+  dir="$(dirname "$f")"; base="$(basename "$f")"
+  root="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)"
+  if [ -z "$root" ]; then
+    echo "tdd-lint: grounding skipped: $f is not in a git work tree" >&2
+    return 0
+  fi
+  # verdicts.sh (for _tl_integration_ref) is loaded lazily, from this lint's
+  # own absolute directory, the first time grounding is needed.
+  if ! declare -F _tl_integration_ref >/dev/null; then
+    # shellcheck source=scripts/lib/verdicts.sh
+    { [ -n "$_TL_LINT_LIB_ABS" ] && [ -r "$_TL_LINT_LIB_ABS/verdicts.sh" ] \
+        && . "$_TL_LINT_LIB_ABS/verdicts.sh" && declare -F _tl_integration_ref >/dev/null; } \
+      || { echo "tdd-lint: grounding: cannot source verdicts.sh" >&2; return 2; }
+  fi
+  ref="$(_tl_integration_ref "$root")" || { ref=HEAD; fallback=1; }
+  [ -n "$ref" ] || { ref=HEAD; fallback=1; }
+  if ! git -C "$root" rev-parse -q --verify "${ref}^{commit}" >/dev/null 2>&1; then
+    echo "tdd-lint: grounding skipped: no commits" >&2
+    return 0
+  fi
+  [ "$fallback" -eq 1 ] && note=" (checked against HEAD: no integration branch)"
+
+  # Go-forward rule: the TDD's repo-relative path from git itself (never by
+  # string-stripping a possibly symlinked absolute path). On <ref> → merged →
+  # exempt.
+  rel="$(git -C "$dir" ls-files --full-name --error-unmatch -- "$base" 2>/dev/null)" || rel=""
+  if [ -z "$rel" ]; then
+    prefix="$(git -C "$dir" rev-parse --show-prefix)"; rc=$?
+    if [ "$rc" -ne 0 ]; then
+      echo "tdd-lint: grounding: git rev-parse --show-prefix failed (rc $rc) on $f" >&2
+      return 2
+    fi
+    rel="${prefix}${base}"
+  fi
+  _tl_ground_ls_tree "$root" "$ref" "$rel"; rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    1) : ;;
+    *) echo "tdd-lint: grounding: git ls-tree failed (rc ${_TL_GROUND_GIT_RC:-?}) on $f" >&2
+       return 2 ;;
+  esac
+
+  local marked
+  marked="$(md_bullet_path "$f" "Touched files" marked)"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "tdd-lint: grounding: extractor failed (rc $rc) on $f" >&2
+    return 2
+  fi
+  [ -n "$marked" ] || return 0
+
+  local result=0 p mark ln
+  while IFS="$(printf '\t')" read -r p mark; do
+    [ -n "$p" ] || continue
+    ln="$(awk -v P="$p" '
+      sec && /^## / { exit }
+      sec && /^- / && index($0, P) { print NR; exit }
+      /^## Touched files[[:space:]]*$/ { sec = 1 }
+    ' "$f" 2>/dev/null)"
+    case "/$p/" in
+      //*|*/../*)
+        _tl_emit "$f" "${ln:-0}" major "grounding.invalid" \
+          "$p is not a repo-relative path (absolute or has a '..' segment)"
+        result=1; continue ;;
+    esac
+    [ "$mark" = "(new)" ] && continue
+    _tl_ground_ls_tree "$root" "$ref" "$p"; rc=$?
+    case "$rc" in
+      0) : ;;
+      1) _tl_emit "$f" "${ln:-0}" major "grounding.missing" \
+           "$p is not on $ref and is not marked (new)$note"
+         result=1 ;;
+      *) echo "tdd-lint: grounding: git ls-tree failed (rc ${_TL_GROUND_GIT_RC:-?}) on $f" >&2
+         return 2 ;;
+    esac
+  done <<< "$marked"
   return "$result"
 }
 
@@ -750,7 +888,7 @@ tl_lint_all() {  # <tdd-path>...
   local max=0 rc tdd
   for tdd in "$@"; do
     for fn in tl_lint_structural tl_lint_placeholders tl_lint_traced tl_lint_sequencing \
-              tl_lint_ux_citations; do
+              tl_lint_ux_citations tl_lint_grounding; do
       "$fn" "$tdd"
       rc=$?
       [ "$rc" -gt "$max" ] && max="$rc"
