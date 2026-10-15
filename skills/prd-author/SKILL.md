@@ -273,7 +273,8 @@ out of scope here — enforce it for new requirements.
 ## Self-review (before the PR)
 After writing the PRD, reread it with fresh eyes and fix issues inline:
 - **Placeholder scan** — any "TBD"/"TODO"/empty section/vague requirement? Resolve
-  it or move it to Open questions. (The `tl:prd-lint` pre-pass below checks
+  it, or move it to Open questions as a plain question without the TBD/TODO token
+  (the pre-pass flags that token on any new line, Open questions included). (The `tl:prd-lint` pre-pass below checks
   this mechanically too.)
 - **Consistency** — do any requirements or goals contradict each other?
 - **Scope** — still one coherent product, or did it sprawl into several?

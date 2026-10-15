@@ -214,6 +214,8 @@ echo "=== 0063 observations: $PASS passed, $FAIL failed ==="
 # phrases on fixture TDDs in temp git repos) + 0075 reviewer-contracts
 # (FR-108..FR-110: the design/build/ux/security reviewer contracts and the
 # /build-tdds and /tdd-author wiring, as text checks by necessity).
+# The second block re-registers the evals dropped with the coprocess runner
+# (TDD 0063); the [registry] check below keeps the list complete.
 # A registered eval that is missing is a failure,
 # never a silent skip (L-011).
 EVAL_FAIL=0
@@ -221,7 +223,12 @@ REGISTERED_EVALS="plugin-root verdicts run-record build-tdds-skill model-roles
           parent-session-check model-dispatch escalation
           format-and-lint-hook build-hardening ux-record ux-render
           ux-author-skill ux-pipeline prd-lint requirements-review
-          tdd-grounding reviewer-contracts"
+          tdd-grounding reviewer-contracts
+          bootstrap-marker-wiring bounded-tdd-scope evaluation-rubric
+          gitignore-helper interactive-draft-persistence interrogator-discipline
+          json-helper learnings-inform-tdd-author lifecycle-helpers markers
+          md-parser releases-manifest repo-id session-reconcile-hook
+          tdd-author-redteam token-spend-reduction"
 for ev in $REGISTERED_EVALS; do
   f="$(dirname "$0")/${ev}.test.sh"
   echo

@@ -624,8 +624,9 @@ the design-critique gate is the sole scope authority; the build never halts on a
 scope concern this gate missed.
 
 **7b. Independent design critique (gate — do not skip).** Before opening the design
-PR, get an INDEPENDENT critique of the whole authored set. Spawn the
-`design-reviewer` subagent — it runs in a fresh worker that is not this session
+PR, get an INDEPENDENT critique of the whole authored set. Dispatch one worker
+whose instructions are the file `$(tl_plugin_root)/agents/design-reviewer.md`
+(dispatch by prompt file, so it works on any harness) — it runs in a fresh worker that is not this session
 and inherits this session's model (FR-10); independence is the fresh context,
 not a distinct model name. It reads the PRD, the TDD(s), and the accepted ADRs and checks requirement
 traceability, interface specification, the REQUIRED alternatives analysis, ADR

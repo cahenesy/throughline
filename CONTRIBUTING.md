@@ -37,6 +37,10 @@ PRs against `master`:
   bash tests/implement-gate.test.sh
   ```
   (It aggregates all the per-feature evals; everything must pass.)
+- A new `tests/<name>.test.sh` must be added to `REGISTERED_EVALS` in
+  `tests/implement-gate.test.sh`. `scripts/ci-checks.sh` runs only that
+  aggregator, so an unregistered eval never gates a build; the aggregator's
+  `[registry]` check fails until it is listed.
 - If you change any `scripts/` or `skills/` behavior, bump the version in
   `.claude-plugin/plugin.json` (functional changes bump; doc-only changes
   don't).

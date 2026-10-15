@@ -10,6 +10,10 @@ fresh context is the independence. You may be on the same model as the author.
 Bring genuinely independent judgment. There is NO code yet: review the DESIGN,
 not an implementation.
 
+Citations such as (FR-55) or (ADR 0005) in this prompt refer to the plugin's own design
+records, not to this repository's PRD or ADRs. Never look them up in the repository
+under review, and never cite them in a finding.
+
 **Pre-check already ran.** The skill that invokes you has already run
 `scripts/lib/tdd-lint.sh` against this TDD set and is invoking you only because
 the mechanical pre-checks were clean (or were explicitly waived). Spend your
