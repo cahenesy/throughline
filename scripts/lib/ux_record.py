@@ -16,6 +16,8 @@ import urllib.parse
 
 UI_RE = re.compile(r"^\*\*(?P<id>[A-Z][A-Z0-9]*-[0-9]+) \[UI\] (?P<title>[^*]+?)\.?\*\*")
 REQ_RE = re.compile(r"^\*\*(?P<id>[A-Z][A-Z0-9]*-[0-9]+) ")
+# A retired-id marker: the id closed by ** with no title (`**FR-56** *Retired.*`).
+RETIRED_RE = re.compile(r"^\*\*(?P<id>[A-Z][A-Z0-9]*-[0-9]+)\*\*\s+\*Retired\b")
 ID_RE = re.compile(r"[A-Z][A-Z0-9]*-[0-9]+")
 CODE_RE = re.compile(r"(`+)(.+?)\1")
 FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
@@ -47,9 +49,7 @@ def parse_prd_strict(path):
         raise UxError(str(e), 2)
 
 
-def parse_prd(path):
-    """Return (ui, titles): ui = [(id, hash, title, lineno)] in file order;
-    titles = {id: lineno} for every requirement title (with or without [UI])."""
+def _read_lines(path):
     try:
         with open(path, "rb") as fh:
             raw = fh.read()
@@ -62,9 +62,30 @@ def parse_prd(path):
     lines = text.split("\n")
     if lines and lines[-1] == "":
         lines.pop()
+    return lines
+
+
+def _ui_scan(line):
+    """The [UI]-relevant view of a non-heading line: (body, code-stripped body)."""
+    body = _delist(line)
+    return body, CODE_RE.sub("", body)
+
+
+def parse_requirements(path, retired_ends=False, lines=None):
+    """Every requirement title (REQ_RE, with or without [UI]) in file order, as
+    [(id, lineno, block_text, title_text)]: lineno is the 1-based title line,
+    title_text that line's text, block_text the block (title line up to the
+    next title or heading, each line right-stripped). Fences and inline code
+    are skipped. A malformed [UI] marker or an unterminated fence raises.
+
+    retired_ends=True (prd_lint only, TDD 0073) also ends a block at a
+    retired-id marker line (`**FR-56** *Retired.*`); the marker itself is
+    never a requirement. parse_prd never sets it, so [UI] hashes don't move."""
+    if lines is None:
+        lines = _read_lines(path)
     fence = None
     fence_line = 0
-    heads = []  # (index, kind, id, title) — kind: 'ui' | 'req' | 'heading'
+    heads = []  # (index, is_requirement, id)
     for i, line in enumerate(lines):
         m = FENCE_RE.match(line)
         if fence is None and m:
@@ -79,34 +100,46 @@ def parse_prd(path):
             # off-grammar and must fail loudly, not read as "no UI requirements".
             if "[UI]" in CODE_RE.sub("", line):
                 raise UxError("ux: malformed [UI] marker at %s:%d: %s" % (path, i + 1, line[:120]))
-            heads.append((i, "heading", None, None))
+            heads.append((i, False, None))
             continue
-        body = _delist(line)
-        scan = CODE_RE.sub("", body)
+        body, scan = _ui_scan(line)
         if "[UI]" in scan:
             if not UI_RE.match(scan):
                 raise UxError("ux: malformed [UI] marker at %s:%d: %s" % (path, i + 1, line[:120]))
             m2 = UI_RE.match(body) or UI_RE.match(scan)
-            heads.append((i, "ui", m2.group("id"), m2.group("title")))
+            heads.append((i, True, m2.group("id")))
             continue
         m3 = REQ_RE.match(body)
         if m3:
-            heads.append((i, "req", m3.group("id"), None))
+            heads.append((i, True, m3.group("id")))
+        elif retired_ends and RETIRED_RE.match(body):
+            heads.append((i, False, None))
     if fence is not None:
         raise UxError("ux: unterminated code fence at %s:%d" % (path, fence_line))
-    ui, seen, titles = [], {}, {}
-    for n, (i, kind, rid, title) in enumerate(heads):
-        if kind == "heading":
+    reqs = []
+    for n, (i, is_req, rid) in enumerate(heads):
+        if not is_req:
             continue
-        titles.setdefault(rid, i + 1)
-        if kind != "ui":
-            continue
-        if rid in seen:
-            raise UxError("ux: duplicate [UI] id %s at %s:%d,%d" % (rid, path, seen[rid], i + 1))
-        seen[rid] = i + 1
         end = heads[n + 1][0] if n + 1 < len(heads) else len(lines)
         block = "\n".join(l.rstrip() for l in lines[i:end])
-        ui.append((rid, hashlib.sha256(block.encode("utf-8")).hexdigest(), title, i + 1))
+        reqs.append((rid, i + 1, block, lines[i]))
+    return reqs
+
+
+def parse_prd(path):
+    """Return (ui, titles): ui = [(id, hash, title, lineno)] in file order;
+    titles = {id: lineno} for every requirement title (with or without [UI])."""
+    ui, seen, titles = [], {}, {}
+    for rid, lineno, block, title_text in parse_requirements(path):
+        titles.setdefault(rid, lineno)
+        body, scan = _ui_scan(title_text)
+        if "[UI]" not in scan:
+            continue
+        if rid in seen:
+            raise UxError("ux: duplicate [UI] id %s at %s:%d,%d" % (rid, path, seen[rid], lineno))
+        seen[rid] = lineno
+        m2 = UI_RE.match(body) or UI_RE.match(scan)
+        ui.append((rid, hashlib.sha256(block.encode("utf-8")).hexdigest(), m2.group("title"), lineno))
     return ui, titles
 
 

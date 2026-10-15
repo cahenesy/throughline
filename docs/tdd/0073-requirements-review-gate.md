@@ -1,6 +1,6 @@
 # TDD 0073: Requirements review gate — coverage scan, PRD pre-pass, independent reviewer, overrides
 
-Status: draft
+Status: implemented
 PRD refs: FR-102, FR-103, FR-104, FR-105, FR-110, FR-87, NFR-3
 PRD-rev: d526c55
 ADR constraints: 0006, 0010, 0011, 0015
